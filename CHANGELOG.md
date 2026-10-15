@@ -3,6 +3,15 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.1.4
+
+- **Fixed:** the cold start of a redeploy showed "not available yet". Lambda's platform events reach
+  CloudWatch Logs up to ~40 s late, and the lookup searched streams by recent activity. It now
+  searches the revision's own streams (named `<date>/<function>[<revision>]…`) and runs at the
+  very end of the deploy, until ~60 s after the health check passed. With `auth('iam')`, where the
+  init report is the health signal, Arco waits up to ~75 s. `logs:DescribeLogStreams` is no
+  longer used.
+
 ## 0.1.3
 
 - **Changed:** `concurrency()` has no default any more: Arco lets Lambda use its own default (64)

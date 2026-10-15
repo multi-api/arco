@@ -211,7 +211,7 @@ return [
     'settings.not_set' => '{key} no está definido en {where}; no se cambió nada.',
     'settings.removed' => 'Se eliminó ->{method}(...) de {where}; aplica el valor heredado o el predeterminado.',
     'deploy.cold_start_lookup' => 'Leyendo el arranque en frío desde CloudWatch Logs (hasta {seconds} s)',
-    'deploy.verify_iam_logs_unreadable' => 'Este endpoint usa autenticación IAM, así que Arco depende del informe de inicio de Lambda, pero no pudo leer CloudWatch Logs ({error}). Eso no significa que el inicio haya fallado: revisa los logs de la función y que tu perfil tenga logs:DescribeLogStreams y logs:FilterLogEvents, y vuelve a desplegar.',
+    'deploy.verify_iam_logs_unreadable' => 'Este endpoint usa autenticación IAM, así que Arco depende del informe de inicio de Lambda, pero no pudo leer CloudWatch Logs ({error}). Eso no significa que el inicio haya fallado: revisa los logs de la función y que tu perfil tenga logs:FilterLogEvents, y vuelve a desplegar.',
     'package.corrupt' => '{path} está dañado (sus entradas zip son inconsistentes), así que no se desplegó. Cópialo de nuevo o vuelve a crearlo con "arco package".',
     'package.runtime_build_differs' => '{path} contiene el build de runtime {package_build}, pero arco.php ahora usa {build}. Se despliega el build del paquete; vuelve a crearlo para usar el actual.',
 ];

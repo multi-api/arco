@@ -117,6 +117,13 @@ final class DeployPipeline
         if ($verification->ok && $config->domains !== []) {
             $result = $deployer->attachDomains($config, $result, $preset instanceof CachesPaths ? $preset->cachedPaths() : [], $onStep);
         }
+        if ($verification->ok) {
+            try {
+                $verification = $verifier->coldStart($config, $result, $since, $verification, $onStep);
+            } catch (Throwable) {
+                // The deploy is done and verified; a missing cold start is only shown as unknown.
+            }
+        }
         return new DeployOutcome($result, $verification, $rolledBack, $package->bytes);
     }
 }

@@ -8,6 +8,7 @@ final readonly class VerificationResult
      * @param list<string> $logTail
      * @param string|null $reason translation key explaining a failure the other fields do not
      * @param array<string, string|int> $reasonParams
+     * @param float|null $healthyAt when the HTTP probe passed (Sleeper::now()), the start of the cold-start budget
      */
     public function __construct(
         public bool $ok,
@@ -19,6 +20,12 @@ final readonly class VerificationResult
         public array $logTail,
         public ?string $reason = null,
         public array $reasonParams = [],
+        public ?float $healthyAt = null,
     ) {
+    }
+
+    public function withInit(string $status, ?string $errorType, ?int $durationMs): self
+    {
+        return new self($this->ok, $this->httpStatus, $this->httpError, $status, $errorType, $durationMs, $this->logTail, $this->reason, $this->reasonParams, $this->healthyAt);
     }
 }

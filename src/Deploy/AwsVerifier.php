@@ -10,51 +10,47 @@ use Multiapi\Arco\Config\AppConfig;
 
 final class AwsVerifier implements Verifier
 {
-    /** Pages of the failure log tail. */
+    /** Pages of a log search (the failure tail, or one stream prefix of the cold-start lookup). */
     private const MAX_PAGES = 50;
-    /** Pages of a whole-group search, the last-attempt fallback of the cold-start lookup. */
-    private const FALLBACK_PAGES = 10;
-    /** The new revision's instances write the most recent streams; this many are searched. */
-    private const RECENT_STREAMS = 50;
-    private const MAX_INSTANCES = 5;
-    private const REPORT_POLL_SECONDS = 3;
-    /** Instance ids go into a quoted filter pattern; anything unusual is skipped. */
-    private const INSTANCE_ID = '/^[A-Za-z0-9._:\/\[\]$-]+$/';
-
+    private const POLL_SECONDS = 4;
     /** Seconds a last attempt may run past the deadline. */
     private const GRACE_SECONDS = 5;
+    /** A deploy that starts this soon after midnight UTC also searches the previous day's streams. */
+    private const MIDNIGHT_MARGIN_SECONDS = 300;
 
     /** CloudWatch Logs calls made by the current cold-start lookup, and its deadline. */
     private int $calls = 0;
     private float $deadline = 0.0;
 
     /**
-     * @param int $reportWaitSeconds wall-clock limit of the cold-start lookup
-     * @param int $callBudget CloudWatch Logs calls the cold-start lookup may make (FilterLogEvents has a low TPS quota)
+     * @param int $coldStartSeconds public endpoints: seconds after the probe passed to keep looking for the cold start
+     * @param int $iamReportSeconds auth('iam'): seconds to wait for the init report, the only health signal
+     * @param int $callBudget CloudWatch Logs calls one lookup may make (FilterLogEvents has a low TPS quota)
      */
     public function __construct(
         private readonly CloudWatchLogsClient $logs,
         private readonly ClientInterface $http,
         private readonly Sleeper $sleeper,
         private readonly int $attempts = 5,
-        private readonly int $reportWaitSeconds = 30,
+        private readonly int $coldStartSeconds = 60,
+        private readonly int $iamReportSeconds = 75,
         private readonly int $callBudget = 40,
     ) {
     }
 
     public function verify(AppConfig $config, DeployResult $result, string $healthPath, int $sinceMs, ?callable $onStep = null): VerificationResult
     {
-        $group = '/aws/lambda/web/' . $config->functionName();
         $reason = null;
         $reasonParams = [];
-        $step = $onStep ?? static function (string $key, array $params = []): void {
-        };
+        $healthyAt = null;
         if ($config->auth === 'iam') {
             // An unsigned probe always gets 403 from an IAM-authenticated endpoint, so the
             // platform init report is the only signal: it must exist and say success.
             [$status, $error] = [null, null];
-            $step('deploy.cold_start_lookup', ['seconds' => $this->reportWaitSeconds]);
-            [$report, $logsError] = $this->initReport($group, $result->revisionId, $sinceMs);
+            if ($onStep !== null) {
+                $onStep('deploy.cold_start_lookup', ['seconds' => $this->iamReportSeconds]);
+            }
+            [$report, $logsError] = $this->initReport($config, $result->revisionId, $sinceMs, $this->sleeper->now() + $this->iamReportSeconds);
             $ok = $report !== null && $report['status'] === 'success';
             if ($report === null) {
                 [$reason, $reasonParams] = $logsError !== null
@@ -62,13 +58,17 @@ final class AwsVerifier implements Verifier
                     : ['deploy.verify_iam_no_report', []];
             }
         } else {
+            // The probe alone decides: the cold start is read at the end of the deploy (coldStart()),
+            // since platform events reach CloudWatch Logs up to ~40 s late.
             [$status, $error] = $this->probe($result->url() . $healthPath);
-            $healthy = $status !== null && $status >= 200 && $status < 300;
-            // The report adds the cold start, or explains a failure. A CloudWatch error only leaves
-            // it unknown: the probe decides health.
-            $step('deploy.cold_start_lookup', ['seconds' => $this->reportWaitSeconds]);
-            [$report] = $this->initReport($group, $result->revisionId, $sinceMs);
-            $ok = $healthy && ($report === null || $report['status'] === 'success');
+            $ok = $status !== null && $status >= 200 && $status < 300;
+            $report = null;
+            if ($ok) {
+                $healthyAt = $this->sleeper->now();
+            } else {
+                // One look, without waiting, for an init error to explain the failure.
+                [$report] = $this->initReport($config, $result->revisionId, $sinceMs, $this->sleeper->now());
+            }
         }
 
         return new VerificationResult(
@@ -78,10 +78,28 @@ final class AwsVerifier implements Verifier
             $report['status'] ?? null,
             $report['errorType'] ?? null,
             $report['durationMs'] ?? null,
-            $ok ? [] : $this->tail($group, $report['stream'] ?? null, $sinceMs),
+            $ok ? [] : $this->tail($this->group($config), $report['stream'] ?? null, $sinceMs),
             $reason,
             $reasonParams,
+            $healthyAt,
         );
+    }
+
+    public function coldStart(AppConfig $config, DeployResult $result, int $sinceMs, VerificationResult $verification, ?callable $onStep = null): VerificationResult
+    {
+        if (! $verification->ok || $verification->initDurationMs !== null) {
+            return $verification;
+        }
+        // The budget runs from the moment the probe passed, so time spent on custom domains counts.
+        $deadline = ($verification->healthyAt ?? $this->sleeper->now()) + $this->coldStartSeconds;
+        if ($onStep !== null) {
+            $onStep('deploy.cold_start_lookup', ['seconds' => max(0, (int) round($deadline - $this->sleeper->now()))]);
+        }
+        [$report] = $this->initReport($config, $result->revisionId, $sinceMs, $deadline);
+
+        return $report === null || $report['status'] !== 'success'
+            ? $verification
+            : $verification->withInit($report['status'], $report['errorType'], $report['durationMs']);
     }
 
     /** @return array{0: ?int, 1: ?string} */
@@ -106,92 +124,111 @@ final class AwsVerifier implements Verifier
     }
 
     /**
-     * The init report of the new revision's earliest instance: the cold start the first request
-     * paid. A failed init of any new instance wins, since it fails verification.
+     * The init report of the new revision's earliest instance (by event timestamp): the cold start
+     * the first request paid. A failed init of any new instance wins.
      *
-     * The new instances write the most recently active streams, so each attempt lists those
-     * (DescribeLogStreams by LastEventTime) and searches only them, for initStart of the revision
-     * and initReport per instance. A busy group with thousands of older streams then costs a few
-     * calls instead of a scan that runs out of pages. A bounded whole-group search is the
-     * last-attempt fallback. Platform events reach CloudWatch Logs with a delay, so this polls
-     * until a wall-clock deadline, within a budget of API calls. CloudWatch errors other than a
-     * missing log group end the lookup and are returned instead of thrown.
+     * Lambda Web Functions name each instance's stream `<YYYY/MM/DD>/<function>[<revision>]<id>...`,
+     * so a stream-name prefix finds exactly the new revision's streams in any busy group. Events
+     * arrive with a lag (10 to 36 s seen), so this polls until $deadline within a call budget; once a
+     * report shows up it looks once more, because an earlier init may be ingested later. CloudWatch
+     * errors other than a missing log group end the lookup and are returned, never thrown.
      *
      * @return array{0: array{status: string, errorType: ?string, durationMs: ?int, stream: string}|null, 1: ?string}
      *     the report, or null, and the CloudWatch error that stopped the lookup
      */
-    private function initReport(string $group, string $revisionId, int $sinceMs): array
+    private function initReport(AppConfig $config, string $revisionId, int $sinceMs, float $deadline): array
     {
         $this->calls = 0;
-        $deadline = $this->deadline = $this->sleeper->now() + $this->reportWaitSeconds;
-        $startPattern = sprintf('{ $.type = "platform.initStart" && $.record.revisionId = "%s" }', $revisionId);
-        /** @var array<string, array{stream: string, timestamp: int}> $starts instanceId => first initStart */
-        $starts = [];
-        /** @var array<string, array{status: string, errorType: ?string, durationMs: ?int, stream: string}> $reports */
+        $this->deadline = $deadline;
+        $group = $this->group($config);
+        /** @var array<string, array{status: string, errorType: ?string, durationMs: ?int, stream: string, timestamp: int}> $reports instanceId => report */
         $reports = [];
+        $confirming = false;
         while (true) {
-            $lastAttempt = $this->sleeper->now() + self::REPORT_POLL_SECONDS > $deadline;
+            $lastAttempt = $this->sleeper->now() + self::POLL_SECONDS > $deadline;
             try {
-                $streams = $this->recentStreams($group, $sinceMs);
-                $found = $streams === [] ? [] : $this->events($group, $sinceMs, $startPattern, $streams);
-                if ($found === [] && $starts === [] && $lastAttempt) {
-                    $found = $this->events($group, $sinceMs, $startPattern, null, self::FALLBACK_PAGES);
-                }
-                foreach ($found as $event) {
-                    $instance = self::text(self::record($event['decoded'])['instanceId'] ?? null);
-                    if (preg_match(self::INSTANCE_ID, $instance) === 1 && (! isset($starts[$instance]) || $event['timestamp'] < $starts[$instance]['timestamp'])) {
-                        $starts[$instance] = ['stream' => $event['logStreamName'], 'timestamp' => $event['timestamp']];
-                    }
-                }
-                uasort($starts, fn (array $a, array $b) => $a['timestamp'] <=> $b['timestamp']);
-
-                $pending = array_slice(array_diff_key($starts, $reports), 0, self::MAX_INSTANCES, true);
-                if ($pending !== []) {
-                    $pattern = sprintf('{ $.type = "platform.initReport" && (%s) }', implode(' || ', array_map(
-                        fn (string $instance) => sprintf('$.record.instanceId = "%s"', $instance),
-                        array_map('strval', array_keys($pending)),
-                    )));
-                    $events = $this->events($group, $sinceMs, $pattern, array_values(array_unique(array_column($pending, 'stream'))));
-                    if ($events === [] && $lastAttempt) {
-                        // In case a report was written to another stream than its initStart.
-                        $events = $this->events($group, $sinceMs, $pattern, null, self::FALLBACK_PAGES);
-                    }
-                    foreach ($events as $event) {
-                        $record = self::record($event['decoded']);
-                        $instance = self::text($record['instanceId'] ?? null);
-                        if (isset($pending[$instance])) {
+                foreach ($this->streamPrefixes($config->functionName(), $revisionId, $sinceMs) as $prefix) {
+                    foreach ($this->filterAll($group, $sinceMs, '{ $.type = "platform.initReport" }', null, $prefix, budgeted: true) as $event) {
+                        $decoded = json_decode(self::text($event['message'] ?? null), true);
+                        $record = self::record(is_array($decoded) ? $decoded : []);
+                        $instance = self::text($record['instanceId'] ?? null) ?: self::text($event['logStreamName'] ?? null);
+                        $timestamp = is_numeric($event['timestamp'] ?? null) ? (int) $event['timestamp'] : PHP_INT_MAX;
+                        if (! isset($reports[$instance]) || $timestamp < $reports[$instance]['timestamp']) {
                             $reports[$instance] = [
                                 'status' => self::text($record['status'] ?? null) ?: 'unknown',
                                 'errorType' => isset($record['errorType']) ? self::text($record['errorType']) : null,
                                 'durationMs' => is_numeric($duration = self::metrics($record)['totalDurationMs'] ?? null) ? (int) round((float) $duration) : null,
-                                'stream' => $starts[$instance]['stream'],
+                                'stream' => self::text($event['logStreamName'] ?? null),
+                                'timestamp' => $timestamp,
                             ];
                         }
                     }
                 }
-
                 foreach ($reports as $report) {
                     if ($report['status'] !== 'success') {
-                        return [$report, null];
+                        return [self::strip($report), null];
                     }
                 }
-                $earliest = array_key_first($starts);
-                if ($earliest !== null && isset($reports[$earliest])) {
-                    return [$reports[$earliest], null];
+                if ($reports !== [] && ($confirming || $lastAttempt)) {
+                    return [self::earliest($reports), null];
                 }
+                $confirming = $reports !== [];
             } catch (AwsException $e) {
                 if ($e->getAwsErrorCode() !== 'ResourceNotFoundException') {
-                    return [self::earliestReport($starts, $reports), $e->getAwsErrorCode() ?? $e->getMessage()];
+                    return [$reports === [] ? null : self::earliest($reports), $e->getAwsErrorCode() ?? $e->getMessage()];
                 }
             }
             if ($lastAttempt || $this->calls >= $this->callBudget) {
                 break;
             }
-            $this->sleeper->sleep(self::REPORT_POLL_SECONDS);
+            $this->sleeper->sleep(self::POLL_SECONDS);
         }
 
-        // Out of time or calls: the earliest instance that did report is the best estimate left.
-        return [self::earliestReport($starts, $reports), null];
+        return [$reports === [] ? null : self::earliest($reports), null];
+    }
+
+    /**
+     * Stream-name prefixes of the revision's instances: today's UTC date, plus the previous day
+     * when the deploy started on another day or within a few minutes after midnight.
+     *
+     * @return list<string>
+     */
+    private function streamPrefixes(string $function, string $revisionId, int $sinceMs): array
+    {
+        $now = (int) floor($this->sleeper->now());
+        $since = intdiv($sinceMs, 1000);
+        $dates = [gmdate('Y/m/d', $now)];
+        if (gmdate('Y/m/d', $since) !== $dates[0]) {
+            $dates[] = gmdate('Y/m/d', $since);
+        } elseif ($since % 86400 < self::MIDNIGHT_MARGIN_SECONDS) {
+            $dates[] = gmdate('Y/m/d', $since - 86400);
+        }
+        return array_map(fn (string $date) => "$date/{$function}[{$revisionId}]", $dates);
+    }
+
+    /**
+     * @param array<string, array{status: string, errorType: ?string, durationMs: ?int, stream: string, timestamp: int}> $reports
+     * @return array{status: string, errorType: ?string, durationMs: ?int, stream: string}
+     */
+    private static function earliest(array $reports): array
+    {
+        uasort($reports, fn (array $a, array $b) => $a['timestamp'] <=> $b['timestamp']);
+        return self::strip($reports[(string) array_key_first($reports)]);
+    }
+
+    /**
+     * @param array{status: string, errorType: ?string, durationMs: ?int, stream: string, timestamp: int} $report
+     * @return array{status: string, errorType: ?string, durationMs: ?int, stream: string}
+     */
+    private static function strip(array $report): array
+    {
+        unset($report['timestamp']);
+        return $report;
+    }
+
+    private function group(AppConfig $config): string
+    {
+        return '/aws/lambda/web/' . $config->functionName();
     }
 
     /** Counts a cold-start lookup call, or refuses it when the budget or the deadline is spent. */
@@ -205,80 +242,13 @@ final class AwsVerifier implements Verifier
     }
 
     /**
-     * @param array<string, array{stream: string, timestamp: int}> $starts sorted by timestamp
-     * @param array<string, array{status: string, errorType: ?string, durationMs: ?int, stream: string}> $reports
-     * @return array{status: string, errorType: ?string, durationMs: ?int, stream: string}|null
-     */
-    private static function earliestReport(array $starts, array $reports): ?array
-    {
-        foreach (array_keys($starts) as $instance) {
-            if (isset($reports[$instance])) {
-                return $reports[$instance];
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Streams written since the deploy started, most recent first. lastEventTimestamp is
-     * updated lazily by CloudWatch, so creation and ingestion times count too.
-     *
-     * @return list<string>
-     */
-    private function recentStreams(string $group, int $sinceMs): array
-    {
-        if (! $this->mayCall()) {
-            return [];
-        }
-        $result = $this->logs->describeLogStreams([
-            'logGroupName' => $group,
-            'orderBy' => 'LastEventTime',
-            'descending' => true,
-            'limit' => self::RECENT_STREAMS,
-        ]);
-        $names = [];
-        foreach (self::rows($result['logStreams'] ?? []) as $stream) {
-            $latest = max(array_map(fn (string $field) => is_numeric($stream[$field] ?? null) ? (int) $stream[$field] : 0, ['creationTime', 'lastEventTimestamp', 'lastIngestionTime']));
-            $name = self::text($stream['logStreamName'] ?? null);
-            if ($name !== '' && $latest >= $sinceMs) {
-                $names[] = $name;
-            }
-        }
-        return $names;
-    }
-
-    /**
-     * @param list<string>|null $streams search only these log streams (in chunks of 100)
-     * @return list<array{decoded: array<string, mixed>, logStreamName: string, message: string, timestamp: int}>
-     */
-    private function events(string $group, int $sinceMs, string $pattern, ?array $streams, int $maxPages = self::MAX_PAGES): array
-    {
-        $rows = [];
-        foreach ($streams === null ? [null] : array_chunk($streams, 100) as $chunk) {
-            array_push($rows, ...$this->filterAll($group, $sinceMs, $pattern, $chunk, $maxPages, budgeted: true));
-        }
-        $events = [];
-        foreach ($rows as $event) {
-            $message = self::text($event['message'] ?? null);
-            $decoded = json_decode($message, true);
-            $events[] = [
-                'decoded' => is_array($decoded) ? self::stringKeyed($decoded) : [],
-                'logStreamName' => self::text($event['logStreamName'] ?? null),
-                'message' => $message,
-                'timestamp' => is_numeric($event['timestamp'] ?? null) ? (int) $event['timestamp'] : 0,
-            ];
-        }
-        return $events;
-    }
-
-    /**
      * Follows nextToken (bounded), since a page may be empty while matches remain: a search
      * walks the group's streams a batch at a time.
      *
      * @param list<string>|null $streams
      * @return list<array<string, mixed>>
      */
-    private function filterAll(string $group, int $sinceMs, ?string $pattern, ?array $streams = null, int $maxPages = self::MAX_PAGES, bool $budgeted = false): array
+    private function filterAll(string $group, int $sinceMs, ?string $pattern, ?array $streams = null, ?string $streamPrefix = null, int $maxPages = self::MAX_PAGES, bool $budgeted = false): array
     {
         $rows = [];
         $token = null;
@@ -292,6 +262,9 @@ final class AwsVerifier implements Verifier
             }
             if ($streams !== null) {
                 $params['logStreamNames'] = $streams;
+            }
+            if ($streamPrefix !== null) {
+                $params['logStreamNamePrefix'] = $streamPrefix;
             }
             if ($token !== null) {
                 $params['nextToken'] = $token;

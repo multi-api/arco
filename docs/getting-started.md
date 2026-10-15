@@ -159,12 +159,14 @@ Cold start: <n> ms
 ```
 
 The cold start is the init duration of the new revision's first instance, read from Lambda's
-init report in CloudWatch Logs. Arco searches the most recently written log streams and waits up
-to about 30 seconds (and at most 40 CloudWatch Logs calls) for that report; if it has not arrived
-by then, or CloudWatch Logs cannot be read (for example when throttled), the summary says
+init report in CloudWatch Logs (in the streams named after the revision). Those events reach
+CloudWatch Logs up to about 40 seconds late, so the health check alone decides whether the deploy
+passed, and the cold start is read last, after the custom domains: Arco keeps looking until about
+60 seconds after the health check passed (at most 40 CloudWatch Logs calls). If the report has not
+arrived by then, or CloudWatch Logs cannot be read (for example when throttled), the summary says
 `Cold start: not available yet` and the deploy still succeeds. With `->auth('iam')` the report is
-the only health signal, so a missing or unreadable report fails verification, with a message that
-says which of the two happened.
+the only health signal, so Arco waits up to about 75 seconds for it before deciding; a missing or
+unreadable report fails verification, with a message that says which of the two happened.
 
 While building, Arco prints each phase (copying the project, `composer install --no-dev`, the
 preset's build commands such as `php artisan event:cache`, writing the zip). Writing the zip shows
@@ -250,7 +252,7 @@ The role used by the E2E workflow lives in a dedicated test account and needs:
   `iam:PassRole` on `arn:aws:iam::*:role/arco-*`
 - `s3:*` on `arn:aws:s3:::arco-*` (and its objects)
 - `ssm:PutParameter`, `ssm:GetParameters` on `parameter/arco-example/*`
-- `logs:DescribeLogStreams`, `logs:FilterLogEvents`, `logs:GetLogEvents`
+- `logs:FilterLogEvents`, `logs:GetLogEvents`
 - `sts:GetCallerIdentity`
 
 For your own apps, scope the SSM resource to your parameters and add Secrets Manager read access
