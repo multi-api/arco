@@ -1,5 +1,7 @@
 # Arco
 
+**The bridge between PHP and AWS Lambda Web Functions.**
+
 Run Laravel and PHP on [AWS Lambda Web Functions](https://docs.aws.amazon.com/lambda/latest/dg/web-functions.html).
 
 Arco is an open-source PHP CLI by [Multiapi](https://multiapi.cl). It builds your app, uploads it and
