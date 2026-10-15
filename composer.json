@@ -1,0 +1,44 @@
+{
+    "name": "multiapi/arco",
+    "description": "Deploy PHP applications to AWS Lambda Web Functions",
+    "license": "MIT",
+    "homepage": "https://github.com/multi-api/arco",
+    "keywords": [
+        "aws",
+        "lambda",
+        "serverless",
+        "frankenphp",
+        "laravel"
+    ],
+    "authors": [
+        {
+            "name": "Multiapi",
+            "homepage": "https://multiapi.cl"
+        }
+    ],
+    "support": {
+        "issues": "https://github.com/multi-api/arco/issues",
+        "source": "https://github.com/multi-api/arco",
+        "docs": "https://github.com/multi-api/arco/tree/main/docs"
+    },
+    "type": "library",
+    "require": {
+        "php": "^8.3",
+        "ext-json": "*",
+        "ext-zip": "*",
+        "aws/aws-sdk-php": "^3.401.1",
+        "guzzlehttp/guzzle": "^7.8 || ^8.0",
+        "multiapi/arco-secrets": "self.version",
+        "symfony/console": "^7.1 || ^8.0",
+        "symfony/filesystem": "^7.1 || ^8.0",
+        "symfony/process": "^7.1 || ^8.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Multiapi\\Arco\\": "src/"
+        }
+    },
+    "bin": [
+        "bin/arco"
+    ]
+}
