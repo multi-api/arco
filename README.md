@@ -68,7 +68,6 @@ return App::make('shop')                       // function name: shop-<environme
         ->profile('my-company-prod')             // AWS profile used to deploy this environment
         ->domain(['shop.example.com', 'api.shop.example.com'])
         ->dns('my-company-dns')                  // Route 53 zone lives in another account (optional)
-        ->concurrency(16)                        // requests each instance handles at once
         ->maxInstances(10)                       // cap on running instances (and DB connections)
         ->variables([
             'APP_ENV' => 'production',
@@ -93,7 +92,7 @@ The main options:
 | Option | Default | What it does |
 |---|---|---|
 | `region()` | — (required) | AWS region of the function |
-| `concurrency(int)` | 16 | Requests one instance (2 vCPU / 2 GB) handles at once; more traffic starts more instances |
+| `concurrency(int)` | AWS default (64) | Cap on requests per instance (2 vCPU / 2 GB); Lambda adds instances as traffic grows |
 | `maxInstances(int)` | no cap | Maximum running instances |
 | `rateLimit(int)` | no limit | Requests per second; extra requests get 429 |
 | `timeout(int)` | 30 | Seconds per request (3–900) |

@@ -20,7 +20,7 @@ final class RevisionFactory
             $s3Object['versionId'] = $versionId;
         }
 
-        $revision = ['description' => 'Deployed by Arco'];
+        $revision = ['description' => 'Deployed by Arco ' . Arco::version()];
         if ($config->kmsKey !== null) {
             $revision['kmsKeyArn'] = $config->kmsKey;
         }
@@ -31,7 +31,6 @@ final class RevisionFactory
         $revision['serviceConfig'] = [
             'executionRoleArn' => $roleArn,
             'timeoutSeconds' => $config->timeout,
-            'maxConcurrencyPerEnvironment' => $config->concurrency,
             // Lambda rejects empty values; an unset variable reads the same way in PHP (env() → null/'' default).
             'environmentVariables' => array_filter($variables, fn (string $value) => $value !== ''),
             'telemetryConfig' => ['loggingConfig' => [
@@ -39,6 +38,10 @@ final class RevisionFactory
                 'systemLogLevel' => 'INFO',
             ]],
         ];
+        if ($config->concurrency !== null) {
+            // Only an upper bound: Lambda also applies its own dynamic per-instance limit.
+            $revision['serviceConfig']['maxConcurrencyPerEnvironment'] = $config->concurrency;
+        }
         return $revision;
     }
 

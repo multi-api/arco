@@ -3,6 +3,20 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.1.3
+
+- **Changed:** `concurrency()` has no default any more: Arco lets Lambda use its own default (64)
+  and its dynamic per-instance limit. In a load test, forcing 32 started three times as many
+  instances (41 vs 13) for the same throughput and latency. Set `concurrency()` only for CPU-heavy apps.
+- **Changed:** AWS resources are tagged only with `arco:app` and `arco:environment`. The `arco:version`
+  tag made every Arco upgrade update the CloudFront stack (minutes of deploy time); the Arco version
+  is now in each revision's description ("Deployed by Arco 0.1.3").
+- **Changed:** more folders and files are never packaged: `.ai`, `.junie`, `.cursor`, `.windsurf`,
+  `.gemini`, `.codex`, `.aider*` and `.mcp.json` (AI assistant config).
+- **Fixed:** `maxInstances()` must be 2–10000 and `rateLimit()` 100–1000 in steps of 100 or
+  2000–10000 in steps of 1000, as AWS requires. Before, values AWS rejects (like `maxInstances(1)`)
+  passed validation and failed during deploy.
+
 ## 0.1.2
 
 - README: tagline.

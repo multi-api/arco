@@ -16,7 +16,8 @@ final readonly class AppConfig
         public string $app,
         public string $environment,
         public ?string $region,
-        public int $concurrency,
+        /** null: AWS's default (64) with its dynamic per-instance limit */
+        public ?int $concurrency,
         public int $timeout,
         public ?int $maxInstances,
         public ?int $rateLimit,

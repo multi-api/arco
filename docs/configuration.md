@@ -43,10 +43,10 @@ Settings, `variables()`, `permissions()`, `runtime()` and the custom domain meth
 |---|---|---|
 | `App::make(name)` | required | App name. Function name is `<app>-<env>` (max 64 chars, lowercase letters, digits, hyphens, starting with a letter) |
 | `region(string)` | required | AWS region; must be one of us-east-1, us-east-2, us-west-2, ap-northeast-1, eu-west-1 |
-| `concurrency(int)` | 16 | Requests each instance handles at once: revision `maxConcurrencyPerEnvironment` (1 to 128) |
+| `concurrency(int)` | AWS default (64) | Upper bound of requests each instance handles at once: revision `maxConcurrencyPerEnvironment` (1 to 128). Lambda applies its own dynamic limit below it |
 | `timeout(int)` | 30 | Revision `timeoutSeconds` (3 to 900) |
-| `maxInstances(int)` | unset | Maximum running instances of the function: endpoint `scalingConfig.maxEnvironments` (>= 1). `maxEnvironments(int)` is accepted as an alias |
-| `rateLimit(int)` | unset | Endpoint `throttleConfig.rateLimit` (requests per second, >= 1) |
+| `maxInstances(int)` | unset | Maximum running instances of the function: endpoint `scalingConfig.maxEnvironments` (2 to 10000). `maxEnvironments(int)` is accepted as an alias |
+| `rateLimit(int)` | unset | Endpoint `throttleConfig.rateLimit` (requests per second: 100 to 1000 in steps of 100, or 2000 to 10000 in steps of 1000) |
 | `auth('public'\|'iam')` | `public` | Endpoint `authType`: `public` is `ApplicationManaged`, `iam` is `IamAuth` |
 | `logLevel(string)` | `info` | Revision log level: trace, debug, info, warn, error, fatal |
 | `role(arn)` | managed | Your own execution role ARN instead of the managed `arco-<app>-<env>` role |
@@ -70,20 +70,23 @@ reserved by Lambda are rejected: `_HANDLER`, `_X_AMZN_TRACE_ID`, `AWS_REGION`, `
 
 ### Sizing
 
-`concurrency()` is how many requests one instance serves at once; more traffic adds instances (up to
-`maxInstances()`). The default of 16 comes from a load test of a Laravel app (full Inertia page on
-`/login`) in Docker with Lambda's limits (2 vCPU, 2 GB memory, read-only filesystem, 512 MB `/tmp`),
-HTTP/1.1 keep-alive:
+Lambda decides how many requests each instance gets with a dynamic limit based on the instance's
+resource usage, and keeps spare warm instances ahead of traffic. `concurrency()` only caps that limit
+(AWS default: 64), so Arco leaves it unset unless you set it.
 
-| concurrency | throughput | p95 latency |
-|---|---|---|
-| 16 | ~190 req/s | 165 ms |
-| 32 | ~127 req/s | 475 ms |
-| 64 | ~101 req/s | ~1 s |
+Measured on a production Laravel app, through CloudFront over HTTP/2, ramping to 100 concurrent
+requests (`/up`):
 
-At 16 both vCPUs were already busy (~200% CPU), so more concurrent requests only queued. Memory stayed
-around 575 MB even at 64, so CPU, not memory, is the limit. I/O-heavy apps (waiting on databases or
-APIs) can go higher; CPU-heavy apps should go lower. Measure with your own app.
+| `concurrency` | throughput at 100 concurrent | p95 | errors | instances started |
+|---|---|---|---|---|
+| 32 | 723 req/s | 142 ms | 0 | 41 |
+| unset (AWS 64) | 729 req/s | 138 ms | 0 | 13 |
+
+Forcing a low value gave the same throughput with three times the instances (more memory billed, more
+database connections). A single instance with no Lambda routing in front of it (Docker, 2 vCPU / 2 GB,
+full Inertia page) peaked at ~190 req/s around 16 concurrent requests, CPU-bound; so set a lower
+`concurrency()` only for CPU-heavy apps whose latency grows with load. Use `maxInstances()` to cap
+instances (cost, database connections).
 
 ## Changing settings from the CLI
 
@@ -102,8 +105,8 @@ vendor/bin/arco set timeout 60 --app          # app level (all environments)
 | Key | Method | Accepted values |
 |---|---|---|
 | `concurrency` | `concurrency(int)` | 1 to 128 |
-| `max-instances` | `maxInstances(int)` | >= 1 |
-| `rate-limit` | `rateLimit(int)` | >= 1 |
+| `max-instances` | `maxInstances(int)` | 2 to 10000 |
+| `rate-limit` | `rateLimit(int)` | 100–1000 (steps of 100) or 2000–10000 (steps of 1000) |
 | `timeout` | `timeout(int)` | 3 to 900 |
 | `log-level` | `logLevel(string)` | trace, debug, info, warn, error, fatal |
 
@@ -263,8 +266,9 @@ Evaluation order for each path:
 4. Otherwise, if an `exclude` pattern matches (always-excluded, preset or yours), the path is skipped.
 
 Always excluded (an `include` can override them): `.git/**`, `.arco/**`, `node_modules/**`,
-`vendor/**`, editor, CI and agent folders (`.idea`, `.vscode`, `.fleet`, `.zed`, `.github`, `.claude`,
-`.superpowers`), `.DS_Store` files, `arco-*.zip` at the project root, `storage/framework/down` (Laravel's maintenance-mode flag; shipping it would put the
+`vendor/**`, editor and CI folders (`.idea`, `.vscode`, `.fleet`, `.zed`, `.github`), AI assistant config
+(`.claude`, `.superpowers`, `.ai`, `.junie`, `.cursor`, `.windsurf`, `.gemini`, `.codex`, `.aider*`,
+`.mcp.json`), `.DS_Store` files, `arco-*.zip` at the project root, `storage/framework/down` (Laravel's maintenance-mode flag; shipping it would put the
 deployed app in maintenance mode). `vendor/` is rebuilt in the staging copy with
 `composer install --no-dev --optimize-autoloader`. A root `auth.json` (Composer credentials for
 private repositories) is copied so that install can use it, then deleted from the staging copy

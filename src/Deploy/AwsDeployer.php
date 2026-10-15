@@ -147,7 +147,9 @@ final class AwsDeployer implements Deployer
     /** @return array<string, string> */
     private static function tags(AppConfig $config): array
     {
-        return ['arco:app' => $config->app, 'arco:environment' => $config->environment, 'arco:version' => Arco::version()];
+        // Stable on purpose: a tag change would update every tagged resource (and the CloudFront stack) on
+        // each Arco upgrade. The Arco version is in each revision's description instead.
+        return ['arco:app' => $config->app, 'arco:environment' => $config->environment];
     }
 
     private function customDomains(AppConfig $config): CustomDomains

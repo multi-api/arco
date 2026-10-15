@@ -140,8 +140,11 @@ final class Validator
         [$key, $ok] = match ($setting) {
             'concurrency' => ['validation.concurrency', is_int($value) && $value >= 1 && $value <= 128],
             'timeout' => ['validation.timeout', is_int($value) && $value >= 3 && $value <= 900],
-            'maxInstances' => ['validation.max_instances', is_int($value) && $value >= 1],
-            'rateLimit' => ['validation.rate_limit', is_int($value) && $value >= 1],
+            // AWS limits: maxEnvironments 2–10,000; rateLimit a multiple of 100 up to 1,000, then a
+            // multiple of 1,000 up to 10,000 (0 would block all traffic, so Arco does not accept it).
+            'maxInstances' => ['validation.max_instances', is_int($value) && $value >= 2 && $value <= 10000],
+            'rateLimit' => ['validation.rate_limit', is_int($value) && $value >= 100 && $value <= 10000
+                && $value % ($value <= 1000 ? 100 : 1000) === 0],
             'logLevel' => ['validation.log_level', in_array($value, self::LOG_LEVELS, true)],
             default => throw new \InvalidArgumentException("Unknown setting $setting."),
         };

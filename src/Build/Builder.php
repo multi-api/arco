@@ -10,7 +10,10 @@ final class Builder
     public const ALWAYS_EXCLUDED = [
         '.git/**', '.arco/**', 'node_modules/**', 'vendor/**', 'storage/framework/down',
         // Editor, CI and agent folders: never needed at runtime and often large.
-        '.idea/**', '.vscode/**', '.fleet/**', '.zed/**', '.github/**', '.claude/**', '.superpowers/**', '**/.DS_Store',
+        '.idea/**', '.vscode/**', '.fleet/**', '.zed/**', '.github/**', '**/.DS_Store',
+        // AI assistant config and context (Claude, Cursor, Junie, Windsurf, Gemini, Codex, Aider, MCP).
+        '.claude/**', '.superpowers/**', '.ai/**', '.junie/**', '.cursor/**', '.windsurf/**', '.gemini/**', '.codex/**',
+        '.aider*', '.mcp.json',
         // Packages written by `arco package` at the project root (its old default output).
         'arco-*.zip',
     ];

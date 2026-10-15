@@ -5,7 +5,7 @@ namespace Multiapi\Arco\Config;
 final class ConfigResolver
 {
     private const DEFAULTS = [
-        'concurrency' => 16,
+        'concurrency' => null,
         'timeout' => 30,
         'maxInstances' => null,
         'rateLimit' => null,
@@ -122,7 +122,7 @@ final class ConfigResolver
             app: self::nullableString($raw['name'] ?? null) ?? '',
             environment: $environment,
             region: self::nullableString($raw['region'] ?? null),
-            concurrency: (int) $setting('concurrency'),
+            concurrency: self::nullableInt($setting('concurrency')),
             timeout: (int) $setting('timeout'),
             maxInstances: self::nullableInt($setting('maxInstances')),
             rateLimit: self::nullableInt($setting('rateLimit')),
