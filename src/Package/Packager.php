@@ -63,7 +63,7 @@ final class Packager
         }
 
         $hash = hash('sha256', $hashInput);
-        $manifest = new PackageManifest($config->app, $config->environment, $preset->name(), $runtimeBuild, $hash, $bytes, Arco::VERSION, gmdate('Y-m-d\\TH:i:s\\Z'));
+        $manifest = new PackageManifest($config->app, $config->environment, $preset->name(), $runtimeBuild, $hash, $bytes, Arco::version(), gmdate('Y-m-d\\TH:i:s\\Z'));
 
         $path = $build->stagingDir . '/package.zip';
         $zip = new ZipArchive();

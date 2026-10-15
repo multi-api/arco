@@ -3,6 +3,11 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.1.1
+
+- `arco --version`, the `arco:version` tag on AWS resources and the package manifest now report the
+  installed version from Composer (0.1.0 said `0.1.0-dev`).
+
 ## 0.1.0 — first public release
 
 Deploy Laravel and PHP apps to AWS Lambda Web Functions with FrankenPHP.

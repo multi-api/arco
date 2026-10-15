@@ -59,8 +59,8 @@ final class PackageReader
         }
 
         $warnings = [];
-        if ($manifest->arcoVersion !== Arco::VERSION) {
-            $warnings[] = ['package.version_differs', ['path' => $package->path, 'package_version' => $manifest->arcoVersion, 'version' => Arco::VERSION]];
+        if ($manifest->arcoVersion !== Arco::version()) {
+            $warnings[] = ['package.version_differs', ['path' => $package->path, 'package_version' => $manifest->arcoVersion, 'version' => Arco::version()]];
         }
         if ($manifest->runtimeBuild !== $runtimeBuild) {
             $warnings[] = ['package.runtime_build_differs', [

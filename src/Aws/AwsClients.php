@@ -30,7 +30,7 @@ final class AwsClients
         $config = [
             'region' => $region,
             'version' => 'latest',
-            'ua_append' => ['arco/' . Arco::VERSION],
+            'ua_append' => ['arco/' . Arco::version()],
         ];
         if ($profile !== null) {
             $config['credentials'] = self::credentialsFor($profile, $region);

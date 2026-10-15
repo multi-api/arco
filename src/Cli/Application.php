@@ -15,7 +15,7 @@ final class Application extends SymfonyApplication
 
     public static function create(): self
     {
-        $app = new self('Arco', Arco::VERSION);
+        $app = new self('Arco', Arco::version());
         $app->addCommands([
             new \Multiapi\Arco\Commands\InitCommand(),
             new \Multiapi\Arco\Commands\DeployCommand(),
