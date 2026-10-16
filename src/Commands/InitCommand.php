@@ -10,6 +10,8 @@ use Multiapi\Arco\Cli\ArcoCommand;
 use Multiapi\Arco\Cli\UserError;
 use Multiapi\Arco\Commands\Concerns\ChoosesDns;
 use Multiapi\Arco\Config\ArcoFileEditor;
+use Multiapi\Arco\Config\ConfigLoader;
+use Multiapi\Arco\Config\ConfigResolver;
 use Multiapi\Arco\Config\Validator;
 use Multiapi\Arco\Deploy\DeployCommands;
 use Symfony\Component\Console\Attribute\AsCommand;
@@ -97,6 +99,7 @@ final class InitCommand extends ArcoCommand
         self::ignoreLocalState("$dir/.gitignore");
 
         $io->success($this->t('init.created', ['preset' => $preset->name()]));
+        $this->showWarnings($io, $path, $environments);
         if ($secretKeys !== []) {
             $io->writeln($this->t('init.secrets_next'));
             foreach ($environments as $environment) {
@@ -107,6 +110,28 @@ final class InitCommand extends ArcoCommand
         }
         $io->writeln($this->t('init.deploy_next', ['environment' => $environments[0] ?? 'production']));
         return self::SUCCESS;
+    }
+
+    /**
+     * The validation warnings of the written arco.php (deploy commands that cannot work on Lambda...),
+     * once each across environments, as `arco deploy` will show them.
+     *
+     * @param list<string> $environments
+     */
+    private function showWarnings(SymfonyStyle $io, string $path, array $environments): void
+    {
+        $raw = (new ConfigLoader())->load($path);
+        $shown = [];
+        foreach ($environments as $environment) {
+            $validation = (new Validator())->validate(ConfigResolver::resolve($raw, $environment), dirname($path));
+            foreach ($validation->warnings as $warning) {
+                $message = $this->t($warning['key'], $warning['params']);
+                if (! isset($shown[$message])) {
+                    $shown[$message] = true;
+                    $io->warning($message);
+                }
+            }
+        }
     }
 
     public static function slug(string $value): string

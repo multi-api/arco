@@ -6,6 +6,8 @@ use Multiapi\Arco\Arco;
 use Multiapi\Arco\Binary\BinaryException;
 use Multiapi\Arco\Binary\ElfInspector;
 use Multiapi\Arco\Binary\RuntimeManifest;
+use Multiapi\Arco\Build\PresetRegistry;
+use Multiapi\Arco\Build\RunsCommands;
 use Multiapi\Arco\ConsoleRuntime\ArgumentSplitter;
 use Multiapi\Arco\Secrets\InvalidReference;
 use Multiapi\Arco\Secrets\SecretReference;
@@ -26,8 +28,26 @@ final class Validator
     private const HOSTNAME = '/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/';
     private const CERTIFICATE = '/^arn:aws[a-z-]*:acm:us-east-1:\d{12}:certificate\/[A-Za-z0-9-]+$/';
     public const MAX_DOMAINS = 10;
+    /**
+     * Artisan commands that write into the code directory (bootstrap/cache, public/storage), which is
+     * read-only on Lambda (/var/task): they throw. view:cache works (views compile under /tmp).
+     */
+    private const WRITES_CODE_DIRECTORY = ['config:cache', 'route:cache', 'event:cache', 'optimize', 'storage:link'];
+    /**
+     * Artisan commands whose deletes in the read-only code directory fail silently: they exit 0 and
+     * change nothing (optimize:clear's cache:clear and view:clear steps are the exception).
+     */
+    private const NO_EFFECT = ['config:clear', 'route:clear', 'event:clear', 'optimize:clear'];
+    /** Artisan commands that ask for confirmation in production (ConfirmableTrait) unless given --force. */
+    private const CONFIRMS_IN_PRODUCTION = [
+        'migrate', 'migrate:fresh', 'migrate:refresh', 'migrate:reset', 'migrate:rollback',
+        'db:seed', 'db:wipe', 'key:generate', 'queue:clear',
+    ];
+    /** Artisan commands that drop every table. */
+    private const DESTROYS_DATA = ['migrate:fresh', 'migrate:refresh', 'migrate:reset', 'db:wipe'];
 
-    public function __construct(private readonly ?RuntimeManifest $manifest = null)
+    /** @param PresetRegistry|null $presets detects the app's preset for the deploy command checks */
+    public function __construct(private readonly ?RuntimeManifest $manifest = null, private readonly ?PresetRegistry $presets = null)
     {
     }
 
@@ -110,15 +130,25 @@ final class Validator
 
         self::validateDomains($config, $result);
 
+        // The script every command goes through (artisan), as the console runtime runs it: php <entry> <args>.
+        $entry = null;
+        if ($config->deployCommands !== []) {
+            $preset = ($this->presets ?? PresetRegistry::default())->detect($projectDir);
+            $entry = $preset instanceof RunsCommands ? $preset->commandEntry() : null;
+        }
         foreach ($config->deployCommands as $index => $command) {
             if (trim($command) === '') {
                 $result->error('validation.deploy_command_empty', ['index' => $index]);
                 continue;
             }
             try {
-                ArgumentSplitter::split($command);
+                $arguments = ArgumentSplitter::split($command);
             } catch (\InvalidArgumentException $e) {
                 $result->error('validation.deploy_command', ['command' => $command, 'reason' => $e->getMessage()]);
+                continue;
+            }
+            if ($entry !== null) {
+                self::addDeployCommandWarnings($result, $command, $arguments, $entry);
             }
         }
 
@@ -172,6 +202,41 @@ final class Validator
             default => throw new \InvalidArgumentException("Unknown setting $setting."),
         };
         return $ok ? null : ['key' => $key, 'params' => ['value' => $value]];
+    }
+
+    /**
+     * Warnings for deploy commands that cannot work on Lambda: the first failing command stops the deploy.
+     *
+     * @param list<string> $arguments
+     * @param string $entry the script the runtime puts before the arguments (artisan)
+     */
+    private static function addDeployCommandWarnings(ValidationResult $result, string $command, array $arguments, string $entry): void
+    {
+        // The runtime runs `php artisan <args>`: `artisan migrate` would run `php artisan artisan migrate`
+        // and fail. Warned about, not rewritten; the command after the prefix is checked as well.
+        $prefix = ($arguments[0] ?? null) === 'php' ? 1 : 0;
+        if (($arguments[$prefix] ?? null) === $entry) {
+            $result->warning('validation.deploy_command_artisan_prefix', ['command' => $command, 'entry' => $entry]);
+            $arguments = array_slice($arguments, $prefix + 1);
+        }
+        if ($entry !== 'artisan') {
+            return;
+        }
+        $name = $arguments[0] ?? '';
+        $params = ['command' => $command, 'name' => $name];
+        if (in_array($name, self::WRITES_CODE_DIRECTORY, true)) {
+            $result->warning('validation.deploy_command_read_only', $params);
+        }
+        if (in_array($name, self::NO_EFFECT, true)) {
+            $result->warning('validation.deploy_command_no_effect', $params);
+        }
+        if (in_array($name, self::DESTROYS_DATA, true)) {
+            $result->warning('validation.deploy_command_destroys_data', $params);
+        }
+        $forced = array_filter($arguments, fn (string $a): bool => $a === '--force' || str_starts_with($a, '--force='));
+        if (in_array($name, self::CONFIRMS_IN_PRODUCTION, true) && $forced === []) {
+            $result->warning('validation.deploy_command_needs_force', $params);
+        }
     }
 
     private static function addSettingError(ValidationResult $result, string $setting, int|string|null $value): void

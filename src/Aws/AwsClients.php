@@ -7,6 +7,7 @@ use Aws\CloudFormation\CloudFormationClient;
 use Aws\CloudWatchLogs\CloudWatchLogsClient;
 use Aws\Credentials\CredentialProvider;
 use Aws\Credentials\Credentials;
+use Aws\Credentials\CredentialSources;
 use Aws\Exception\CredentialsException;
 use GuzzleHttp\Promise\Create;
 use Aws\Iam\IamClient;
@@ -22,6 +23,9 @@ use Multiapi\Arco\Arco;
 
 final class AwsClients
 {
+    /** Credential sources whose account was set by AWS when it issued them. */
+    private const ACCOUNT_BOUND_SOURCES = [CredentialSources::PROFILE_SSO, CredentialSources::PROFILE_SSO_LEGACY, CredentialSources::STS_ASSUME_ROLE];
+
     private Sdk $sdk;
     private ?string $accountId = null;
 
@@ -204,10 +208,23 @@ final class AwsClients
     public function cloudFormation(): CloudFormationClient { return $this->sdk->createCloudFormation(); }
     public function route53(): Route53Client { return $this->sdk->createRoute53(); }
 
+    /**
+     * The account of these credentials, read once per process. IAM Identity Center (SSO) and AssumeRole
+     * credentials carry the account AWS issued them for (sso:GetRoleCredentials for sso_account_id, the
+     * AssumedRoleUser ARN), so no sts:GetCallerIdentity round trip is needed. Other credentials (keys,
+     * credential_process, environment) may state an account nothing checked: those ask STS.
+     */
     public function accountId(): string
     {
         if ($this->accountId === null) {
-            $account = $this->sts()->getCallerIdentity()['Account'];
+            $sts = $this->sts();
+            $credentials = $sts->getCredentials()->wait();
+            $account = $credentials instanceof Credentials && in_array($credentials->getSource(), self::ACCOUNT_BOUND_SOURCES, true)
+                ? $credentials->getAccountId()
+                : null;
+            if (! is_string($account) || preg_match('/^\d{12}$/D', $account) !== 1) {
+                $account = $sts->getCallerIdentity()['Account'];
+            }
             if (! is_string($account)) {
                 throw new \UnexpectedValueException('sts:GetCallerIdentity returned no Account.');
             }

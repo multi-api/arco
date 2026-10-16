@@ -55,7 +55,8 @@ final class Handler
             if (! is_string($command) || trim($command) === '') {
                 throw new InvalidEvent('The event needs a "command" string, e.g. {"command": "migrate:status"}.');
             }
-            ($this->log)(['arco' => 'command', 'command' => $command]);
+            // Audit trail, with the values of secret-looking options (--password=...) masked.
+            ($this->log)(['arco' => 'command', 'command' => SecretArguments::maskLine($command)]);
             try {
                 $arguments = ArgumentSplitter::split($command);
             } catch (\InvalidArgumentException $e) {
@@ -94,7 +95,7 @@ final class Handler
             && ! $result->timedOut
             && preg_match('/^' . preg_quote(self::TINKER_MARKER, '/') . '/m', $result->output) === 1;
         if ($result->exitCode !== 0 && ! $statementThrew) {
-            ($this->log)(['arco' => 'command_failed', 'arguments' => $arguments, 'exitCode' => $result->exitCode, 'timedOut' => $result->timedOut, 'durationMs' => $durationMs]);
+            ($this->log)(['arco' => 'command_failed', 'arguments' => SecretArguments::mask($arguments), 'exitCode' => $result->exitCode, 'timedOut' => $result->timedOut, 'durationMs' => $durationMs]);
         }
         return ['exitCode' => $result->exitCode, 'output' => $output];
     }

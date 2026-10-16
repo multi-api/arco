@@ -247,6 +247,15 @@ works in scripts and CI. A command can run up to `consoleTimeout()` (15 minutes 
 `arco logs --source=console --follow`. For a plain PHP app, name the script: `arco command "bin/console app:sync"`.
 The console function must exist: run `arco deploy` first.
 
+Every command line is written to the console function's log (CloudWatch), as an audit trail. Values of
+options whose name has a secret-looking word (`password`, `passwd`, `secret`, `token`, `key`, `apikey`,
+`credential`, `auth`, `private`, in any case; words split on `-`, `_` and camelCase, so `--api-key`,
+`--db-password` and `--auth-token` count but `--author` does not) are masked as `***`, in both
+`--name=value` and `--name value` forms; the rest of the line is kept. A line with an unclosed quote is
+logged only up to the first such option. The command's own output also goes to that log. Do not
+pass secrets as arguments: put them in `variables()` with an `arco-ssm:` reference (`arco secret:set`)
+and read them from the environment.
+
 The console function has no FrankenPHP binary in its zip (Lambda allows 250 MB for classic functions).
 Each new execution environment downloads it once from the code bucket (`runtime/...`) and verifies its
 SHA-256. Measured in the Lambda image: about 2.5 s for a 160 MB binary on a cold start, plus about 0.4 s
@@ -260,6 +269,13 @@ per command on a warm one.
 
 or `arco deploy --migrate` for one deploy (Laravel only; `--no-deploy-commands` skips them, and the two
 flags cannot be combined). `arco init` proposes `migrate --force` for Laravel apps with a server database.
+
+Keep `--force`: in production Laravel asks to confirm `migrate`, nobody can answer and the deploy stops.
+Write `migrate`, not `artisan migrate`: Arco runs artisan for you. Commands that write into the code
+directory (`config:cache`, `route:cache`, `event:cache`, `optimize`, `storage:link`) fail on Lambda, where
+`/var/task` is read-only; the build already runs `event:cache`. `config:clear`, `route:clear`,
+`event:clear` and `optimize:clear` do nothing there. `arco deploy` warns about all of these (see
+[Deploy commands](configuration.md#deploy-commands)).
 
 Deploy commands run on the console version published by this deploy, after the new code is uploaded and
 **before** traffic moves, one by one, with their output printed. If one fails, the deploy stops, the
