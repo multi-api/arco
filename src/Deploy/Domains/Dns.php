@@ -9,6 +9,9 @@ use Multiapi\Arco\Deploy\Sleeper;
 /** Route 53 in the account that holds the zones (the deploy account or the dns() profile's). */
 final class Dns
 {
+    /** The Route 53 operations made here: an error on one of them comes from the DNS profile's clients. */
+    public const OPERATIONS = ['ListResourceRecordSets', 'ChangeResourceRecordSets', 'GetChange', 'ListHostedZonesByName'];
+
     private const POLL = 5;
 
     /** @var list<HostedZone>|null */

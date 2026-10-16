@@ -10,9 +10,16 @@ use Multiapi\Arco\Cli\ArcoCommand;
 use Multiapi\Arco\Cli\StepPrinter;
 use Multiapi\Arco\Cli\UserError;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
+use Multiapi\Arco\Config\AppConfig;
 use Multiapi\Arco\Config\ArcoFileEditor;
+use Multiapi\Arco\Console\CommandResult;
+use Multiapi\Arco\Console\Console;
+use Multiapi\Arco\Console\LambdaConsole;
 use Multiapi\Arco\Deploy\AwsDeployer;
 use Multiapi\Arco\Deploy\AwsVerifier;
+use Multiapi\Arco\Deploy\CommandPlan;
+use Multiapi\Arco\Deploy\DeployCommandFailed;
+use Multiapi\Arco\Deploy\DeployCommands;
 use Multiapi\Arco\Deploy\Deployer;
 use Multiapi\Arco\Deploy\DeployPipeline;
 use Multiapi\Arco\Deploy\Sleeper;
@@ -20,6 +27,7 @@ use Multiapi\Arco\Deploy\Verifier;
 use Multiapi\Arco\Package\PackageReader;
 use Multiapi\Arco\Secrets\SecretResolver;
 use Symfony\Component\Console\Attribute\AsCommand;
+use Symfony\Component\Console\Formatter\OutputFormatter;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
@@ -37,6 +45,8 @@ final class DeployCommand extends ArcoCommand
     /** @var Closure(AwsClients): Verifier */
     private Closure $verifierFactory;
     private PresetRegistry $presets;
+    /** @var Closure(AwsClients, AppConfig): Console */
+    private Closure $consoleFactory;
 
     public function __construct(
         ?Closure $awsFactory = null,
@@ -44,12 +54,14 @@ final class DeployCommand extends ArcoCommand
         ?Closure $deployerFactory = null,
         ?Closure $verifierFactory = null,
         ?PresetRegistry $presets = null,
+        ?Closure $consoleFactory = null,
     ) {
         $this->awsFactory = $awsFactory ?? fn (?string $profile, string $region) => new AwsClients($profile, $region);
         $this->pipeline = $pipeline ?? DeployPipeline::default();
         $this->deployerFactory = $deployerFactory ?? fn (AwsClients $aws, ?AwsClients $dns = null, bool $forceDns = false) => new AwsDeployer($aws, new Sleeper(), $dns, $forceDns);
         $this->verifierFactory = $verifierFactory ?? fn (AwsClients $aws) => new AwsVerifier($aws->logs(), new Client(), new Sleeper());
         $this->presets = $presets ?? PresetRegistry::default();
+        $this->consoleFactory = $consoleFactory ?? fn (AwsClients $aws, AppConfig $config) => new LambdaConsole($aws->lambda(LambdaConsole::clientOptions($config)));
         parent::__construct();
     }
 
@@ -60,16 +72,31 @@ final class DeployCommand extends ArcoCommand
             ->addOption('yes', 'y', InputOption::VALUE_NONE, 'Do not ask for confirmation')
             ->addOption('dns-profile', null, InputOption::VALUE_REQUIRED, 'AWS profile whose Route 53 holds the DNS zones of the custom domains')
             ->addOption('force-dns', null, InputOption::VALUE_NONE, 'Replace existing DNS records of the custom domains that point elsewhere')
-            ->addOption('package', null, InputOption::VALUE_REQUIRED, 'Deploy a zip written by "arco package" instead of building');
+            ->addOption('package', null, InputOption::VALUE_REQUIRED, 'Deploy a zip written by "arco package" instead of building')
+            ->addOption('migrate', null, InputOption::VALUE_NONE, 'Run "migrate --force" before traffic moves (added to the deploy commands)')
+            ->addOption('no-deploy-commands', null, InputOption::VALUE_NONE, 'Skip the deploy commands of arco.php');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $io = new SymfonyStyle($input, $output);
         $steps = new StepPrinter($io, $this->t(...), $input->isInteractive() && $output->isDecorated());
+        /** @var list<string> $ran deploy commands that ran, for the messages of a later failure */
+        $ran = [];
+        $config = null;
         try {
             $config = $this->loadTarget($input, $io);
             $preset = $this->presets->detect($this->projectDir());
+
+            $migrate = (bool) $input->getOption('migrate');
+            $skipCommands = (bool) $input->getOption('no-deploy-commands');
+            if ($migrate && $skipCommands) {
+                throw new UserError($this->t('deploy.migrate_conflict'));
+            }
+            if ($migrate && $preset->name() !== 'laravel') {
+                throw new UserError($this->t('deploy.migrate_laravel_only'));
+            }
+            $commands = DeployCommands::resolve($config->deployCommands, $migrate, $skipCommands);
 
             // A prebuilt package is checked before any AWS call, so a wrong file fails fast.
             $package = null;
@@ -114,15 +141,23 @@ final class DeployCommand extends ArcoCommand
             }
 
             $verifier = ($this->verifierFactory)($aws);
+            $plan = $commands === [] ? null : new CommandPlan($commands, ($this->consoleFactory)($aws, $config), function (string $command, CommandResult $result) use ($output, $steps, &$ran): void {
+                $ran[] = $command;
+                $steps->finish();
+                $output->write($result->output, false, OutputInterface::OUTPUT_RAW);
+                if ($result->output !== '' && ! str_ends_with($result->output, "\n")) {
+                    $output->writeln('');
+                }
+            });
             if ($package?->manifest !== null) {
                 $steps('deploy.using_package', [
                     'path' => $package->path,
                     'created' => $package->manifest->createdAt,
                     'hash' => substr($package->hash, 0, 12),
                 ]);
-                $outcome = $this->pipeline->deployPackage($config, $preset, $package, $deployer, $verifier, $steps);
+                $outcome = $this->pipeline->deployPackage($config, $preset, $package, $deployer, $verifier, $steps, $plan);
             } else {
-                $outcome = $this->pipeline->deploy($config, $preset, $this->projectDir(), $deployer, $verifier, $steps);
+                $outcome = $this->pipeline->deploy($config, $preset, $this->projectDir(), $deployer, $verifier, $steps, $plan);
             }
 
             if (! $outcome->verification->ok) {
@@ -140,6 +175,7 @@ final class DeployCommand extends ArcoCommand
                 $io->writeln($outcome->rolledBack
                     ? $this->t('deploy.rolled_back', ['revision' => (string) $outcome->result->previousRevisionId])
                     : $this->t('deploy.not_rolled_back'));
+                $this->commandsNotUndone($io, $outcome->commandsRan, $config->environment);
                 return self::FAILURE;
             }
 
@@ -163,14 +199,57 @@ final class DeployCommand extends ArcoCommand
                     : $io->warning($this->t('aws.account_lock_manual', $params));
             }
             return self::SUCCESS;
+        } catch (DeployCommandFailed $e) {
+            $steps->finish();
+            $result = $e->result;
+            if ($result === null) {
+                // The invoke failed: the command may have partly run, so it is listed with the others.
+                $previous = $e->getPrevious();
+                $io->error($this->t('deploy.command_unknown', [
+                    'command' => $e->command,
+                    'error' => $previous === null ? '' : ($this->describeError($previous) ?? $previous->getMessage()),
+                ]));
+                $io->writeln($this->t('deploy.command_traffic_unchanged'));
+                $this->commandsNotUndone($io, $e->ran, $config->environment, 'deploy.commands_may_have_run');
+                return self::FAILURE;
+            }
+            $io->error($result->crashed()
+                ? $this->t('deploy.command_crashed', ['command' => $e->command, 'type' => (string) $result->errorType, 'message' => (string) $result->errorMessage])
+                : $this->t('deploy.command_failed', ['command' => $e->command, 'code' => $result->exitCode]));
+            foreach ($result->logTail as $line) {
+                $io->writeln('  ' . OutputFormatter::escape($line));
+            }
+            $io->writeln($this->t('deploy.command_traffic_unchanged'));
+            // The failing command is reported above; a migrate that failed may have rolled itself back.
+            $this->commandsNotUndone($io, array_slice($e->ran, 0, -1), $config->environment);
+            // R12: the command's own exit code; 1 when it has none (a Lambda error, or 0 on a crash).
+            return ! $result->crashed() && $result->exitCode > 0 ? min($result->exitCode, 255) : self::FAILURE;
         } catch (Throwable $e) {
             $steps->finish();
             $message = $this->describeError($e);
-            if ($message === null) {
-                throw $e;
+            if ($message !== null) {
+                $io->error($message);
             }
-            $io->error($message);
-            return self::FAILURE;
+            if ($config !== null) {
+                $this->commandsNotUndone($io, $ran, $config->environment);
+            }
+            return $message === null ? throw $e : self::FAILURE;
+        }
+    }
+
+    /**
+     * After deploy commands ran and the deploy then failed: their changes stay (spec §5).
+     *
+     * @param list<string> $ran
+     */
+    private function commandsNotUndone(SymfonyStyle $io, array $ran, string $environment, string $key = 'deploy.commands_not_undone'): void
+    {
+        if ($ran === []) {
+            return;
+        }
+        $io->writeln($this->t($key, ['commands' => implode(', ', $ran)]));
+        if (DeployCommands::hasMigrate($ran)) {
+            $io->writeln($this->t('deploy.migrate_rollback_hint', ['environment' => $environment]));
         }
     }
 }

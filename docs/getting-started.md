@@ -161,8 +161,8 @@ Cold start: <n> ms
 The cold start is the init duration of the new revision's first instance, read from Lambda's
 init report in CloudWatch Logs (in the streams named after the revision). Those events reach
 CloudWatch Logs up to about 40 seconds late, so the health check alone decides whether the deploy
-passed, and the cold start is read last, after the custom domains: Arco keeps looking until about
-60 seconds after the health check passed (at most 40 CloudWatch Logs calls). If the report has not
+passed, and the cold start is read last, after the custom domains: Arco keeps looking for up to about
+60 seconds from the start of that lookup, however long the domains took (at most 40 CloudWatch Logs calls). If the report has not
 arrived by then, or CloudWatch Logs cannot be read (for example when throttled), the summary says
 `Cold start: not available yet` and the deploy still succeeds. With `->auth('iam')` the report is
 the only health signal, so Arco waits up to about 75 seconds for it before deciding; a missing or
@@ -223,9 +223,111 @@ vendor/bin/arco info --env=production --json   # machine-readable output
 vendor/bin/arco remove --env=production        # asks you to type the environment name
 ```
 
-`remove` deletes the function and endpoint and the execution role, and with custom domains the
+`remove` deletes the function, the console function and the endpoint and the execution role, and with custom domains the
 CloudFront stack, its DNS aliases and a certificate Arco requested. The shared code bucket and
 your SSM parameters are kept.
+
+## Operating the app
+
+Every `arco deploy` also deploys a **console function**, `<app>-<env>-console`: a regular Lambda function
+with the same code, variables, secrets and role as the web function, used to run commands.
+
+### Commands
+
+```bash
+vendor/bin/arco command "migrate:status" --env=production
+vendor/bin/arco command "cache:clear" --env=production
+vendor/bin/arco command "reports:build --month=10" --env=production --async   # returns at once
+```
+
+The whole command goes in one quoted string (it is split into arguments without a shell, so pipes
+and redirects do not work). Arco prints the output and exits with the command's exit code, so it
+works in scripts and CI. A command can run up to `consoleTimeout()` (15 minutes by default);
+`--timeout=<s>` lowers it. Use `--async` for longer work and follow it with
+`arco logs --source=console --follow`. For a plain PHP app, name the script: `arco command "bin/console app:sync"`.
+The console function must exist: run `arco deploy` first.
+
+The console function has no FrankenPHP binary in its zip (Lambda allows 250 MB for classic functions).
+Each new execution environment downloads it once from the code bucket (`runtime/...`) and verifies its
+SHA-256. Measured in the Lambda image: about 2.5 s for a 160 MB binary on a cold start, plus about 0.4 s
+per command on a warm one.
+
+### Migrations on deploy
+
+```php
+->deployCommands(['migrate --force'])   // app or environment level
+```
+
+or `arco deploy --migrate` for one deploy (Laravel only; `--no-deploy-commands` skips them, and the two
+flags cannot be combined). `arco init` proposes `migrate --force` for Laravel apps with a server database.
+
+Deploy commands run on the console version published by this deploy, after the new code is uploaded and
+**before** traffic moves, one by one, with their output printed. If one fails, the deploy stops, the
+previous revision keeps serving and `arco deploy` exits with that command's exit code. Arco never rolls
+migrations back: if the health check fails after the traffic moved, traffic goes back to the previous
+revision but the database keeps the new schema. Arco then lists the commands that ran and, for
+migrations, suggests `arco command "migrate:rollback --force" --env=<env>` (`--force` because Laravel
+asks for confirmation in production).
+
+Because old and new code run against the same database for a moment, write migrations that both versions
+accept (expand, then contract). For example, to rename `users.name` to `users.full_name`:
+
+1. Deploy 1: add `full_name` (nullable), write both columns, backfill `full_name`.
+2. Deploy 2: read `full_name` only.
+3. Deploy 3: drop `name`.
+
+Each step is safe to roll back to the previous deploy.
+
+If the console package is over 250 MB unzipped, the console function is skipped with a warning and
+deploys with deploy commands are refused before anything changes: leave large folders out with
+`->exclude([...])`.
+
+### Tinker
+
+```bash
+vendor/bin/arco tinker --env=staging
+vendor/bin/arco tinker --env=production --execute="App\\Models\\User::count()"
+```
+
+The shell (PsySH: history, multi-line input, short class names) runs on your machine, from your project's
+`vendor`, so `laravel/tinker` and `multiapi/arco-laravel` (which runs each statement in Lambda) must be in
+the app's production dependencies (`require`). Each statement
+runs in the console function as one invocation (about 100–400 ms). Variables are kept between
+statements through a serialized context; values that cannot be serialized (closures, PDO connections,
+open files) are dropped, and Arco names them. A database transaction cannot span statements.
+
+Only the PsySH commands `help`, `exit`, `clear`, `history` and `buffer` are available; the others (`ls`,
+`doc`, `show`, `timeit`, ...) are disabled because they would run on your machine instead of Lambda. The
+history is a separate file per app and environment. `production` and environments marked `->protected()`
+ask for confirmation first; `--force` skips it (it is required without a terminal). Every statement is
+written to the console function's log, as an audit trail (with its SHA-256 and length, the code cut at
+4000 bytes); results and variables are not, since they can hold secrets. `--execute` runs one statement and exits with
+1 if it throws.
+
+### Logs
+
+```bash
+vendor/bin/arco logs --env=production                         # last 10 minutes, web and console
+vendor/bin/arco logs --env=production --follow
+vendor/bin/arco logs --env=production --since=2h --level=error
+vendor/bin/arco logs --env=production --request=<request id> -v
+```
+
+Laravel log lines show as `HH:MM:SS LEVEL message [requestId=...]`; `-v` adds the context and stack
+traces, `--platform` shows Lambda's own events, `--json` prints raw events, `--source=all|web|console`
+(default `all`) picks the function, `--filter="text"` searches on CloudWatch's side and `--level` sets a
+minimum level.
+
+`--since` and `--until` take `30s`, `10m`, `2h`, `1d` or a date (`"2026-10-15 14:00"`); bare numbers are
+rejected. `--since` defaults to `10m`. `--until` cannot be combined with `--follow`. When more than
+10,000 events match, the earliest 10,000 are shown with a notice: narrow the range.
+
+`--follow` uses CloudWatch Live Tail (about one second of delay). If Live Tail is denied
+(`logs:StartLiveTail`) or unreachable, or PHP's `allow_url_fopen` is off, Arco says so and polls every
+2 seconds instead; CloudWatch Logs receives events 10-40 s after they happen, so expect that delay.
+Live Tail does not backfill, and the session needs a few seconds after it starts before new events
+stream: events written between the history read and that moment can be missed. An event that appears
+in both the history and Live Tail is printed once. Ctrl+C ends `--follow` cleanly; a second Ctrl+C exits at once.
 
 ## Using Arco in CI
 
@@ -254,10 +356,24 @@ The role used by the E2E workflow lives in a dedicated test account and needs:
 - `ssm:PutParameter`, `ssm:GetParameters` on `parameter/arco-example/*`
 - `logs:FilterLogEvents`, `logs:GetLogEvents`
 - `sts:GetCallerIdentity`
+- for the console function (`arn:aws:lambda:*:*:function:*-console` and `...:*-console:*`):
+  `lambda:CreateFunction`, `lambda:UpdateFunctionCode`, `lambda:UpdateFunctionConfiguration`,
+  `lambda:GetFunctionConfiguration`, `lambda:PublishVersion`, `lambda:CreateAlias`,
+  `lambda:UpdateAlias`, `lambda:GetAlias`, `lambda:PutFunctionEventInvokeConfig`, `lambda:TagResource`,
+  `lambda:ListVersionsByFunction`, `lambda:DeleteFunction`, `lambda:InvokeFunction`
+- `logs:StartLiveTail` for `arco logs --follow` (Live Tail; without
+  `logs:StartLiveTail` follow polls instead). `logs:FilterLogEvents` covers `arco logs` without `--follow`
 
 For your own apps, scope the SSM resource to your parameters and add Secrets Manager read access
 if you use `arco-secret:` references. If a permission is missing, Arco reports which operation
-AWS denied.
+AWS denied. The deploy keeps the live console version plus the 4 newest and deletes older ones on a best-effort
+basis: without `lambda:ListVersionsByFunction` or `lambda:DeleteFunction` that step becomes a warning.
+
+People who only run `arco command`, `arco tinker` or `arco logs` need `lambda:InvokeFunction` on the console
+function (`arco logs` needs the `logs:` actions above). The function's execution role is separate: for the managed role Arco
+adds `logs:CreateLogGroup`, `logs:CreateLogStream` and `logs:PutLogEvents` on the web and console log
+groups, `s3:GetObject` on `runtime/*` of the code bucket, and read access to the
+secrets you reference.
 
 ### Permissions for custom domains
 

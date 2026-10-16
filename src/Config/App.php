@@ -55,6 +55,7 @@ final class App
             'runtime' => $deployment['runtime'],
             'permissions' => $deployment['permissions'],
             'domains' => $deployment['domains'],
+            'deployCommands' => $deployment['deployCommands'],
             'environments' => array_map(fn (Environment $e) => $e->toArray(), $this->environments),
         ];
     }

@@ -10,6 +10,7 @@ use Aws\Credentials\Credentials;
 use Aws\Exception\CredentialsException;
 use GuzzleHttp\Promise\Create;
 use Aws\Iam\IamClient;
+use Aws\Lambda\LambdaClient;
 use Aws\LambdaWeb\LambdaWebClient;
 use Aws\Route53\Route53Client;
 use Aws\S3\S3Client;
@@ -192,9 +193,12 @@ final class AwsClients
     public function s3(): S3Client { return $this->sdk->createS3(); }
     public function iam(): IamClient { return $this->sdk->createIam(); }
     public function lambdaWeb(): LambdaWebClient { return $this->sdk->createLambdaWeb(); }
+    /** @param array<string, mixed> $overrides extra client config (invocations disable retries and raise the HTTP timeout) */
+    public function lambda(array $overrides = []): LambdaClient { return $this->sdk->createLambda($overrides); }
     public function ssm(): SsmClient { return $this->sdk->createSsm(); }
     public function secretsManager(): SecretsManagerClient { return $this->sdk->createSecretsManager(); }
-    public function logs(): CloudWatchLogsClient { return $this->sdk->createCloudWatchLogs(); }
+    /** @param array<string, mixed> $overrides extra client config (Live Tail passes an http_handler) */
+    public function logs(array $overrides = []): CloudWatchLogsClient { return $this->sdk->createCloudWatchLogs($overrides); }
     /** CloudFront only uses certificates from us-east-1, whatever the app region. */
     public function acm(): AcmClient { return $this->sdk->createAcm(['region' => 'us-east-1']); }
     public function cloudFormation(): CloudFormationClient { return $this->sdk->createCloudFormation(); }

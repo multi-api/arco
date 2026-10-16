@@ -6,6 +6,7 @@ use Multiapi\Arco\Arco;
 use Multiapi\Arco\Build\BuildException;
 use Multiapi\Arco\Build\BuildResult;
 use Multiapi\Arco\Build\FrameworkPreset;
+use Multiapi\Arco\Build\RunsCommands;
 use Multiapi\Arco\Config\AppConfig;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
@@ -34,6 +35,13 @@ final class Packager
         $entries['index.js'] = [$this->runtimeDir . '/index.js', 0644];
         foreach (glob($this->runtimeDir . '/lib/*.js') ?: [] as $file) {
             $entries['lib/' . basename($file)] = [$file, 0644];
+        }
+        // Console function: custom-runtime bootstrap plus the PHP console runtime.
+        $entries['bootstrap'] = [$this->runtimeDir . '/bootstrap', 0755];
+        $entries['runtime/console.php'] = [$this->runtimeDir . '/console.php', 0644];
+        $entries['runtime/console-cli.php'] = [$this->runtimeDir . '/console-cli.php', 0644];
+        foreach (glob($this->runtimeDir . '/console/*.php') ?: [] as $file) {
+            $entries['runtime/console/' . basename($file)] = [$file, 0644];
         }
         $entries[self::BINARY] = [$binaryPath, 0755];
         foreach ($this->files($build->appDir) as $relative => $file) {
@@ -120,6 +128,8 @@ final class Packager
             'workers' => ['min' => $config->runtime->workersMin, 'max' => $config->runtime->workersMax],
             // Empty maps must serialize as {} because the runtime expects an object.
             'phpIni' => $config->runtime->phpIni === [] ? new \stdClass() : $config->runtime->phpIni,
+            // Read by runtime/console.php: commands run as `php <entry> <args>`, or `php <args>` when null.
+            'console' => ['entry' => $preset instanceof RunsCommands ? $preset->commandEntry() : null],
         ];
     }
 

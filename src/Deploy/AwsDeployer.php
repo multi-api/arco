@@ -10,12 +10,15 @@ use Multiapi\Arco\Deploy\Domains\Certificates;
 use Multiapi\Arco\Deploy\Domains\CustomDomains;
 use Multiapi\Arco\Deploy\Domains\DomainStack;
 use Multiapi\Arco\Deploy\Domains\Stacks;
+use Multiapi\Arco\Package\ConsoleArtifacts;
 use Multiapi\Arco\Package\Package;
 use Multiapi\Arco\Secrets\SecretResolver;
 
 final class AwsDeployer implements Deployer
 {
     private const KEEP_PACKAGES = 20;
+    /** Console versions kept besides the live one: the newest, so recent rollbacks keep a matching console. */
+    private const KEEP_CONSOLE_VERSIONS = 4;
 
     /**
      * @param AwsClients|null $dns clients for the account holding the DNS zones (dns() profile or
@@ -30,7 +33,7 @@ final class AwsDeployer implements Deployer
     ) {
     }
 
-    public function deploy(AppConfig $config, Package $package, array $variables, ?callable $onStep = null): DeployResult
+    public function prepare(AppConfig $config, Package $package, ?ConsoleArtifacts $console, array $variables, ?callable $onStep = null): PreparedDeploy
     {
         $step = $onStep ?? static function (string $key, array $params = []): void {};
         $function = $config->functionName();
@@ -43,7 +46,7 @@ final class AwsDeployer implements Deployer
         $step('deploy.step_bucket', ['bucket' => $bucket]);
         $codeBucket->ensure($bucket, $region, $account);
 
-        $key = "{$config->app}/{$config->environment}/{$package->hash}.zip";
+        $key = self::prefix($config) . "{$package->hash}.zip";
         $step('deploy.step_upload', ['size' => (int) round($package->bytes / 1048576)]);
         $versionId = $codeBucket->upload($bucket, $key, $package->path);
 
@@ -53,7 +56,7 @@ final class AwsDeployer implements Deployer
             $roleArn = $config->role;
         } else {
             $step('deploy.step_role', ['role' => ExecutionRole::roleName($config)]);
-            $policy = PolicyBuilder::document($region, $account, $function, SecretResolver::references($variables), $config->permissions);
+            $policy = PolicyBuilder::document($region, $account, $function, SecretResolver::references($variables), $config->permissions, $bucket);
             ['arn' => $roleArn, 'created' => $roleCreated] = (new ExecutionRole($this->aws->iam()))->ensure(ExecutionRole::roleName($config), $policy, $tags);
         }
 
@@ -70,22 +73,112 @@ final class AwsDeployer implements Deployer
         }
         $web->waitRevision($function, $revisionId);
 
-        $step('deploy.step_traffic', ['revision' => $revisionId]);
-        $web->waitEndpoint($function);
-        $web->route($function, $revisionId, $config);
-        $endpoint = $web->waitEndpoint($function, 600, $revisionId);
+        $consoleVersion = null;
+        $previousConsole = null;
+        $consoleKey = null;
+        if ($console !== null) {
+            $step('deploy.step_console', ['function' => $config->consoleFunctionName()]);
+            $consoleKey = self::consolePrefix($config) . "{$console->package->hash}.zip";
+            $consoleObject = $codeBucket->upload($bucket, $consoleKey, $console->package->path);
+            $codeBucket->uploadBinary($bucket, $console->binaryKey, $console->binaryPath, $console->binaryBytes);
+            $functions = $this->consoleFunction();
+            $previousConsole = $functions->liveVersion($config->consoleFunctionName());
+            $consoleVersion = $functions->deploy(
+                $config,
+                $bucket,
+                $consoleKey,
+                $consoleObject,
+                $roleArn,
+                [...$variables, ...self::binaryVariables($bucket, $console)],
+                $tags,
+                $roleCreated,
+            );
+        }
 
-        $codeBucket->prune($bucket, "{$config->app}/{$config->environment}/", self::KEEP_PACKAGES, [$key]);
-
-        return new DeployResult(WebFunctions::text($endpoint['domainName'] ?? null), $revisionId, $previous, $bucket, $key);
+        return new PreparedDeploy($revisionId, $previous, $bucket, $key, $consoleVersion, $previousConsole, $consoleKey);
     }
 
-    public function rollback(AppConfig $config, string $revisionId): void
+    /**
+     * Where the console bootstrap downloads the FrankenPHP binary from, and its checksum. No S3
+     * version is pinned: runtime/* keys are immutable and the checksum verifies the bytes.
+     *
+     * @return array<string, string>
+     */
+    private static function binaryVariables(string $bucket, ConsoleArtifacts $console): array
+    {
+        return ['ARCO_BINARY_BUCKET' => $bucket, 'ARCO_BINARY_KEY' => $console->binaryKey, 'ARCO_BINARY_SHA256' => $console->binarySha256];
+    }
+
+    public function release(AppConfig $config, PreparedDeploy $prepared, ?callable $onStep = null): DeployResult
+    {
+        $step = $onStep ?? static function (string $key, array $params = []): void {};
+        $function = $config->functionName();
+        $web = new WebFunctions($this->aws->lambdaWeb(), $this->sleeper);
+
+        $step('deploy.step_traffic', ['revision' => $prepared->revisionId]);
+        $web->waitEndpoint($function);
+        $web->route($function, $prepared->revisionId, $config);
+        $endpoint = $web->waitEndpoint($function, 600, $prepared->revisionId);
+
+        return new DeployResult(
+            WebFunctions::text($endpoint['domainName'] ?? null),
+            $prepared->revisionId,
+            $prepared->previousRevisionId,
+            $prepared->bucket,
+            $prepared->key,
+            [],
+            $prepared->consoleVersion,
+            $prepared->previousConsoleVersion,
+        );
+    }
+
+    public function prune(AppConfig $config, PreparedDeploy $prepared, ?callable $onStep = null): void
+    {
+        $step = $onStep ?? static function (string $key, array $params = []): void {};
+        if ($prepared->consoleVersion !== null) {
+            try {
+                // The live alias is read again right before deleting: it may have moved since prepare().
+                $this->consoleFunction()->pruneVersions(
+                    $config->consoleFunctionName(),
+                    self::KEEP_CONSOLE_VERSIONS,
+                    array_values(array_filter([$prepared->previousConsoleVersion, $prepared->consoleVersion])),
+                );
+            } catch (AwsException $e) {
+                $step('deploy.prune_versions_failed', ['function' => $config->consoleFunctionName(), 'error' => self::awsError($e)]);
+            }
+        }
+        try {
+            // Web and console zips are pruned apart: console zips never count towards the web zips kept.
+            $codeBucket = new CodeBucket($this->aws->s3());
+            $codeBucket->prune($prepared->bucket, self::prefix($config), self::KEEP_PACKAGES, [$prepared->key], self::consolePrefix($config));
+            if ($prepared->consoleKey !== null) {
+                $codeBucket->prune($prepared->bucket, self::consolePrefix($config), self::KEEP_PACKAGES, [$prepared->consoleKey]);
+            }
+        } catch (AwsException $e) {
+            $step('deploy.prune_packages_failed', ['bucket' => $prepared->bucket, 'error' => self::awsError($e)]);
+        }
+    }
+
+    private static function awsError(AwsException $e): string
+    {
+        $message = $e->getAwsErrorMessage();
+        return is_string($message) && $message !== '' ? $message : $e->getMessage();
+    }
+
+    public function activateConsole(AppConfig $config, string $version): void
+    {
+        $this->consoleFunction()->point($config->consoleFunctionName(), $version);
+    }
+
+    public function rollback(AppConfig $config, string $revisionId, ?string $consoleVersion = null): void
     {
         $web = new WebFunctions($this->aws->lambdaWeb(), $this->sleeper);
         $web->waitEndpoint($config->functionName());
         $web->route($config->functionName(), $revisionId, $config);
         $web->waitEndpoint($config->functionName(), 600, $revisionId);
+        if ($consoleVersion !== null) {
+            $this->consoleFunction()->point($config->consoleFunctionName(), $consoleVersion);
+        }
     }
 
     public function attachDomains(AppConfig $config, DeployResult $result, array $cachedPaths, ?callable $onStep = null): DeployResult
@@ -111,6 +204,8 @@ final class AwsDeployer implements Deployer
         if ($config->domains !== [] || $this->stackExists($config)) {
             $this->customDomains($config)->remove($config, $step);
         }
+        $step('remove.step_console', ['function' => $config->consoleFunctionName()]);
+        $this->consoleFunction()->delete($config->consoleFunctionName());
         $step('remove.step_function', ['function' => $config->functionName()]);
         (new WebFunctions($this->aws->lambdaWeb(), $this->sleeper))->delete($config->functionName());
         if ($config->role === null) {
@@ -126,6 +221,14 @@ final class AwsDeployer implements Deployer
             return null;
         }
         $endpoint = $web->endpoint($config->functionName());
+        $consoleVersion = null;
+        $consoleVersionError = null;
+        try {
+            $consoleVersion = $this->consoleFunction()->liveVersion($config->consoleFunctionName());
+        } catch (AwsException $e) {
+            // Shown as unknown (e.g. without lambda:GetAlias), never as "not deployed yet".
+            $consoleVersionError = $e->getAwsErrorCode() ?? 'UnknownError';
+        }
         $distribution = null;
         if ($config->domains !== []) {
             try {
@@ -141,6 +244,9 @@ final class AwsDeployer implements Deployer
             $endpoint === null ? null : WebFunctions::activeRevision($endpoint),
             $distribution['domain'] ?? null,
             $distribution['status'] ?? null,
+            $config->consoleFunctionName(),
+            $consoleVersion,
+            $consoleVersionError,
         );
     }
 
@@ -150,6 +256,23 @@ final class AwsDeployer implements Deployer
         // Stable on purpose: a tag change would update every tagged resource (and the CloudFront stack) on
         // each Arco upgrade. The Arco version is in each revision's description instead.
         return ['arco:app' => $config->app, 'arco:environment' => $config->environment];
+    }
+
+    /** S3 prefix of the environment's web zips. */
+    private static function prefix(AppConfig $config): string
+    {
+        return "{$config->app}/{$config->environment}/";
+    }
+
+    /** S3 prefix of the environment's console zips (inside the web prefix). */
+    private static function consolePrefix(AppConfig $config): string
+    {
+        return self::prefix($config) . 'console-';
+    }
+
+    private function consoleFunction(): ConsoleFunction
+    {
+        return new ConsoleFunction($this->aws->lambda(), $this->sleeper);
     }
 
     private function customDomains(AppConfig $config): CustomDomains

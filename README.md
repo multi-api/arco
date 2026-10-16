@@ -41,6 +41,8 @@ vendor/bin/arco deploy --env=production
 - **Environments** (`production`, `staging`, …), each its own Web Function, all in one `arco.php`.
 - **Secrets** as `arco-ssm:` / `arco-secret:` references, resolved when the function starts and
   scoped in IAM to exactly what you reference.
+- **Operations.** `arco command`, `arco tinker` and `arco logs` run and inspect the deployed app from your
+  terminal; migrations can run on every deploy before traffic moves.
 - **Custom domains** in one line: certificate, CloudFront and DNS records, with the DNS zone in the
   same AWS account, another account, or outside AWS.
 
@@ -102,6 +104,9 @@ The main options:
 | `profile()` / `account()` | asked on first deploy | AWS profile, and an account lock so a wrong profile can't deploy |
 | `auth('public'\|'iam')` | `public` | `iam` requires signed requests |
 | `runtime(fn ...)` | | FrankenPHP/Octane: `workers()`, `threads()`, `phpIni()`, `build()` |
+| `deployCommands([...])` | — | Commands run on every deploy before traffic moves, e.g. `['migrate --force']` |
+| `consoleTimeout(int)` | 900 | Seconds a console command may run (3–900) |
+| `protected()` | `production` | Ask before `arco tinker` on this environment |
 
 Every option, the packaging rules and the Laravel preset are in the
 [configuration reference](docs/configuration.md).
@@ -111,7 +116,10 @@ Every option, the packaging rules and the Laravel preset are in the
 | Command | What it does |
 |---|---|
 | `arco init` | Create `arco.php` (asks name, region, environments, custom domain) |
-| `arco deploy --env=<env>` | Build, upload, deploy, verify, attach domains; `--package=<zip>` deploys a prebuilt zip |
+| `arco deploy --env=<env>` | Build, upload, deploy commands, deploy, verify, attach domains; `--migrate` runs migrations first; `--package=<zip>` deploys a prebuilt zip |
+| `arco command "<args>" --env=<env>` | Run an artisan (or PHP) command on the console function; exits with its exit code (`--async` to start it and return) |
+| `arco tinker --env=<env>` | Tinker on your machine, statements run in Lambda (`--execute="<code>"` for one statement) |
+| `arco logs --env=<env>` | Web and console logs merged, filtered and colored (`--follow`, `--since`, `--level`, `--request`, `--filter`) |
 | `arco package --env=<env>` | Build the zip only (for CI: build once, deploy later) |
 | `arco info --env=<env>` | Resolved settings with their source, URL, active revision (`--json` too) |
 | `arco secret:set <name> --env=<env>` | Store a secret in SSM and print the reference to use |
@@ -131,7 +139,9 @@ Messages are in English or Spanish (`--lang=es` or `ARCO_LANG=es`).
 
 - 2 vCPU and 2 GB per instance, 512 MB unzipped package, 512 MB `/tmp`, arm64 only
 - Regions: us-east-1, us-east-2, us-west-2, ap-northeast-1, eu-west-1
-- Arco 0.1 deploys HTTP functions; queues, the scheduler and remote commands are on the roadmap
+- The console function (commands, tinker) is a classic Lambda function: 250 MB unzipped package, no
+  FrankenPHP binary inside (it is downloaded once per new instance)
+- Arco deploys HTTP functions and a console function for commands; queues and the scheduler are on the roadmap
 
 ## Packages
 

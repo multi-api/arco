@@ -11,6 +11,7 @@ final readonly class AppConfig
      * @param array<string, string> $sources
      * @param list<array<string, mixed>> $permissions
      * @param list<string> $domains
+     * @param list<string> $deployCommands
      */
     public function __construct(
         public string $app,
@@ -37,11 +38,26 @@ final readonly class AppConfig
         public ?string $dnsProfile = null,
         public bool $dnsManual = false,
         public ?string $certificate = null,
+        public array $deployCommands = [],
+        public int $consoleTimeout = 900,
+        /** null: protected when the environment is named production */
+        public ?bool $protected = null,
     ) {
     }
 
     public function functionName(): string
     {
         return $this->app . '-' . $this->environment;
+    }
+
+    public function consoleFunctionName(): string
+    {
+        return $this->functionName() . '-console';
+    }
+
+    /** Whether `arco tinker` asks for confirmation first. */
+    public function isProtected(): bool
+    {
+        return $this->protected ?? $this->environment === 'production';
     }
 }

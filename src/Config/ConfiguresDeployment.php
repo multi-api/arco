@@ -13,6 +13,8 @@ trait ConfiguresDeployment
     private array $permissions = [];
     /** @var list<string>|null */
     private ?array $domains = null;
+    /** @var list<string>|null */
+    private ?array $deployCommands = null;
 
     public function concurrency(int $requests): static { $this->settings['concurrency'] = $requests; return $this; }
     public function timeout(int $seconds): static { $this->settings['timeout'] = $seconds; return $this; }
@@ -49,6 +51,24 @@ trait ConfiguresDeployment
     /** An ACM certificate in us-east-1 to use instead of looking one up or requesting one. */
     public function certificate(string $certificateArn): static { $this->settings['certificate'] = $certificateArn; return $this; }
 
+    /**
+     * Commands run on the console function during every deploy, after the new code is uploaded and
+     * before traffic moves to it (e.g. 'migrate --force'). An environment's list replaces the app's.
+     *
+     * @param list<string> $commands
+     */
+    public function deployCommands(array $commands): static
+    {
+        $this->deployCommands = $commands;
+        return $this;
+    }
+
+    /** Time limit of the console function (arco command, deploy commands, tinker): 3 to 900 seconds. */
+    public function consoleTimeout(int $seconds): static { $this->settings['consoleTimeout'] = $seconds; return $this; }
+
+    /** Ask for confirmation before `arco tinker` (on by default for an environment named production). */
+    public function protected(bool $protected = true): static { $this->settings['protected'] = $protected; return $this; }
+
     /** @param array<string, string> $variables */
     public function variables(array $variables): static
     {
@@ -76,7 +96,7 @@ trait ConfiguresDeployment
         return $this;
     }
 
-    /** @return array{settings: array<string, string|int|bool>, variables: array<string, string>, runtime: array<string, mixed>, permissions: list<array<string, mixed>>, domains: list<string>|null} */
+    /** @return array{settings: array<string, string|int|bool>, variables: array<string, string>, runtime: array<string, mixed>, permissions: list<array<string, mixed>>, domains: list<string>|null, deployCommands: list<string>|null} */
     protected function deploymentArray(): array
     {
         return [
@@ -85,6 +105,7 @@ trait ConfiguresDeployment
             'runtime' => $this->runtime?->toArray() ?? [],
             'permissions' => $this->permissions,
             'domains' => $this->domains,
+            'deployCommands' => $this->deployCommands,
         ];
     }
 }

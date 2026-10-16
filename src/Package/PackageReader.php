@@ -11,6 +11,17 @@ use ZipArchive;
 /** Opens a zip written by `arco package` so it can be deployed without building. */
 final class PackageReader
 {
+    private static function hasEntry(string $path, string $name): bool
+    {
+        $zip = new ZipArchive();
+        if ($zip->open($path, ZipArchive::RDONLY) !== true) {
+            return false;
+        }
+        $found = $zip->locateName($name) !== false;
+        $zip->close();
+        return $found;
+    }
+
     /** @throws BuildException package.not_arco when the file is not a readable zip with a valid manifest */
     public static function open(string $path): Package
     {
@@ -56,6 +67,10 @@ final class PackageReader
         }
         if ($manifest->preset !== $preset->name()) {
             throw BuildException::make('package.wrong_preset', ['path' => $package->path, 'package_preset' => $manifest->preset, 'preset' => $preset->name()]);
+        }
+
+        if (! self::hasEntry($package->path, 'bootstrap')) {
+            throw BuildException::make('package.no_console_runtime', ['path' => $package->path]);
         }
 
         $warnings = [];

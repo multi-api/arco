@@ -8,6 +8,7 @@ use Multiapi\Arco\Aws\AccountGuard;
 use Multiapi\Arco\Aws\AccountMismatch;
 use Multiapi\Arco\Aws\AwsClients;
 use Multiapi\Arco\Aws\AwsProfile;
+use Multiapi\Arco\Aws\CredentialError;
 use Multiapi\Arco\Aws\LocalState;
 use Multiapi\Arco\Aws\ProfileLister;
 use Multiapi\Arco\Aws\ProfileResolver;
@@ -21,6 +22,7 @@ use Multiapi\Arco\Config\ConfigLoader;
 use Multiapi\Arco\Config\ConfigResolver;
 use Multiapi\Arco\Config\Validator;
 use Multiapi\Arco\Deploy\DeployException;
+use Multiapi\Arco\Deploy\Domains\Dns;
 use Multiapi\Arco\Package\PackageTooLarge;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Question\ChoiceQuestion;
@@ -31,6 +33,11 @@ trait ResolvesTarget
 {
     /** @var Closure(?string, string): AwsClients */
     protected Closure $awsFactory;
+
+    /** The profile whose clients the command is using, so credential errors can name it. */
+    protected ?string $credentialProfile = null;
+    /** The DNS profile, when the command also uses one (Route 53 in another account). */
+    protected ?string $dnsCredentialProfile = null;
 
     protected function loadTarget(InputInterface $input, SymfonyStyle $io): AppConfig
     {
@@ -55,7 +62,12 @@ trait ResolvesTarget
         return $config;
     }
 
-    protected function awsClients(AppConfig $config, InputInterface $input, SymfonyStyle $io): AwsClients
+    /**
+     * @param bool $checkCredentials false skips sts:GetCallerIdentity when there is no account lock to
+     *     check: a round trip (and a TLS handshake) that latency-sensitive commands (tinker, command)
+     *     do not need; missing or expired credentials then surface on their first call, by profile
+     */
+    protected function awsClients(AppConfig $config, InputInterface $input, SymfonyStyle $io, bool $checkCredentials = true): AwsClients
     {
         $state = new LocalState($this->projectDir());
         /** @var array<string, string> $env */
@@ -73,14 +85,16 @@ trait ResolvesTarget
             $io->writeln('<info>' . $this->t('aws.profile_saved', ['environment' => $config->environment]) . '</info>');
         }
 
+        $this->credentialProfile = $profile;
         $clients = ($this->awsFactory)($profile, (string) $config->region);
+        if (! $checkCredentials && $config->account === null) {
+            return $clients;
+        }
         try {
             $account = $clients->accountId();
         } catch (Throwable $e) {
-            $hint = SsoHint::command($e, $profile);
-            throw new UserError($hint !== null
-                ? $this->t('aws.sso_expired', ['command' => $hint])
-                : $this->t('aws.credentials_failed', ['profile' => $profile ?? 'environment', 'message' => $e->getMessage()]));
+            throw new UserError($this->credentialProblem($e, $profile)
+                ?? $this->t('aws.credentials_failed', ['profile' => $profile ?? 'environment', 'message' => $e->getMessage()]));
         }
 
         try {
@@ -105,6 +119,7 @@ trait ResolvesTarget
     {
         $flag = $input->hasOption('dns-profile') ? $input->getOption('dns-profile') : null;
         $profile = is_string($flag) && $flag !== '' ? $flag : $config->dnsProfile;
+        $this->dnsCredentialProfile = $profile;
         // Route 53 is global; us-east-1 is its signing region.
         return $profile === null ? null : ($this->awsFactory)($profile, 'us-east-1');
     }
@@ -115,11 +130,55 @@ trait ResolvesTarget
         try {
             return $dns->accountId();
         } catch (Throwable $e) {
-            $hint = SsoHint::command($e, $dns->profile);
-            throw new UserError($hint !== null
-                ? $this->t('aws.sso_expired', ['command' => $hint])
-                : $this->t('aws.credentials_failed', ['profile' => (string) $dns->profile, 'message' => $e->getMessage()]));
+            throw new UserError($this->credentialProblem($e, $dns->profile)
+                ?? $this->t('aws.credentials_failed', ['profile' => (string) $dns->profile, 'message' => $e->getMessage()]));
         }
+    }
+
+    /**
+     * The translated "credentials missing or expired" message, with `aws sso login` for SSO profiles;
+     * "could not get credentials" with AWS's message when they failed for another reason (a denied
+     * AssumeRole, a failing credential_process); null when the failure is not about credentials.
+     */
+    protected function credentialProblem(Throwable $e, ?string $profile): ?string
+    {
+        $name = $profile ?? 'environment';
+        if (SsoHint::command($e, $profile) === null && ! CredentialError::matches($e)) {
+            return CredentialError::isCredentialsFailure($e)
+                ? $this->t('aws.credentials_failed', ['profile' => $name, 'message' => CredentialError::message($e)])
+                : null;
+        }
+        $command = CredentialError::loginCommand($e, $profile);
+        return $command !== null
+            ? $this->t('aws.credentials_expired', ['profile' => $name, 'command' => $command])
+            : $this->t('aws.credentials_expired_generic', ['profile' => $name, 'message' => CredentialError::message($e)]);
+    }
+
+    /**
+     * credentialProblem() for the profile whose clients failed: the DNS profile for a Route 53 call
+     * when one is in use. When the failing call is unknown (a credential provider error has none),
+     * both profiles are named rather than possibly the wrong one.
+     */
+    private function commandCredentialProblem(Throwable $e): ?string
+    {
+        $deploy = $this->credentialProfile;
+        $dns = $this->dnsCredentialProfile;
+        if ($dns === null || $dns === $deploy) {
+            return $this->credentialProblem($e, $deploy);
+        }
+        for ($current = $e; $current !== null; $current = $current->getPrevious()) {
+            if ($current instanceof AwsException) {
+                return $this->credentialProblem($e, in_array($current->getCommand()->getName(), Dns::OPERATIONS, true) ? $dns : $deploy);
+            }
+        }
+        if (! CredentialError::matches($e) && SsoHint::command($e, $deploy) === null) {
+            return CredentialError::isCredentialsFailure($e)
+                ? $this->t('aws.credentials_failed', ['profile' => ($deploy ?? 'environment') . ", $dns", 'message' => CredentialError::message($e)])
+                : null;
+        }
+        $commands = array_values(array_filter([CredentialError::loginCommand($e, $deploy), CredentialError::loginCommand($e, $dns)]));
+        return $this->t('aws.credentials_expired_either', ['profile' => $deploy ?? 'environment', 'dns' => $dns, 'message' => CredentialError::message($e)])
+            . ($commands === [] ? '' : "\n" . $this->t('aws.sso_login_hint', ['commands' => implode(' / ', array_unique($commands))]));
     }
 
     protected function askProfile(AppConfig $config, SymfonyStyle $io): string
@@ -147,6 +206,7 @@ trait ResolvesTarget
     {
         return match (true) {
             $e instanceof UserError => $e->getMessage(),
+            CredentialError::isCredentialsFailure($e) || CredentialError::matches($e) => (string) $this->commandCredentialProblem($e),
             $e instanceof ConfigException, $e instanceof BuildException, $e instanceof BinaryException, $e instanceof DeployException
                 => $this->t($e->key, $e->params),
             $e instanceof AwsException => $this->t(in_array($e->getAwsErrorCode(), ['AccessDenied', 'AccessDeniedException'], true) ? 'aws.access_denied' : 'aws.request_failed', [

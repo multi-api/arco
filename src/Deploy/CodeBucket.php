@@ -102,7 +102,32 @@ final class CodeBucket
                 throw $e;
             }
         }
+        return $this->put($bucket, $key, $path);
+    }
 
+    /**
+     * Uploads a runtime binary (runtime/<build>/frankenphp) unless an object of the same size is
+     * already there: builds are immutable, so the size check only guards against a broken upload.
+     * No version id is returned: the key is immutable and the console checks the bytes against
+     * their SHA-256, so the bootstrap never pins an S3 version (noncurrent versions expire).
+     */
+    public function uploadBinary(string $bucket, string $key, string $path, int $bytes): void
+    {
+        try {
+            $head = $this->s3->headObject(['Bucket' => $bucket, 'Key' => $key]);
+            if (is_numeric($head['ContentLength'] ?? null) && (int) $head['ContentLength'] === $bytes) {
+                return;
+            }
+        } catch (S3Exception $e) {
+            if ($e->getStatusCode() !== 404) {
+                throw $e;
+            }
+        }
+        $this->put($bucket, $key, $path);
+    }
+
+    private function put(string $bucket, string $key, string $path): ?string
+    {
         $body = fopen($path, 'rb');
         if ($body === false) {
             throw DeployException::make('deploy.read_package_failed', ['path' => $path]);
@@ -117,11 +142,19 @@ final class CodeBucket
         return self::version($result instanceof ResultInterface ? $result->get('VersionId') : null);
     }
 
-    /** @param list<string> $protectedKeys */
-    public function prune(string $bucket, string $prefix, int $keep, array $protectedKeys): int
+    /**
+     * Deletes all but the $keep newest objects under $prefix, never one of $protectedKeys.
+     *
+     * @param list<string> $protectedKeys
+     * @param string|null $ignorePrefix objects under it are left alone and not counted (pruned on their own)
+     */
+    public function prune(string $bucket, string $prefix, int $keep, array $protectedKeys, ?string $ignorePrefix = null): int
     {
         $objects = $this->s3->listObjectsV2(['Bucket' => $bucket, 'Prefix' => $prefix])['Contents'] ?? [];
         /** @var list<array{Key: string, LastModified: \DateTimeInterface}> $objects */
+        if ($ignorePrefix !== null) {
+            $objects = array_values(array_filter($objects, fn (array $object) => ! str_starts_with($object['Key'], $ignorePrefix)));
+        }
         usort($objects, fn (array $a, array $b) => $b['LastModified'] <=> $a['LastModified']);
 
         $delete = [];

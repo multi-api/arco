@@ -12,13 +12,17 @@ final readonly class DeployResult
         public string $bucket,
         public string $key,
         public array $domains = [],
+        /** console version published by this deploy; null when the console function was skipped */
+        public ?string $consoleVersion = null,
+        /** version the console's live alias pointed to before this deploy */
+        public ?string $previousConsoleVersion = null,
     ) {
     }
 
     /** @param list<string> $domains */
     public function withDomains(array $domains): self
     {
-        return new self($this->domainName, $this->revisionId, $this->previousRevisionId, $this->bucket, $this->key, $domains);
+        return new self($this->domainName, $this->revisionId, $this->previousRevisionId, $this->bucket, $this->key, $domains, $this->consoleVersion, $this->previousConsoleVersion);
     }
 
     public function url(): string

@@ -9,6 +9,8 @@ final readonly class DeployOutcome
         public VerificationResult $verification,
         public bool $rolledBack,
         public int $packageBytes,
+        /** @var list<string> deploy commands that ran (their changes are never undone) */
+        public array $commandsRan = [],
     ) {
     }
 }

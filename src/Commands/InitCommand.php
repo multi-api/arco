@@ -11,6 +11,7 @@ use Multiapi\Arco\Cli\UserError;
 use Multiapi\Arco\Commands\Concerns\ChoosesDns;
 use Multiapi\Arco\Config\ArcoFileEditor;
 use Multiapi\Arco\Config\Validator;
+use Multiapi\Arco\Deploy\DeployCommands;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
@@ -84,8 +85,15 @@ final class InitCommand extends ArcoCommand
             return self::FAILURE;
         }
 
+        $deployCommands = [];
+        $connection = $preset->name() === 'laravel' ? self::databaseConnection("$dir/.env") : null;
+        if ($connection !== null && $connection !== 'sqlite' && $input->isInteractive()
+            && $io->confirm($this->t('init.ask_migrate', ['connection' => $connection]), true)) {
+            $deployCommands = [DeployCommands::MIGRATE];
+        }
+
         $secretKeys = self::secretKeys("$dir/.env");
-        file_put_contents($path, self::render(self::slug($name), $region, $environments, $secretKeys, $domains, $dns));
+        file_put_contents($path, self::render(self::slug($name), $region, $environments, $secretKeys, $domains, $dns, $deployCommands));
         self::ignoreLocalState("$dir/.gitignore");
 
         $io->success($this->t('init.created', ['preset' => $preset->name()]));
@@ -170,11 +178,15 @@ final class InitCommand extends ArcoCommand
      * @param list<string> $secretKeys
      * @param array<string, list<string>> $domains per environment
      * @param array<string, string|false> $dns per environment; absent means Route 53 in the deploy account
+     * @param list<string> $deployCommands app-level deploy commands
      */
-    public static function render(string $name, string $region, array $environments, array $secretKeys, array $domains = [], array $dns = []): string
+    public static function render(string $name, string $region, array $environments, array $secretKeys, array $domains = [], array $dns = [], array $deployCommands = []): string
     {
         $php = "<?php\n\nuse Multiapi\\Arco\\Config\\App;\nuse Multiapi\\Arco\\Config\\Environment;\n\n";
         $php .= 'return App::make(' . var_export($name, true) . ")\n    ->region(" . var_export($region, true) . ')';
+        if ($deployCommands !== []) {
+            $php .= "\n    ->deployCommands([" . implode(', ', array_map(fn (string $c) => var_export($c, true), $deployCommands)) . '])';
+        }
         foreach ($environments as $environment) {
             $php .= "\n    ->environment(" . var_export($environment, true) . ", fn (Environment \$env) => \$env\n        ->variables([\n";
             $php .= "            'APP_ENV' => " . var_export($environment, true) . ",\n";
@@ -216,6 +228,21 @@ final class InitCommand extends ArcoCommand
             $keys[] = $key;
         }
         return array_values(array_unique($keys));
+    }
+
+    /** DB_CONNECTION from .env, lowercase, or null when it is not set. */
+    private static function databaseConnection(string $envFile): ?string
+    {
+        if (! is_file($envFile)) {
+            return null;
+        }
+        foreach (file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
+            if (preg_match('/^\s*(?:export\s+)?DB_CONNECTION\s*=(.*)$/', $line, $m)) {
+                $value = strtolower(self::unquote($m[1]));
+                return $value === '' ? null : $value;
+            }
+        }
+        return null;
     }
 
     private static function unquote(string $value): string

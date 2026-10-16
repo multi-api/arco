@@ -58,6 +58,9 @@ Settings, `variables()`, `permissions()`, `runtime()` and the custom domain meth
 | `exclude(array)` / `include(array)` | preset rules | Packaging globs (below) |
 | `domain(string\|array)` | none | Custom domains served through CloudFront (below); lowercase hostnames, no wildcards, at most 10 |
 | `dns(string\|false)` | Route 53 in the deploy account | `dns('profile')`: Route 53 in the account of that AWS profile; `dns(false)`: DNS is elsewhere, Arco prints the records |
+| `deployCommands(array)` | `[]` | Commands run on the console function during every deploy, before traffic moves; an environment's list replaces the app's |
+| `consoleTimeout(int)` | 900 | Timeout of the console function in seconds (3 to 900) |
+| `protected(bool = true)` | on for `production` | Ask for confirmation before `arco tinker`; `protected(false)` turns it off |
 | `certificate(arn)` | looked up or requested | ACM certificate ARN in `us-east-1` to use for the domains |
 
 An *environment* in Arco is an `environment()` in `arco.php` (staging, production), each deployed as
@@ -129,8 +132,8 @@ vendor/bin/arco set timeout 60 --app          # app level (all environments)
 
 ## Permissions
 
-The managed execution role only gets what Arco itself needs: writing logs and reading the
-secrets your variables reference. When your app uses other AWS resources (an existing bucket,
+The managed execution role only gets what Arco itself needs: writing logs (web and console), reading
+the console function's FrankenPHP binary and the secrets your variables reference. When your app uses other AWS resources (an existing bucket,
 a DynamoDB table, SES), add IAM statements with `permissions()`, in the same shape as an IAM
 policy statement:
 
@@ -154,6 +157,29 @@ App::make('shop')
 - IAM limits the role's policy to 10,240 characters; a larger policy stops the deploy before
   anything changes. Use wildcards to stay under it.
 - With `role(arn)` Arco does not manage the role, so `permissions()` is ignored with a warning.
+
+## Console function
+
+`arco deploy` creates or updates `<app>-<env>-console` (runtime `provided.al2023`, arm64, 2048 MB,
+1024 MB of `/tmp`, timeout `consoleTimeout()`; the name must fit Lambda's 64 characters), with the web
+revision's variables, secrets and execution role. It publishes a version and points the `live` alias at it
+once traffic has moved and the health check passed. If AWS refuses that alias move (for example a profile
+without `lambda:UpdateAlias`), the deploy still succeeds with a warning: the web revision is live, but
+`arco command` and `arco tinker` keep running the previous version until the next deploy. `arco command`
+and `arco tinker` invoke `live`; deploy
+commands invoke the version published by the deploy itself. The deploy keeps the live version plus the 4
+newest and prunes older ones best-effort. Its logs go to `/aws/lambda/<app>-<env>-console`, which the
+managed role may write. `arco remove` deletes it (log groups are kept).
+
+Lambda limits a classic function to 250 MB of unzipped code, so the console function gets a copy of the
+package **without** the FrankenPHP binary and the Node web runtime. The deploy uploads the exact binary of
+the web revision once to the code bucket (`runtime/<build>/frankenphp`); at a cold start the console
+function downloads it (about 2.5 s for 160 MB, once per execution environment), checks its SHA-256 and
+keeps it in `/tmp`. The managed role may read `runtime/*` of the code bucket; with your own `role()`,
+allow `s3:GetObject` on `arn:aws:s3:::arco-<account>-<region>/runtime/*`
+and `logs:CreateLogStream` / `logs:PutLogEvents` on the console log group. If the console package is
+still over 250 MB, the web function deploys, the console function is skipped with a warning and deploy
+commands are refused: leave large folders out with `->exclude([...])`.
 
 ## Custom domains
 
@@ -232,7 +258,7 @@ Set with `->runtime(fn (Runtime $r) => ...)`.
 | `workers(min, max)` | min 4, max 64 | Octane worker count / FrankenPHP `max_threads` (`min >= 1`, `max >= min`) |
 | `threads(int)` | 8 | FrankenPHP `num_threads` for non-worker requests (>= 1) |
 | `mode('direct'\|'proxy')` | `direct` | How the runtime hands requests to FrankenPHP |
-| `phpIni(array)` | `[]` | `php.ini` overrides, merged by key |
+| `phpIni(array)` | `[]` | `php.ini` overrides, merged by key; applied to web requests and to commands on the console function (`arco command`, deploy commands, tinker) |
 
 ### Runtime builds
 

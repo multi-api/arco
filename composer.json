@@ -33,9 +33,13 @@
         "symfony/filesystem": "^7.1 || ^8.0",
         "symfony/process": "^7.1 || ^8.0"
     },
+    "suggest": {
+        "psy/psysh": "Required by arco tinker; laravel/tinker installs it"
+    },
     "autoload": {
         "psr-4": {
-            "Multiapi\\Arco\\": "src/"
+            "Multiapi\\Arco\\": "src/",
+            "Multiapi\\Arco\\ConsoleRuntime\\": "runtime/console/"
         }
     },
     "bin": [

@@ -9,11 +9,14 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 /**
  * Prints the onStep callbacks of the build and deploy pipeline. `package.progress` (param
  * `percent`) becomes a progress bar redrawn in place on a terminal, and plain 25/50/75/100%
- * lines otherwise (CI logs, pipes), so long phases never look hung.
+ * lines otherwise (CI logs, pipes), so long phases never look hung. Keys in WARNINGS are printed
+ * as warning blocks instead of bullets.
  */
 final class StepPrinter
 {
     public const PROGRESS = 'package.progress';
+    /** Steps that report something the user should act on, not progress. */
+    public const WARNINGS = ['deploy.console_skipped_size', 'deploy.console_not_activated', 'deploy.console_retries_not_disabled', 'deploy.prune_versions_failed', 'deploy.prune_packages_failed'];
     private const MARKS = [25, 50, 75, 100];
 
     private ?ProgressBar $bar = null;
@@ -36,6 +39,10 @@ final class StepPrinter
         }
         $this->closeBar();
         $this->printed = 0;
+        if (in_array($key, self::WARNINGS, true)) {
+            $this->io->warning(($this->translate)($key, $params));
+            return;
+        }
         $this->io->writeln('  • ' . ($this->translate)($key, $params));
     }
 

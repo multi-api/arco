@@ -9,7 +9,7 @@ use Multiapi\Arco\Config\AppConfig;
 final class WebFunctions
 {
     public const ENDPOINT = 'default';
-    private const ROLE_RETRIES = 10;
+    private const ROLE_ERRORS = ['ValidationException', 'AccessDeniedException'];
     private const CONFLICT_RETRIES = 10;
 
     public function __construct(private readonly LambdaWebClient $client, private readonly Sleeper $sleeper)
@@ -20,7 +20,7 @@ final class WebFunctions
     public function get(string $function): ?array
     {
         try {
-            return self::normalize($this->call('GetWebFunction', ['functionName' => $function]));
+            return LambdaHelpers::normalize($this->call('GetWebFunction', ['functionName' => $function]));
         } catch (LambdaWebException $e) {
             if ($e->getAwsErrorCode() === 'ResourceNotFoundException') {
                 return null;
@@ -37,7 +37,7 @@ final class WebFunctions
      */
     public function create(string $function, array $revision, array $endpoint, array $tags, bool $roleJustCreated = false): string
     {
-        $result = $this->withRoleRetry($roleJustCreated, fn () => $this->call('CreateWebFunction', [
+        $result = LambdaHelpers::retryRolePropagation($this->sleeper, $roleJustCreated, self::ROLE_ERRORS, fn () => $this->call('CreateWebFunction', [
             'functionName' => $function,
             'revisionConfig' => $revision,
             'endpointConfig' => $endpoint,
@@ -53,7 +53,7 @@ final class WebFunctions
      */
     public function createRevision(string $function, array $revision, bool $roleJustCreated = false): string
     {
-        $result = $this->withRoleRetry($roleJustCreated, fn () => $this->call('CreateWebFunctionRevision', ['functionName' => $function, ...$revision]));
+        $result = LambdaHelpers::retryRolePropagation($this->sleeper, $roleJustCreated, self::ROLE_ERRORS, fn () => $this->call('CreateWebFunctionRevision', ['functionName' => $function, ...$revision]));
         return self::text($result['revisionId'] ?? null);
     }
 
@@ -90,7 +90,7 @@ final class WebFunctions
     public function endpoint(string $function): ?array
     {
         try {
-            return self::normalize($this->call('GetWebFunctionEndpoint', ['functionName' => $function, 'endpointName' => self::ENDPOINT]));
+            return LambdaHelpers::normalize($this->call('GetWebFunctionEndpoint', ['functionName' => $function, 'endpointName' => self::ENDPOINT]));
         } catch (LambdaWebException $e) {
             if ($e->getAwsErrorCode() === 'ResourceNotFoundException') {
                 return null;
@@ -169,7 +169,7 @@ final class WebFunctions
 
     public static function text(mixed $value): string
     {
-        return is_scalar($value) ? (string) $value : '';
+        return LambdaHelpers::text($value);
     }
 
     /**
@@ -180,20 +180,7 @@ final class WebFunctions
      */
     private function call(string $operation, array $args): array
     {
-        return self::normalize($this->client->execute($this->client->getCommand($operation, $args))->toArray());
-    }
-
-    /**
-     * @param array<array-key, mixed> $data
-     * @return array<string, mixed>
-     */
-    private static function normalize(array $data): array
-    {
-        $out = [];
-        foreach ($data as $key => $value) {
-            $out[(string) $key] = $value;
-        }
-        return $out;
+        return LambdaHelpers::normalize($this->client->execute($this->client->getCommand($operation, $args))->toArray());
     }
 
     /** @param array<string, mixed> $endpoint */
@@ -208,31 +195,5 @@ final class WebFunctions
         }
         usort($weights, fn (array $a, array $b) => $b['weight'] <=> $a['weight']);
         return $weights[0]['revisionId'] ?? null;
-    }
-
-    /**
-     * IAM roles take a few seconds to become assumable after creation. Only a role created in this
-     * deploy is retried, and only when the AWS error message (not the request context that
-     * getMessage() includes, such as the function name) mentions the role.
-     *
-     * @template T
-     * @param callable(): T $call
-     * @return T
-     */
-    private function withRoleRetry(bool $roleJustCreated, callable $call): mixed
-    {
-        for ($attempt = 1; ; $attempt++) {
-            try {
-                return $call();
-            } catch (LambdaWebException $e) {
-                $roleProblem = $roleJustCreated
-                    && in_array($e->getAwsErrorCode(), ['ValidationException', 'AccessDeniedException'], true)
-                    && str_contains(strtolower((string) $e->getAwsErrorMessage()), 'role');
-                if (! $roleProblem || $attempt >= self::ROLE_RETRIES) {
-                    throw $e;
-                }
-                $this->sleeper->sleep(3);
-            }
-        }
     }
 }

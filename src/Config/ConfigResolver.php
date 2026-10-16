@@ -17,6 +17,8 @@ final class ConfigResolver
         'account' => null,
         'dns' => null,
         'certificate' => null,
+        'consoleTimeout' => 900,
+        'protected' => null,
     ];
 
     private const RUNTIME_DEFAULTS = [
@@ -41,7 +43,7 @@ final class ConfigResolver
     /** @param array<string, mixed> $raw */
     public static function resolve(array $raw, string $environment): AppConfig
     {
-        /** @var array<string, array{settings: array<string, mixed>, variables: array<string, string>, runtime: array<string, mixed>, permissions?: list<array<string, mixed>>, domains?: list<string>|null}> $environments */
+        /** @var array<string, array{settings: array<string, mixed>, variables: array<string, string>, runtime: array<string, mixed>, permissions?: list<array<string, mixed>>, domains?: list<string>|null, deployCommands?: list<string>|null}> $environments */
         $environments = $raw['environments'] ?? [];
         if (! isset($environments[$environment])) {
             throw ConfigException::make('config.unknown_environment', [
@@ -118,6 +120,13 @@ final class ConfigResolver
         $dns = $setting('dns');
         $certificate = self::nullableString($setting('certificate'));
 
+        /** @var list<string>|null $appCommands */
+        $appCommands = $raw['deployCommands'] ?? null;
+        $envCommands = $env['deployCommands'] ?? null;
+        $sources['deployCommands'] = $envCommands !== null ? 'environment' : ($appCommands !== null ? 'app' : 'default');
+        $protected = $setting('protected');
+        $consoleTimeout = (int) $setting('consoleTimeout');
+
         $config = new AppConfig(
             app: self::nullableString($raw['name'] ?? null) ?? '',
             environment: $environment,
@@ -142,6 +151,9 @@ final class ConfigResolver
             dnsProfile: is_string($dns) && $dns !== '' ? $dns : null,
             dnsManual: $dns === false,
             certificate: $certificate,
+            deployCommands: $envCommands ?? $appCommands ?? [],
+            consoleTimeout: $consoleTimeout,
+            protected: is_bool($protected) ? $protected : null,
         );
 
         return $config;

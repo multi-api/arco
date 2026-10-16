@@ -55,7 +55,7 @@ final class InfoCommand extends ArcoCommand
             return self::FAILURE;
         }
 
-        $status = $this->remoteStatus($config);
+        [$status, $remoteError] = $this->remoteStatus($config);
         $settings = $this->settings($config);
 
         if ($input->getOption('json')) {
@@ -65,15 +65,18 @@ final class InfoCommand extends ArcoCommand
                 'revision' => $status?->activeRevisionId,
                 'domains' => $config->domains,
                 'distribution' => $status?->distributionDomain !== null ? ['domain' => $status->distributionDomain, 'status' => $status->distributionStatus] : null,
+                'console' => ['function' => $config->consoleFunctionName(), 'version' => $status?->consoleVersion]
+                    + ($status?->consoleVersionError !== null ? ['error' => $status->consoleVersionError] : []),
+                'deployCommands' => $config->deployCommands,
                 'settings' => array_map(fn (array $row) => $row[0], $settings),
-            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-            return self::SUCCESS;
+            ] + ($remoteError !== null ? ['error' => $remoteError] : []), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+            return $remoteError === null ? self::SUCCESS : self::FAILURE;
         }
 
         $io->title($config->functionName());
         $io->table(
             [$this->t('info.setting'), $this->t('info.value'), $this->t('info.source')],
-            array_map(fn (string $key, array $row) => [$key, self::display($row[0]), $row[1]], array_keys($settings), $settings),
+            array_map(fn (string $key, array $row) => [$key, $this->display($row[0]), $row[1]], array_keys($settings), $settings),
         );
 
         $io->section($this->t('info.variables'));
@@ -83,6 +86,10 @@ final class InfoCommand extends ArcoCommand
         }
         $io->table([$this->t('info.variable'), $this->t('info.value')], $rows);
 
+        if ($remoteError !== null) {
+            $io->error($remoteError);
+            return self::FAILURE;
+        }
         if ($status === null) {
             $io->note($this->t('info.no_remote'));
         } else {
@@ -90,25 +97,41 @@ final class InfoCommand extends ArcoCommand
                 ['URL' => $status->domainName !== null ? 'https://' . $status->domainName : '-'],
                 [$this->t('info.state') => $status->state],
                 [$this->t('info.revision') => $status->activeRevisionId ?? '-'],
+                [$this->t('info.console') => $this->consoleStatus($status)],
                 ...($status->distributionDomain !== null ? [[$this->t('info.distribution') => "{$status->distributionDomain} ({$status->distributionStatus})"]] : []),
             );
         }
         return self::SUCCESS;
     }
 
-    /** Remote status only when credentials resolve without prompting. */
-    private function remoteStatus(AppConfig $config): ?AppStatus
+    private function consoleStatus(AppStatus $status): string
+    {
+        return match (true) {
+            $status->consoleVersion !== null => $this->t('info.console_version', ['function' => (string) $status->consoleFunction, 'version' => $status->consoleVersion]),
+            $status->consoleVersionError === null => $this->t('info.console_missing'),
+            str_contains($status->consoleVersionError, 'AccessDenied') => $this->t('info.console_denied'),
+            default => $this->t('info.console_unknown', ['error' => $status->consoleVersionError]),
+        };
+    }
+
+    /**
+     * Remote status only when a profile resolves without prompting, plus the error to show when
+     * the credentials are missing or expired (anything else still reads as "not deployed").
+     *
+     * @return array{0: ?AppStatus, 1: ?string}
+     */
+    private function remoteStatus(AppConfig $config): array
     {
         /** @var array<string, string> $env */
         $env = getenv();
         $choice = ProfileResolver::resolve(null, $env, $config, new LocalState($this->projectDir()));
         if ($choice === null) {
-            return null;
+            return [null, null];
         }
         try {
-            return ($this->deployerFactory)(($this->awsFactory)($choice->profile, (string) $config->region))->describe($config);
-        } catch (Throwable) {
-            return null;
+            return [($this->deployerFactory)(($this->awsFactory)($choice->profile, (string) $config->region))->describe($config), null];
+        } catch (Throwable $e) {
+            return [null, $this->credentialProblem($e, $choice->profile)];
         }
     }
 
@@ -149,6 +172,9 @@ final class InfoCommand extends ArcoCommand
             'rateLimit' => [$config->rateLimit, $s['rateLimit']],
             'auth' => [$config->auth, $s['auth']],
             'logLevel' => [$config->logLevel, $s['logLevel']],
+            'consoleTimeout' => [$config->consoleTimeout, $s['consoleTimeout']],
+            'protected' => [$config->isProtected(), $s['protected']],
+            'deployCommands' => [$config->deployCommands === [] ? null : implode('; ', $config->deployCommands), $s['deployCommands']],
             'permissions' => [count($config->permissions), $config->permissions === [] ? 'default' : 'app/environment'],
             'domains' => [$config->domains === [] ? null : implode(', ', $config->domains), $s['domains']],
             'dns' => [$config->domains === [] ? null : $this->dnsLabel($config), $s['dns']],
@@ -170,8 +196,12 @@ final class InfoCommand extends ArcoCommand
         };
     }
 
-    private static function display(mixed $value): string
+    private function display(mixed $value): string
     {
-        return is_scalar($value) ? (string) $value : '-';
+        return match (true) {
+            is_bool($value) => $this->t($value ? 'common.yes' : 'common.no'),
+            is_scalar($value) => (string) $value,
+            default => '-',
+        };
     }
 }

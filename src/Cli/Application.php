@@ -19,6 +19,9 @@ final class Application extends SymfonyApplication
         $app->addCommands([
             new \Multiapi\Arco\Commands\InitCommand(),
             new \Multiapi\Arco\Commands\DeployCommand(),
+            new \Multiapi\Arco\Commands\ConsoleCommand(),
+            new \Multiapi\Arco\Commands\TinkerCommand(),
+            new \Multiapi\Arco\Commands\LogsCommand(),
             new \Multiapi\Arco\Commands\PackageCommand(),
             new \Multiapi\Arco\Commands\InfoCommand(),
             new \Multiapi\Arco\Commands\RemoveCommand(),

@@ -15,18 +15,30 @@ final class PolicyBuilder
     /**
      * @param array<string, SecretReference> $references
      * @param list<array<string, mixed>> $permissions extra statements from permissions()
+     * @param string|null $codeBucket the code bucket whose runtime/* binaries the console function reads
      * @return array{Version: string, Statement: list<array<string, mixed>>}
      */
-    public static function document(string $region, string $account, string $function, array $references, array $permissions = []): array
+    public static function document(string $region, string $account, string $function, array $references, array $permissions = [], ?string $codeBucket = null): array
     {
-        // Web Functions log to /aws/lambda/web/<function> and also to a "<group>.local" group.
+        // Web Functions log to /aws/lambda/web/<function> and also to a "<group>.local" group; the
+        // console function to the classic /aws/lambda/<function>-console group.
         $group = "arn:aws:logs:$region:$account:log-group:/aws/lambda/web/$function";
+        $console = "arn:aws:logs:$region:$account:log-group:/aws/lambda/$function-console";
         $statements = [[
             'Sid' => 'ArcoLogs',
             'Effect' => 'Allow',
             'Action' => ['logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents'],
-            'Resource' => ["$group:*", "$group.local:*"],
+            'Resource' => ["$group:*", "$group.local:*", "$console:*"],
         ]];
+        if ($codeBucket !== null) {
+            // The console function downloads the FrankenPHP binary it shares with the web revision.
+            $statements[] = [
+                'Sid' => 'ArcoRuntimeBinary',
+                'Effect' => 'Allow',
+                'Action' => 's3:GetObject',
+                'Resource' => "arn:aws:s3:::$codeBucket/runtime/*",
+            ];
+        }
 
         $parameters = [];
         $secrets = [];
