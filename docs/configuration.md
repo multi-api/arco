@@ -155,8 +155,8 @@ vendor/bin/arco set timeout 60 --app          # app level (all environments)
 ## Permissions
 
 The managed execution role only gets what Arco itself needs: writing logs (web and console), reading
-the console function's FrankenPHP binary and the secrets your variables reference. When your app uses other AWS resources (an existing bucket,
-a DynamoDB table, SES), add IAM statements with `permissions()`, in the same shape as an IAM
+the console function's FrankenPHP binary (only used when it downloads it) and the secrets your variables reference. When your app uses other AWS
+resources (an existing bucket, a DynamoDB table, SES), add IAM statements with `permissions()`, in the same shape as an IAM
 policy statement:
 
 ```php
@@ -194,11 +194,20 @@ newest and prunes older ones best-effort. Its logs go to `/aws/lambda/<app>-<env
 managed role may write. `arco remove` deletes it (log groups are kept).
 
 Lambda limits a classic function to 250 MB of unzipped code, so the console function gets a copy of the
-package **without** the FrankenPHP binary and the Node web runtime. The deploy uploads the exact binary of
-the web revision once to the code bucket (`runtime/<build>/frankenphp`); at a cold start the console
-function downloads it (about 2.5 s for 160 MB, once per execution environment), checks its SHA-256 and
-keeps it in `/tmp`. The managed role may read `runtime/*` of the code bucket; with your own `role()`,
-allow `s3:GetObject` on `arn:aws:s3:::arco-<account>-<region>/runtime/*`
+package **without** the FrankenPHP binary and the Node web runtime. With current runtime builds it carries
+the build's static PHP CLI instead (`bin/php`, about 91 MB, same PHP version and extensions, so about 159 MB of the 250 MB
+are left for your app, in the units `arco package` prints) and runs it directly, with no download at cold start. The CLI is fetched from GitHub releases
+once per runtime build and machine and cached in `~/.arco/cache/runtime/<build>/php`.
+
+The console downloads FrankenPHP instead for a custom `binary()` (the deploy output notes it), and with a
+warning in the deploy output for a runtime
+build without a PHP CLI (`1.13.0-r1`) or unknown to this Arco version, when `bin/php` alone would take the
+console over 250 MB (then `->exclude([...])` leaves room), or when the PHP CLI cannot be downloaded from
+GitHub (the warning names the URL and the error; a size or checksum mismatch still stops the deploy). In those cases the deploy uploads the exact binary of the web revision once to
+the code bucket (`runtime/<build>/frankenphp`); at a cold start the console function downloads it (about 2.5 s
+for 160 MB, once per execution environment), checks its SHA-256 and keeps it in `/tmp`. The managed role may
+read `runtime/*` of the code bucket in every case; with your own `role()`, allow `s3:GetObject` on
+`arn:aws:s3:::arco-<account>-<region>/runtime/*` (needed whenever a console version that downloads can run)
 and `logs:CreateLogStream` / `logs:PutLogEvents` on the console log group. If the console package is
 still over 250 MB, the web function deploys, the console function is skipped with a warning and deploy
 commands are refused: leave large folders out with `->exclude([...])`.

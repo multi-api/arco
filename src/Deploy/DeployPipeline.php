@@ -3,7 +3,9 @@
 namespace Multiapi\Arco\Deploy;
 
 use Aws\Exception\AwsException;
+use Multiapi\Arco\Binary\BinaryException;
 use Multiapi\Arco\Binary\BinaryProvider;
+use Multiapi\Arco\Binary\RuntimeBuild;
 use Multiapi\Arco\Build\Builder;
 use Multiapi\Arco\Build\BuildResult;
 use Multiapi\Arco\Build\CachesPaths;
@@ -102,7 +104,36 @@ final class DeployPipeline
         // The console zip and the binary are derived from the web zip in a scratch directory.
         $work = sys_get_temp_dir() . '/arco-console-' . bin2hex(random_bytes(4));
         try {
-            $console = ConsolePackager::fromWeb($package, $work);
+            // The console runs the runtime build's PHP CLI (bin/php in its zip) when the build has one;
+            // otherwise (custom binary, unknown or older build, CLI unreachable) it downloads FrankenPHP
+            // at cold start. $note holds the reason (and its params) for that fallback.
+            $buildId = $package->manifest?->runtimeBuild;
+            $build = $buildId === null ? null : $this->binaries->build($buildId);
+            $note = match (true) {
+                $buildId === null => ['reason' => 'custom_binary'],
+                $build === null => ['reason' => 'unknown_build', 'build' => $buildId],
+                default => ['reason' => 'no_php_cli'],
+            };
+            $phpCli = null;
+            if ($build !== null) {
+                try {
+                    $phpCli = $this->binaries->phpCli($build, self::downloadProgress($build, $onStep));
+                } catch (BinaryException $e) {
+                    // Only reachability falls back (network, proxy, GitHub outage): a size or checksum
+                    // mismatch or an unwritable cache stops the deploy, still before any AWS change.
+                    if ($e->key !== 'binary.download_failed') {
+                        throw $e;
+                    }
+                    $note = ['reason' => 'php_cli_unavailable', 'url' => (string) ($e->params['url'] ?? ''), 'message' => (string) ($e->params['message'] ?? '')];
+                }
+            }
+            $console = ConsolePackager::fromWeb($package, $work, $phpCli);
+            if ($phpCli !== null && $console->package->bytes > ConsoleFunction::MAX_UNZIPPED_BYTES) {
+                // bin/php alone can push the console over Lambda's limit: without it, the console still
+                // deploys and downloads FrankenPHP at cold start.
+                $console = ConsolePackager::fromWeb($package, $work, null);
+                $note = ['reason' => 'php_cli_too_large'];
+            }
             if ($console->package->bytes > ConsoleFunction::MAX_UNZIPPED_BYTES) {
                 $params = [
                     'size' => (int) round($console->package->bytes / 1048576),
@@ -114,6 +145,9 @@ final class DeployPipeline
                 }
                 $onStep('deploy.console_skipped_size', $params);
                 $console = null;
+            }
+            if ($console?->download !== null) {
+                $onStep('deploy.console_downloads_binary', $note);
             }
 
             $since = (int) floor(microtime(true) * 1000) - 5000;
@@ -180,6 +214,31 @@ final class DeployPipeline
         } finally {
             (new Filesystem())->remove($work);
         }
+    }
+
+    /**
+     * Reports a PHP CLI download (only called when the CLI is not cached yet): one step naming it, then
+     * each whole percent once as package.progress, which the step printer draws as a progress bar.
+     *
+     * @param callable(string, array<string, string|int>): void $onStep
+     * @return callable(int, int): void
+     */
+    private static function downloadProgress(RuntimeBuild $build, callable $onStep): callable
+    {
+        $last = null;
+        return static function (int $downloaded, int $total) use ($build, $onStep, &$last): void {
+            if ($total <= 0) {
+                return;
+            }
+            if ($last === null) {
+                $onStep('deploy.php_cli_downloading', ['build' => $build->id, 'size' => (int) round($total / 1048576)]);
+            }
+            $percent = (int) floor(min($downloaded, $total) * 100 / $total);
+            if ($percent !== $last) {
+                $last = $percent;
+                $onStep('package.progress', ['percent' => $percent]);
+            }
+        };
     }
 
     private static function errorMessage(Throwable $e): string

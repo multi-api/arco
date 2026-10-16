@@ -6,7 +6,7 @@ use Multiapi\Arco\Arco;
 
 final class RuntimeManifest
 {
-    public const ID_PATTERN = '/^(\d+\.\d+\.\d+)-r([1-9]\d*)$/';
+    public const ID_PATTERN = '/^(\d+\.\d+\.\d+)-r([1-9]\d*)$/D';
 
     /** @param array<string, RuntimeBuild> $builds sorted by id */
     private function __construct(private readonly string $default, private readonly array $builds)
@@ -49,7 +49,7 @@ final class RuntimeManifest
             if (! is_string($url) || ! str_starts_with($url, 'https://')) {
                 throw self::invalid("build $id needs an https url");
             }
-            if (! is_string($sha) || ! preg_match('/^[0-9a-f]{64}$/', $sha)) {
+            if (! self::isSha256($sha)) {
                 throw self::invalid("build $id needs a lowercase hex sha256");
             }
             if (! is_int($size) || $size <= 0) {
@@ -61,7 +61,7 @@ final class RuntimeManifest
             if (! is_string($php) || $php === '') {
                 throw self::invalid("build $id needs a php version");
             }
-            $builds[$id] = new RuntimeBuild($id, $url, $sha, $size, $m[1], $php);
+            $builds[$id] = new RuntimeBuild($id, $url, $sha, $size, $m[1], $php, self::phpCli($id, $entry['php_cli'] ?? null));
         }
 
         if (! isset($builds[$default])) {
@@ -114,6 +114,30 @@ final class RuntimeManifest
             return $this->latestFor($frankenphp);
         }
         return $this->get($this->default);
+    }
+
+    /** @phpstan-assert-if-true string $sha */
+    private static function isSha256(mixed $sha): bool
+    {
+        return is_string($sha) && preg_match('/^[0-9a-f]{64}$/D', $sha) === 1;
+    }
+
+    private static function phpCli(string $id, mixed $cli): ?PhpCli
+    {
+        if ($cli === null) {
+            return null;
+        }
+        $url = is_array($cli) ? ($cli['url'] ?? null) : null;
+        $sha = is_array($cli) ? ($cli['sha256'] ?? null) : null;
+        $size = is_array($cli) ? ($cli['size'] ?? null) : null;
+        if (
+            ! is_string($url) || ! str_starts_with($url, 'https://')
+            || ! self::isSha256($sha)
+            || ! is_int($size) || $size <= 0
+        ) {
+            throw self::invalid("build $id has an invalid php_cli");
+        }
+        return new PhpCli($url, $sha, $size);
     }
 
     private static function compare(RuntimeBuild $a, RuntimeBuild $b): int

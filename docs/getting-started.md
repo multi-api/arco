@@ -256,10 +256,23 @@ logged only up to the first such option. The command's own output also goes to t
 pass secrets as arguments: put them in `variables()` with an `arco-ssm:` reference (`arco secret:set`)
 and read them from the environment.
 
-The console function has no FrankenPHP binary in its zip (Lambda allows 250 MB for classic functions).
-Each new execution environment downloads it once from the code bucket (`runtime/...`) and verifies its
-SHA-256. Measured in the Lambda image: about 2.5 s for a 160 MB binary on a cold start, plus about 0.4 s
-per command on a warm one.
+With the current runtime builds the console function carries a static PHP CLI (`bin/php`, about 91 MB) with the
+same PHP version and extensions as the web runtime, and runs it directly: nothing is downloaded at cold
+start. Measured in the Lambda base image in local Docker (not a Lambda guarantee): init about 0.2 s and
+the first command 0.6 to 1 s, against about 3 s and 4 s when the binary is downloaded. The PHP CLI uses
+about 91 MB of the 250 MB of unzipped code Lambda allows, which leaves about 159 MB for your app (sizes as
+`arco package` prints them). The first deploy on a machine
+(and `arco deploy --package`) fetches the PHP CLI from GitHub releases, once per runtime build, and
+caches it in `~/.arco/cache/runtime/<build>/php`.
+
+The console falls back to downloading FrankenPHP from the code bucket (`runtime/...`, checksum-verified,
+once per execution environment) when you set a custom `binary()`, when the runtime build has no PHP CLI
+(such as `1.13.0-r1`) or is unknown to your Arco version, when the console would pass 250 MB unzipped
+only because of `bin/php`, or when the PHP CLI cannot be downloaded from GitHub (network, proxy, outage;
+the deploy goes on). The deploy output says which case applies: a plain note for a custom `binary()`,
+a warning for the others; in the size case, leave large
+folders out with `->exclude([...])` to get the faster start back. A PHP CLI whose size or checksum does
+not match stops the deploy before any AWS change.
 
 ### Migrations on deploy
 
@@ -294,7 +307,7 @@ accept (expand, then contract). For example, to rename `users.name` to `users.fu
 
 Each step is safe to roll back to the previous deploy.
 
-If the console package is over 250 MB unzipped, the console function is skipped with a warning and
+If the console package is over 250 MB unzipped even without `bin/php`, the console function is skipped with a warning and
 deploys with deploy commands are refused before anything changes: leave large folders out with
 `->exclude([...])`.
 
@@ -388,7 +401,9 @@ basis: without `lambda:ListVersionsByFunction` or `lambda:DeleteFunction` that s
 People who only run `arco command`, `arco tinker` or `arco logs` need `lambda:InvokeFunction` on the console
 function (`arco logs` needs the `logs:` actions above). The function's execution role is separate: for the managed role Arco
 adds `logs:CreateLogGroup`, `logs:CreateLogStream` and `logs:PutLogEvents` on the web and console log
-groups, `s3:GetObject` on `runtime/*` of the code bucket, and read access to the
+groups, `s3:GetObject` on `runtime/*` of the code bucket (the console function only reads it when it
+downloads the binary, but the role keeps it: a console version that downloads can be live after a
+rollback), and read access to the
 secrets you reference.
 
 ### Permissions for custom domains

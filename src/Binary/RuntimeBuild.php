@@ -11,6 +11,7 @@ final readonly class RuntimeBuild
         public int $size,
         public string $frankenphp,
         public string $php,
+        public ?PhpCli $phpCli = null,
     ) {
     }
 

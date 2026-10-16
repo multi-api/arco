@@ -34,7 +34,7 @@ final class RemoteShell extends Shell
     public static function configuration(AppConfig $app, ?string $dataDir = null): Configuration
     {
         // trustProject "never": no project .psysh.php and no project autoload run locally.
-        $config = new Configuration(['updateCheck' => 'never', 'trustProject' => 'never']);
+        $config = new Configuration(['updateCheck' => 'never', 'updateManualCheck' => 'never', 'trustProject' => 'never']);
         // Nothing runs locally.
         $config->setDefaultIncludes([]);
         // The loop stays in this process: no fork whose savegame could resume with an older scope.

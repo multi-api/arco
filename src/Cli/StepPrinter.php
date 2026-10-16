@@ -16,8 +16,15 @@ final class StepPrinter
 {
     public const PROGRESS = 'package.progress';
     /** Steps that report something the user should act on, not progress. */
-    public const WARNINGS = ['deploy.console_skipped_size', 'deploy.console_not_activated', 'deploy.console_retries_not_disabled', 'deploy.prune_versions_failed', 'deploy.prune_packages_failed'];
+    public const WARNINGS = ['deploy.console_downloads_binary', 'deploy.console_skipped_size', 'deploy.console_not_activated', 'deploy.console_retries_not_disabled', 'deploy.prune_versions_failed', 'deploy.prune_packages_failed'];
+    /** Codes of a WARNINGS step's `reason` that are a deliberate choice with nothing to act on: printed as bullets. */
+    private const BULLET_REASONS = ['deploy.console_downloads_binary' => ['custom_binary']];
     private const MARKS = [25, 50, 75, 100];
+    /**
+     * Params holding a code that is translated with the given key prefix before the step is printed;
+     * the code's text gets the step's other params (e.g. {url} and {message}).
+     */
+    private const TRANSLATED_PARAMS = ['deploy.console_downloads_binary' => ['reason' => 'deploy.console_reason.']];
 
     private ?ProgressBar $bar = null;
     private int $printed = 0;
@@ -39,7 +46,13 @@ final class StepPrinter
         }
         $this->closeBar();
         $this->printed = 0;
-        if (in_array($key, self::WARNINGS, true)) {
+        $warning = in_array($key, self::WARNINGS, true) && ! in_array($params['reason'] ?? null, self::BULLET_REASONS[$key] ?? [], true);
+        foreach (self::TRANSLATED_PARAMS[$key] ?? [] as $param => $prefix) {
+            if (isset($params[$param])) {
+                $params[$param] = ($this->translate)($prefix . $params[$param], $params);
+            }
+        }
+        if ($warning) {
             $this->io->warning(($this->translate)($key, $params));
             return;
         }

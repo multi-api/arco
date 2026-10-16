@@ -1,8 +1,10 @@
 #!/bin/sh
-# Arco console runtime entrypoint (Lambda provided.al2023). The console package has no PHP: the
-# FrankenPHP binary of the web revision is downloaded once per execution environment from the code
-# bucket (SigV4 with the function's credentials), checked against ARCO_BINARY_SHA256, cached in /tmp,
-# then runs runtime/console.php in PHP CLI mode. An unverified binary never runs. Every failure,
+# Arco console runtime entrypoint (Lambda provided.al2023). The console package normally carries the
+# PHP CLI of its runtime build as bin/php, which runs runtime/console.php directly: no download.
+# Fallback for custom binaries and old runtime builds (no bin/php): the FrankenPHP binary of the web
+# revision is downloaded once per execution environment from the code bucket (SigV4 with the
+# function's credentials), checked against ARCO_BINARY_SHA256, cached in /tmp, then runs
+# runtime/console.php in PHP CLI mode. An unverified binary never runs. Every failure,
 # including a step stopped by `set -eu`, is reported to the Runtime API as an init error.
 set -eu
 ROOT="${LAMBDA_TASK_ROOT:-/var/task}"
@@ -27,6 +29,20 @@ trap 'fail Arco.InitError "The console bootstrap failed while $step"' EXIT
 sha256() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
 }
+
+if [ -x "$ROOT/bin/php" ]; then
+  # The console package carries the PHP CLI of this runtime build: nothing to download.
+  export ARCO_PHP_BINARY="$ROOT/bin/php"
+  step="entering $ROOT/app"
+  cd "$ROOT/app"
+  step="starting $ARCO_PHP_BINARY"
+  trap - EXIT
+  exec "$ARCO_PHP_BINARY" "$ROOT/runtime/console.php"
+elif [ -e "$ROOT/bin/php" ]; then
+  # Arco always packages bin/php as 0755: without the bit the zip was damaged, and a redeploy of the
+  # same package will not fix it (nor would the download path, whose variables this deploy never set).
+  fail Arco.InitError "$ROOT/bin/php is not executable (the console zip lost its mode bits; package and deploy again)"
+fi
 
 if [ ! -x "$BIN" ]; then
   # Only a verified binary is ever renamed into place, so an existing one is reused as is.

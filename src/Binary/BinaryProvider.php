@@ -38,8 +38,37 @@ final class BinaryProvider
             return $path;
         }
 
-        $target = "{$this->cacheDir}/{$build->id}/frankenphp";
-        if (is_file($target) && filesize($target) === $build->size && hash_file('sha256', $target) === $build->sha256) {
+        return $this->fetch($build->url, $build->sha256, $build->size, "{$this->cacheDir}/{$build->id}/frankenphp", $build->id, $onProgress);
+    }
+
+    /**
+     * The verified, cached PHP CLI of a build, or null when the build publishes none.
+     *
+     * @param (callable(int, int): void)|null $onProgress
+     */
+    public function phpCli(RuntimeBuild $build, ?callable $onProgress = null): ?string
+    {
+        if ($build->phpCli === null) {
+            return null;
+        }
+        $cli = $build->phpCli;
+        return $this->fetch($cli->url, $cli->sha256, $cli->size, "{$this->cacheDir}/{$build->id}/php", $build->id, $onProgress);
+    }
+
+    /** A build of the manifest by id, or null when the id is unknown. */
+    public function build(string $id): ?RuntimeBuild
+    {
+        try {
+            return $this->manifest->get($id);
+        } catch (BinaryException) {
+            return null;
+        }
+    }
+
+    /** @param (callable(int, int): void)|null $onProgress */
+    private function fetch(string $url, string $sha256, int $size, string $target, string $buildId, ?callable $onProgress): string
+    {
+        if (is_file($target) && filesize($target) === $size && hash_file('sha256', $target) === $sha256) {
             return $target;
         }
         @unlink($target);
@@ -50,21 +79,21 @@ final class BinaryProvider
         }
         $partial = $target . '.' . bin2hex(random_bytes(4)) . '.part';
         try {
-            $this->downloader->download($build->url, $partial, $onProgress);
+            $this->downloader->download($url, $partial, $onProgress);
         } catch (\Throwable $e) {
             @unlink($partial);
             throw $e;
         }
 
-        $size = (int) filesize($partial);
-        if ($size !== $build->size) {
+        $actualSize = (int) filesize($partial);
+        if ($actualSize !== $size) {
             @unlink($partial);
-            throw BinaryException::make('binary.size_mismatch', ['build' => $build->id, 'expected' => $build->size, 'actual' => $size]);
+            throw BinaryException::make('binary.size_mismatch', ['build' => $buildId, 'expected' => $size, 'actual' => $actualSize]);
         }
         $actual = (string) hash_file('sha256', $partial);
-        if ($actual !== $build->sha256) {
+        if ($actual !== $sha256) {
             @unlink($partial);
-            throw BinaryException::make('binary.checksum_mismatch', ['build' => $build->id, 'expected' => $build->sha256, 'actual' => $actual]);
+            throw BinaryException::make('binary.checksum_mismatch', ['build' => $buildId, 'expected' => $sha256, 'actual' => $actual]);
         }
 
         if (! @rename($partial, $target) || ! @chmod($target, 0755)) {

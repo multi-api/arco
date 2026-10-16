@@ -3,6 +3,25 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.3.0
+
+- **Changed:** the console function carries a static PHP CLI (`bin/php`) with the same PHP version and
+  extensions as the web runtime, so it no longer downloads FrankenPHP at cold start. Runtime build
+  `1.13.0-r2`, which ships it, is now the default. In local Docker (`provided:al2023`) init took about
+  0.2 s and the first command 0.6 to 1 s, against about 3 s and 4 s with the download (local
+  measurements, not Lambda guarantees). The PHP CLI takes about 91 MB of the 250 MB of
+  unzipped code Lambda allows, leaving about 159 MB for the app (sizes as Arco prints them). A deploy
+  fetches it from GitHub releases once per runtime build and machine (cached in `~/.arco/cache/runtime`).
+- **Changed:** a custom `binary()`, a runtime build without a PHP CLI (`1.13.0-r1`) or unknown to this Arco
+  version, an app whose console would pass 250 MB unzipped only because of `bin/php`, or a PHP CLI that
+  cannot be downloaded from GitHub (network, proxy, outage) keeps the download at cold start, and the
+  deploy goes on and says why (a plain note for a custom `binary()`, a warning for the other cases) (for the size case it suggests `->exclude()`; for the download
+  case it names the URL and the error). A PHP CLI whose size or checksum does not match stops the deploy
+  before any AWS change.
+- **Changed:** a console package whose `bin/php` lost its exec bit fails at init with an error naming
+  it, instead of asking for `ARCO_BINARY_*` variables.
+- **Fixed:** `arco tinker` no longer contacts api.github.com for PsySH's weekly update check.
+
 ## 0.2.1
 
 - **Fixed:** `arco tinker` presents Eloquent models, collections, `Stringable`, `HtmlString` and the
