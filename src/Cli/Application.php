@@ -35,6 +35,8 @@ final class Application extends SymfonyApplication
             new \Multiapi\Arco\Commands\ConsoleRemoveCommand(),
             new \Multiapi\Arco\Commands\SchedulerSetCommand(),
             new \Multiapi\Arco\Commands\SchedulerRemoveCommand(),
+            new \Multiapi\Arco\Commands\SchedulerPauseCommand(),
+            new \Multiapi\Arco\Commands\SchedulerResumeCommand(),
             new \Multiapi\Arco\Commands\LogsRetentionCommand(),
         ]);
         return $app;

@@ -3,6 +3,23 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.4.1
+
+- **Added:** `arco scheduler:pause` / `arco scheduler:resume` disable or enable the environment's scheduler
+  rule in AWS at once, without editing `arco.php`. A deploy keeps a paused rule paused (with a note) instead of
+  turning it back on; new rules start enabled. Without a rule in AWS they fail and change nothing.
+- **Added:** `scheduler:set` and `scheduler:remove` can apply the change without a deploy: they ask "Apply now
+  in AWS without a deploy?" (default no), or apply at once with `--apply`. Set needs the console function's
+  `live` alias to be deployed (otherwise nothing in AWS changes and it asks for a deploy); remove deletes the
+  rule and its invoke permission. `--apply` needs `--env`.
+- **Added:** `arco info` shows a paused scheduler (`every 5 min (paused)`), and `--json` adds
+  `settings.schedulerPaused` (`true`, `false` or `null`).
+- **Added:** deploy-profile permissions `events:DisableRule` and `events:EnableRule` on
+  `rule/arco-*-scheduler` for pause and resume (already covered by an `events:*` grant on the rule).
+- **Changed:** with a scheduler, a deploy now reads the rule (`events:DescribeRule`, already in the documented
+  permissions) before updating it, to keep a paused rule paused; without that permission the scheduler update
+  fails with the existing `deploy.scheduler_failed` warning.
+
 ## 0.4.0
 
 - **Changed (breaking):** the console function is opt-in. A deploy now creates only the web function; the

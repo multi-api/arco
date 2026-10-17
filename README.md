@@ -124,7 +124,8 @@ Every option, the packaging rules and the Laravel preset are in the
 | `arco console:add --env=<env>` / `console:remove` | Turn the console function on or off in `arco.php` (off deletes it on the next deploy) |
 | `arco command "<args>" --env=<env>` | Run an artisan (or PHP) command on the console function (needs `console()`); exits with its exit code (`--async` to start it and return) |
 | `arco tinker --env=<env>` | Tinker on your machine, statements run in Lambda (needs `console()`; `--execute="<code>"` for one statement) |
-| `arco scheduler:set [N] --env=<env>` / `scheduler:remove` | Run Laravel's scheduler every N minutes (suggests N from your tasks; turns the console on) / turn it off |
+| `arco scheduler:set [N] --env=<env>` / `scheduler:remove` | Run Laravel's scheduler every N minutes (suggests N from your tasks; turns the console on) / turn it off; `--apply` (or answer yes) applies it in AWS without a deploy |
+| `arco scheduler:pause --env=<env>` / `scheduler:resume` | Pause or resume the scheduler in AWS at once, without editing `arco.php` (deploys keep it paused) |
 | `arco logs:retention <days\|never> --env=<env>` | Set how long CloudWatch keeps the logs (`--remove` stops managing it) |
 | `arco logs --env=<env>` | Web and console logs merged, filtered and colored (`--follow`, `--since`, `--level`, `--request`, `--filter`) |
 | `arco package --env=<env>` | Build the zip only (for CI: build once, deploy later) |

@@ -247,7 +247,10 @@ the console function, from an EventBridge rule aligned to the UTC clock (:00, :0
 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60. It turns the console on. Without a number the command suggests one
 from your scheduled tasks, reading them with `php artisan arco:schedule-intervals` run with `ARCO=1` (so
 your own `env('ARCO')` branches see it); a deploy warns if a task needs a shorter interval. `arco
-scheduler:remove` turns it off and the next deploy deletes the rule.
+scheduler:remove` turns it off and the next deploy deletes the rule. Both offer to apply the change in AWS
+right away, without a deploy (`--apply` skips the question). `arco scheduler:pause --env=<env>` and `arco
+scheduler:resume --env=<env>` stop and restart the rule at once without editing `arco.php`; deploys keep a
+paused scheduler paused.
 
 `arco logs:retention 30 --env=<env>` (or `->logRetention(30)`) keeps the web and console logs for 30 days;
 `never` stops them from expiring, `--remove` leaves retention unmanaged (the default). Each deploy also
@@ -415,7 +418,8 @@ The role used by the E2E workflow lives in a dedicated test account and needs:
 - `logs:StartLiveTail` for `arco logs --follow` (Live Tail; without
   `logs:StartLiveTail` follow polls instead). `logs:FilterLogEvents` covers `arco logs` without `--follow`
 - for the scheduler (`arn:aws:events:*:*:rule/arco-*-scheduler`): `events:PutRule`, `events:PutTargets`,
-  `events:DescribeRule`, `events:RemoveTargets`, `events:DeleteRule`, `events:TagResource`; on the console
+  `events:DescribeRule`, `events:RemoveTargets`, `events:DeleteRule`, `events:TagResource`,
+  `events:DisableRule`, `events:EnableRule` (`scheduler:pause` / `scheduler:resume`); on the console
   function: `lambda:AddPermission`, `lambda:RemovePermission`, `lambda:GetPolicy`
 - for the version check of the runtime clean-up: `lambda:ListVersionsByFunction` on the Arco functions
   (it reads every tagged function's versions), and `tag:GetResources` (without it the clean-up warns on every deploy)

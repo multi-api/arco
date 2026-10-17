@@ -71,7 +71,7 @@ final class InfoCommand extends ArcoCommand
                         + ['enabled' => true]
                     : ['enabled' => false, 'function' => $config->consoleFunctionName()],
                 'deployCommands' => $config->deployCommands,
-                'settings' => array_map(fn (array $row) => $row[0], $settings),
+                'settings' => $this->jsonSettings($settings, $status),
             ] + ($remoteError !== null ? ['error' => $remoteError] : []), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
             return $remoteError === null ? self::SUCCESS : self::FAILURE;
         }
@@ -79,7 +79,7 @@ final class InfoCommand extends ArcoCommand
         $io->title($config->functionName());
         $io->table(
             [$this->t('info.setting'), $this->t('info.value'), $this->t('info.source')],
-            array_map(fn (string $key, array $row) => [$key, $this->display($key, $row[0]), $row[1]], array_keys($settings), $settings),
+            array_map(fn (string $key, array $row) => [$key, $this->display($key, $row[0], $status), $row[1]], array_keys($settings), $settings),
         );
 
         $io->section($this->t('info.variables'));
@@ -203,9 +203,29 @@ final class InfoCommand extends ArcoCommand
         };
     }
 
-    private function display(string $key, mixed $value): string
+    /**
+     * The machine values, with schedulerPaused after scheduler: true/false from the rule, null when
+     * there is no scheduler, no rule or it could not be read.
+     *
+     * @param array<string, array{0: mixed, 1: string}> $settings
+     * @return array<string, mixed>
+     */
+    private function jsonSettings(array $settings, ?AppStatus $status): array
+    {
+        $json = [];
+        foreach ($settings as $key => $row) {
+            $json[$key] = $row[0];
+            if ($key === 'scheduler') {
+                $json['schedulerPaused'] = $row[0] === null ? null : $status?->schedulerPaused;
+            }
+        }
+        return $json;
+    }
+
+    private function display(string $key, mixed $value, ?AppStatus $status = null): string
     {
         return match (true) {
+            $key === 'scheduler' && is_int($value) && $status?->schedulerPaused === true => $this->t('scheduler.every_paused', ['minutes' => $value]),
             $key === 'console' => $this->t(match ($value) {
                 true => 'console.on',
                 false => 'console.off',

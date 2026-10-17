@@ -190,7 +190,8 @@ The console function is **opt-in**: by default `arco deploy` creates only the we
 on the next deploy, and a failed delete is a warning. `arco command`, `arco tinker`, `deployCommands()` and
 `arco deploy --migrate` need it and fail before touching AWS when it is off, naming `arco console:add`.
 `arco info` shows it as `on`, `off` or `not set` (in your language); in `--json`, `settings.console` is `true`,
-`false` or `null`, `settings.scheduler` the minutes or `null`, and `settings.logRetention` the days, `false`
+`false` or `null`, `settings.scheduler` the minutes or `null` (with `settings.schedulerPaused`, see
+Scheduler), and `settings.logRetention` the days, `false`
 (never expire) or `null` (not managed), as `arco.php` writes them.
 
 **Upgrading to 0.4.** An environment deployed with Arco 0.2 or 0.3 already has a console function. If
@@ -245,6 +246,21 @@ needs a shorter interval than the one configured (for example an `everyMinute()`
 The rule is only created or updated after the console function was activated successfully, so it never
 fires at an older version, and it is deleted when the scheduler is off. If EventBridge cannot be read
 (missing `events:DescribeRule`), the deploy warns instead of guessing.
+
+`arco scheduler:pause --env=<env>` disables the rule in AWS at once and `arco scheduler:resume --env=<env>`
+enables it again. They do not edit `arco.php`, and a deploy keeps a paused rule paused (it prints a note);
+new rules start enabled. Without a rule in AWS they fail and change nothing; a rule already paused (or
+active) is "nothing to change". `arco info` shows a paused scheduler as `every 5 min (paused)`, and `--json`
+adds `settings.schedulerPaused`: `true`, `false`, or `null` without a scheduler, a rule or EventBridge read
+access.
+
+`scheduler:set` and `scheduler:remove` can also apply the change without a deploy: after editing `arco.php`
+they ask "Apply now in AWS without a deploy?" (default no), `--apply` applies without asking, and a
+non-interactive run without `--apply` only edits `arco.php`. `scheduler:set --apply` puts the rule on the
+console function's `live` alias (a paused rule stays paused); if the console is not deployed yet, nothing in
+AWS changes and it asks for `arco deploy --env=<env>`. `scheduler:remove --apply` deletes the rule and the
+alias's invoke permission. `--apply` needs `--env` (the app level spans every environment) and works when
+`arco.php` already has the value, for example after editing it by hand.
 
 ### Log retention
 

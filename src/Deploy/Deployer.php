@@ -69,6 +69,15 @@ interface Deployer
     public function removeConsole(AppConfig $config, Closure $onStep): void;
 
     /**
+     * Deletes the scheduler rule and the console alias's invoke permission when the rule exists (step
+     * deploy.scheduler_removed); when EventBridge refuses the lookup, warns (deploy.scheduler_unreadable)
+     * and deletes nothing.
+     *
+     * @param Closure(string, array<string, string|int>): void $onStep
+     */
+    public function removeScheduler(AppConfig $config, Closure $onStep): void;
+
+    /**
      * Once the console's live alias points at this deploy's version: with a scheduler, creates or
      * updates the EventBridge rule invoking that alias (step deploy.scheduler_set); without one,
      * deletes a rule left from before (step deploy.scheduler_removed, nothing when there was none).

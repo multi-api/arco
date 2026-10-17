@@ -18,6 +18,8 @@ final class SchedulerRule
     public const TARGET_ID = 'arco-console';
     public const STATEMENT_ID = 'arco-scheduler';
     public const INPUT = '{"command":"schedule:run"}';
+    public const ENABLED = 'ENABLED';
+    public const DISABLED = 'DISABLED';
 
     public function __construct(private readonly EventBridgeClient $events, private readonly LambdaClient $lambda)
     {
@@ -42,18 +44,22 @@ final class SchedulerRule
 
     /**
      * Creates or updates the rule, points it at the console's live alias and lets EventBridge invoke it.
+     * A new rule starts enabled; an existing one keeps its state, so a paused scheduler (arco
+     * scheduler:pause) stays paused.
      *
      * @param array<string, string> $tags
+     * @return bool whether the rule is paused (it existed and was disabled)
      */
-    public function put(AppConfig $config, string $consoleAliasArn, array $tags): void
+    public function put(AppConfig $config, string $consoleAliasArn, array $tags): bool
     {
         $name = self::name($config);
         $every = $config->scheduler ?? throw new \LogicException('No scheduler is configured.');
+        $paused = $this->state($config) === self::DISABLED;
         $rule = $this->events->putRule([
             'Name' => $name,
             'Description' => "Arco: schedule:run every $every min on {$config->consoleFunctionName()}:" . ConsoleFunction::ALIAS,
             'ScheduleExpression' => self::expression($every),
-            'State' => 'ENABLED',
+            'State' => $paused ? self::DISABLED : self::ENABLED,
             'Tags' => array_map(static fn (string $key, string $value): array => ['Key' => $key, 'Value' => $value], array_keys($tags), array_values($tags)),
         ]);
         $ruleArn = $rule['RuleArn'] ?? null;
@@ -87,19 +93,37 @@ final class SchedulerRule
                 throw $e;
             }
         }
+        return $paused;
+    }
+
+    /** The rule's state (ENABLED or DISABLED), or null when there is no rule. */
+    public function state(AppConfig $config): ?string
+    {
+        try {
+            $state = $this->events->describeRule(['Name' => self::name($config)])['State'] ?? null;
+        } catch (EventBridgeException $e) {
+            if ($e->getAwsErrorCode() === 'ResourceNotFoundException') {
+                return null;
+            }
+            throw $e;
+        }
+        return is_string($state) ? $state : self::ENABLED;
+    }
+
+    /** Stops the rule from firing; the rule, its target and the permission stay. */
+    public function pause(AppConfig $config): void
+    {
+        $this->events->disableRule(['Name' => self::name($config)]);
+    }
+
+    public function resume(AppConfig $config): void
+    {
+        $this->events->enableRule(['Name' => self::name($config)]);
     }
 
     public function exists(AppConfig $config): bool
     {
-        try {
-            $this->events->describeRule(['Name' => self::name($config)]);
-            return true;
-        } catch (EventBridgeException $e) {
-            if ($e->getAwsErrorCode() === 'ResourceNotFoundException') {
-                return false;
-            }
-            throw $e;
-        }
+        return $this->state($config) !== null;
     }
 
     /**

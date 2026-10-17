@@ -6,6 +6,7 @@ use Closure;
 use Multiapi\Arco\Build\ScheduleInspector;
 use Multiapi\Arco\Cli\ArcoCommand;
 use Multiapi\Arco\Cli\UserError;
+use Multiapi\Arco\Commands\Concerns\AppliesScheduler;
 use Multiapi\Arco\Commands\Concerns\EditsSettings;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
 use Multiapi\Arco\Config\ArcoFileEditor;
@@ -25,14 +26,20 @@ final class SchedulerSetCommand extends ArcoCommand
 {
     use ResolvesTarget;
     use EditsSettings;
+    use AppliesScheduler;
 
     /** @var Closure(string): (list<array{task: string, minutes: list<int>}>|null) the app's scheduled tasks, read in the project dir */
     private readonly Closure $scheduleInspector;
 
-    /** @param (Closure(string): (list<array{task: string, minutes: list<int>}>|null))|null $scheduleInspector default: ScheduleInspector with this PHP */
-    public function __construct(?Closure $scheduleInspector = null)
+    /**
+     * @param (Closure(string): (list<array{task: string, minutes: list<int>}>|null))|null $scheduleInspector default: ScheduleInspector with this PHP
+     * @param (Closure(?string, string): \Multiapi\Arco\Aws\AwsClients)|null $awsFactory
+     * @param (Closure(\Multiapi\Arco\Aws\AwsClients): \Multiapi\Arco\Deploy\Deployer)|null $deployerFactory
+     */
+    public function __construct(?Closure $scheduleInspector = null, ?Closure $awsFactory = null, ?Closure $deployerFactory = null)
     {
         $this->scheduleInspector = $scheduleInspector ?? static fn (string $dir): ?array => (new ScheduleInspector())->tasks($dir, PHP_BINARY);
+        $this->initApply($awsFactory, $deployerFactory);
         parent::__construct();
     }
 
@@ -40,6 +47,7 @@ final class SchedulerSetCommand extends ArcoCommand
     {
         $this->addArgument('minutes', InputArgument::OPTIONAL, 'Minutes between schedule:run invocations (' . implode(', ', Validator::SCHEDULER_INTERVALS) . ')');
         $this->addTargetOptions();
+        $this->addApplyOptions();
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -65,6 +73,10 @@ final class SchedulerSetCommand extends ArcoCommand
             $writeConsole = $consoleOff || self::consoleUnset($raw, $environment);
             if ($from === $minutes && ! $writeConsole) {
                 $io->note($this->t('settings.unchanged', ['where' => $this->where($environment)]));
+                // arco.php already says so (edited by hand, say): --apply still puts it in AWS.
+                if ($environment !== null && $input->getOption('apply')) {
+                    return $this->applyScheduler($input, $io) ? self::SUCCESS : self::FAILURE;
+                }
                 return self::SUCCESS;
             }
             if ($writeConsole) {
@@ -86,7 +98,11 @@ final class SchedulerSetCommand extends ArcoCommand
                 $io->writeln('    ' . ArcoFileEditor::settingLine('console', true));
             }
             $io->writeln('    ' . ArcoFileEditor::settingLine('scheduler', $minutes));
-            $this->printDeployNext($io, $raw, $environment);
+            if ($this->wantsApply($input, $io, $environment)) {
+                return $this->applyScheduler($input, $io) ? self::SUCCESS : self::FAILURE;
+            } else {
+                $this->printDeployNext($io, $raw, $environment);
+            }
             return self::SUCCESS;
         } catch (Throwable $e) {
             $io->error($this->describeError($e) ?? throw $e);

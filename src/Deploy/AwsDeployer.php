@@ -246,13 +246,18 @@ final class AwsDeployer implements Deployer
     public function removeConsole(AppConfig $config, Closure $onStep): void
     {
         // The scheduler rule goes before the function it invokes.
+        $this->removeScheduler($config, $onStep);
+        $this->consoleFunction()->delete($config->consoleFunctionName());
+        $onStep('deploy.console_removed', ['function' => $config->consoleFunctionName()]);
+    }
+
+    public function removeScheduler(AppConfig $config, Closure $onStep): void
+    {
         $unreadable = fn (string $error) => $onStep('deploy.scheduler_unreadable', ['rule' => SchedulerRule::name($config), 'function' => $config->consoleFunctionName(), 'error' => $error]);
         if ($this->schedulerRuleExists($config, $unreadable)) {
             $this->schedulerRule()->delete($config);
             $onStep('deploy.scheduler_removed', []);
         }
-        $this->consoleFunction()->delete($config->consoleFunctionName());
-        $onStep('deploy.console_removed', ['function' => $config->consoleFunctionName()]);
     }
 
     public function syncScheduler(AppConfig $config, Closure $onStep): void
@@ -272,8 +277,11 @@ final class AwsDeployer implements Deployer
         }
         $function = $config->consoleFunctionName();
         $alias = $this->consoleFunction()->aliasArn($function) ?? throw DeployException::make('deploy.console_missing', ['function' => $function]);
-        $this->schedulerRule()->put($config, $alias, self::tags($config));
+        $paused = $this->schedulerRule()->put($config, $alias, self::tags($config));
         $onStep('deploy.scheduler_set', ['every' => $config->scheduler]);
+        if ($paused) {
+            $onStep('deploy.scheduler_paused', ['environment' => $config->environment]);
+        }
     }
 
     public function applyLogRetention(AppConfig $config, Closure $onStep): void
@@ -328,6 +336,15 @@ final class AwsDeployer implements Deployer
                 // The function status is still useful without CloudFormation access.
             }
         }
+        $schedulerPaused = null;
+        if ($config->scheduler !== null) {
+            try {
+                $state = $this->schedulerRule()->state($config);
+                $schedulerPaused = $state === null ? null : $state === SchedulerRule::DISABLED;
+            } catch (AwsException) {
+                // Unknown without EventBridge read access; the rest of the status still shows.
+            }
+        }
         return new AppStatus(
             $config->functionName(),
             WebFunctions::text($function['state'] ?? null),
@@ -338,6 +355,7 @@ final class AwsDeployer implements Deployer
             $config->consoleEnabled() ? $config->consoleFunctionName() : null,
             $consoleVersion,
             $consoleVersionError,
+            $schedulerPaused,
         );
     }
 

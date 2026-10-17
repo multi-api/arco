@@ -16,6 +16,8 @@ final readonly class AppStatus
         public ?string $consoleVersion = null,
         /** AWS error code when the live version could not be read (e.g. AccessDeniedException): unknown, not missing */
         public ?string $consoleVersionError = null,
+        /** whether the scheduler rule is disabled (arco scheduler:pause); null without a scheduler, a rule, or EventBridge read access */
+        public ?bool $schedulerPaused = null,
     ) {
     }
 }
