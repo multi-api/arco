@@ -11,9 +11,12 @@ use Multiapi\Arco\Aws\ProfileResolver;
 use Multiapi\Arco\Cli\ArcoCommand;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
 use Multiapi\Arco\Config\AppConfig;
+use Multiapi\Arco\Config\StorageConfig;
+use Multiapi\Arco\Config\TableConfig;
 use Multiapi\Arco\Deploy\AppStatus;
 use Multiapi\Arco\Deploy\AwsDeployer;
 use Multiapi\Arco\Deploy\Deployer;
+use Multiapi\Arco\Deploy\DeployPipeline;
 use Multiapi\Arco\Secrets\SecretReference;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Input\InputInterface;
@@ -71,6 +74,9 @@ final class InfoCommand extends ArcoCommand
                         + ['enabled' => true]
                     : ['enabled' => false, 'function' => $config->consoleFunctionName()],
                 'queues' => $this->jsonQueues($config, $status),
+                'storage' => $this->jsonStorage($config, $status),
+                'cache' => self::jsonTable($config, $config->cacheTable),
+                'failedJobsTable' => self::jsonTable($config, $config->failedJobsTable),
                 'deployCommands' => $config->deployCommands,
                 'settings' => $this->jsonSettings($settings, $status),
             ] + ($remoteError !== null ? ['error' => $remoteError] : []), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
@@ -107,6 +113,9 @@ final class InfoCommand extends ArcoCommand
                     'url' => $status->queues[$queue->name]['url'] ?? '-',
                     'worker' => $this->workerStatus($config->workerFunctionName($queue->name), $status->queues[$queue->name] ?? null),
                 ])], $config->queues),
+                ...array_map(fn (StorageConfig $storage) => [$this->t('info.storage', ['storage' => $storage->name]) => $this->storageStatus($config, $storage, $status)], $config->storage),
+                ...($config->cacheTable !== null ? [[$this->t('info.cache_table') => $this->tableStatus($config, $config->cacheTable)]] : []),
+                ...($config->failedJobsTable !== null ? [[$this->t('info.failed_jobs_table') => $this->tableStatus($config, $config->failedJobsTable)]] : []),
             );
         }
         return self::SUCCESS;
@@ -140,6 +149,67 @@ final class InfoCommand extends ArcoCommand
             'worker' => ['function' => $config->workerFunctionName($queue->name), 'version' => $status?->queues[$queue->name]['version'] ?? null]
                 + (($status?->queues[$queue->name]['error'] ?? null) !== null ? ['error' => $status->queues[$queue->name]['error']] : []),
         ], $config->queues);
+    }
+
+    /** The config with the account AWS reported, when arco.php has none (needed for created bucket names). */
+    private static function located(AppConfig $config, ?AppStatus $status): ?AppConfig
+    {
+        return match (true) {
+            $config->account !== null => $config,
+            $status?->account !== null => $config->withAccount($status->account),
+            default => null,
+        };
+    }
+
+    /**
+     * The storages in arco.php; a created bucket's name and URL need the account, so they are null
+     * without it (not deployed, or not readable).
+     *
+     * @return list<array{name: string, bucket: ?string, url: ?string, existing: bool, default: bool, defaultOverridden: bool, public: list<string>}>
+     */
+    private function jsonStorage(AppConfig $config, ?AppStatus $status): array
+    {
+        $located = self::located($config, $status);
+        return array_map(fn (StorageConfig $storage) => [
+            'name' => $storage->name,
+            'bucket' => $storage->existing !== null || $located !== null ? $storage->bucketName($located ?? $config) : null,
+            'url' => $storage->existing !== null || $located !== null ? $storage->url($located ?? $config) : null,
+            'existing' => $storage->existing !== null,
+            'default' => $storage->default,
+            'defaultOverridden' => $storage->default && DeployPipeline::storageOverrides($config, $located) !== [],
+            'public' => $storage->public,
+        ], $config->storage);
+    }
+
+    /** @return array{table: string, existing: bool}|null */
+    private static function jsonTable(AppConfig $config, ?TableConfig $table): ?array
+    {
+        return $table === null ? null : ['table' => $table->tableName($config), 'existing' => $table->existing !== null];
+    }
+
+    private function storageStatus(AppConfig $config, StorageConfig $storage, AppStatus $status): string
+    {
+        $located = self::located($config, $status);
+        if ($storage->existing !== null) {
+            $text = $this->t('info.existing', ['name' => $storage->existing]);
+        } else {
+            $text = $located === null ? '-' : $storage->bucketName($located);
+        }
+        if ($storage->default) {
+            $overrides = DeployPipeline::storageOverrides($config, $located);
+            $text .= ' · ' . ($overrides === []
+                ? $this->t('info.storage_default')
+                : $this->t('info.storage_default_overridden', ['keys' => implode(', ', array_keys($overrides))]));
+        }
+        if ($storage->public !== []) {
+            $text .= ' · ' . $this->t('info.storage_public', ['prefixes' => implode(', ', $storage->public)]);
+        }
+        return $text;
+    }
+
+    private function tableStatus(AppConfig $config, TableConfig $table): string
+    {
+        return $table->existing !== null ? $this->t('info.existing', ['name' => $table->existing]) : $table->tableName($config);
     }
 
     private function consoleStatus(AppStatus $status): string

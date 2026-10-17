@@ -6,7 +6,6 @@ use Multiapi\Arco\Cli\ArcoCommand;
 use Multiapi\Arco\Cli\UserError;
 use Multiapi\Arco\Commands\Concerns\EditsQueues;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
-use Multiapi\Arco\Config\ArcoFileEditor;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
@@ -43,43 +42,33 @@ final class QueueAddCommand extends ArcoCommand
     {
         $io = new SymfonyStyle($input, $output);
         try {
-            $name = $this->queueName($input);
-            [$raw, $environment] = $this->target($input, $io);
-            $found = self::existsAt($raw, $environment, $name);
-            if ($found !== false) {
-                throw new UserError($this->t('queue.exists', ['queue' => $name, 'where' => $this->where($found)]));
-            }
-            $options = [];
-            $existing = $input->getOption('existing');
-            if (is_string($existing) && $existing !== '') {
-                $options['existing'] = $existing;
-            }
-            if ($input->getOption('default')) {
-                $options['default'] = true;
-            }
-            foreach (self::NUMBERS as $cli => $key) {
-                $value = $input->getOption($cli);
-                if ($value === null) {
-                    continue;
+            return $this->addNamed($input, $io, function () use ($input): array {
+                $options = [];
+                $existing = $input->getOption('existing');
+                if (is_string($existing) && $existing !== '') {
+                    $options['existing'] = $existing;
                 }
-                if (! is_string($value) || preg_match('/^-?\d{1,9}$/', $value) !== 1) {
-                    throw new UserError($this->t('queue.not_a_number', ['option' => $cli, 'value' => is_string($value) ? $value : '']));
+                if ($input->getOption('default')) {
+                    $options['default'] = true;
                 }
-                $options[$key] = (int) $value;
-            }
-            if ($input->getOption('no-dlq')) {
-                $options['dlq'] = false;
-            }
-            if ($input->getOption('fifo')) {
-                $options['fifo'] = true;
-            }
-            $this->assertValid(self::withQueue($raw, $environment, $name, $options), $environment);
-            $this->writeQueue($environment, $name, $options);
-            $io->success($this->t('queue.added', ['queue' => $name, 'environment' => $this->levelLabel($environment)]));
-            $io->writeln($this->t('settings.result', ['where' => $this->where($environment)]));
-            $io->writeln('    ' . ArcoFileEditor::queueLine($name, $options));
-            $this->printDeployNext($io, $raw, $environment);
-            return self::SUCCESS;
+                foreach (self::NUMBERS as $cli => $key) {
+                    $value = $input->getOption($cli);
+                    if ($value === null) {
+                        continue;
+                    }
+                    if (! is_string($value) || preg_match('/^-?\d{1,9}$/', $value) !== 1) {
+                        throw new UserError($this->t('queue.not_a_number', ['option' => $cli, 'value' => is_string($value) ? $value : '']));
+                    }
+                    $options[$key] = (int) $value;
+                }
+                if ($input->getOption('no-dlq')) {
+                    $options['dlq'] = false;
+                }
+                if ($input->getOption('fifo')) {
+                    $options['fifo'] = true;
+                }
+                return $options;
+            });
         } catch (Throwable $e) {
             $io->error($this->describeError($e) ?? throw $e);
             return self::FAILURE;

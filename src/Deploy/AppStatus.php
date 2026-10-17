@@ -26,6 +26,8 @@ final readonly class AppStatus
          * @var array<string, array{url: ?string, version: ?string, error: ?string}>
          */
         public array $queues = [],
+        /** account the app runs in, read only when arco.php has none and a queue or created storage needs it for its URL or bucket */
+        public ?string $account = null,
     ) {
     }
 }

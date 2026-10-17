@@ -36,6 +36,8 @@ shows each resolved value with its source (`default`, `app` or `environment`).
 Settings, `variables()`, `permissions()`, `runtime()` and the custom domain methods can be set at app level or inside `environment()`.
 `domain()` is the exception to per-key merging: an environment's domain list replaces the app's list as a whole.
 `queue()` merges by queue name: an environment's options for a queue go over the app's, and `queue(name, false)` drops it there.
+`storage()` merges by storage name the same way (`storage(name, false)` drops it); `cache()` and `failedJobsTable()` are settings
+like the others (an environment's call replaces the app's, and `cache(false)` turns it off there).
 `region()`, `exclude()` and `include()` exist only at app level; `account()` only on an environment.
 
 ## Settings
@@ -67,6 +69,9 @@ Settings, `variables()`, `permissions()`, `runtime()` and the custom domain meth
 | `protected(bool = true)` | on for `production` | Ask for confirmation before `arco tinker`; `protected(false)` turns it off |
 | `certificate(arn)` | looked up or requested | ACM certificate ARN in `us-east-1` to use for the domains |
 | `queue(name, ...)` | none | An SQS queue and the worker function that runs its jobs (see [Queues](#queues)); `queue(name, false)` drops an app-level queue from an environment |
+| `storage(name, ...)` | none | An S3 bucket, used as a Laravel disk (see [Storage](#storage)); `storage(name, false)` drops an app-level storage from an environment |
+| `cache(bool = true, existing: ?string)` | off | A DynamoDB table for Laravel's cache (see [Cache and failed-jobs tables](#cache-and-failed-jobs-tables)) |
+| `failedJobsTable(bool = true, existing: ?string)` | off | A DynamoDB table for Laravel's failed jobs (same section) |
 
 An *environment* in Arco is an `environment()` in `arco.php` (staging, production), each deployed as
 its own Web Function. AWS calls one running copy of a function an *execution environment*; Arco calls
@@ -159,9 +164,9 @@ vendor/bin/arco set timeout 60 --app          # app level (all environments)
 
 ## Permissions
 
-The managed execution role only gets what Arco itself needs: writing logs (web, console and queue workers), sending to and reading the queues in `arco.php`, reading
+The managed execution role only gets what Arco itself needs: writing logs (web, console and queue workers), sending to and reading the queues in `arco.php`, reading and writing the buckets and tables of `storage()`, `cache()` and `failedJobsTable()`, reading
 the console function's FrankenPHP binary (only used when it downloads it) and the secrets your variables reference. When your app uses other AWS
-resources (an existing bucket, a DynamoDB table, SES), add IAM statements with `permissions()`, in the same shape as an IAM
+resources (a bucket or table not in `arco.php`, SES), add IAM statements with `permissions()`, in the same shape as an IAM
 policy statement:
 
 ```php
@@ -311,8 +316,8 @@ App::make('shop')
 Retries are Laravel's. A job that throws is released and comes back after its `$backoff` (at once without
 one); the queue's `tries` is the default for jobs without their own `$tries`. A job out of tries is failed
 by Laravel: `failed()` runs and the job is stored in the app's **failed-jobs store** (`failed_jobs`, as
-configured in `config/queue.php`), so `queue:failed` and `queue:retry` (through `arco command`) work as
-usual. Arco never touches that store.
+configured in `config/queue.php`, or the DynamoDB table of [`failedJobsTable()`](#failed-jobs)), so
+`queue:failed` and `queue:retry` (through `arco command`) work as usual.
 
 Each queue Arco creates gets a **dead-letter queue** (`<app>-<env>-<name>-dlq`, messages kept 14 days) with
 `maxReceiveCount` = `tries` + 2. It is a safety net, not the retry mechanism: a message only reaches it when
@@ -391,7 +396,8 @@ Arco sets these variables on the web, console and worker functions:
 their queues (`.../shop-production-emails`); a queue URL passes through, and any other name keeps Laravel's
 prefix behaviour. Your own `variables()` win over Arco's: setting `QUEUE_CONNECTION`, `SQS_PREFIX` or
 `SQS_QUEUE` there overrides them, and the deploy prints a note (an `ARCO_QUEUES` of your own overrides the
-map without a note).
+map without a note; the same holds for every variable Arco sets, see [Storage](#storage) and
+[Cache and failed-jobs tables](#cache-and-failed-jobs-tables)).
 
 ### FIFO queues
 
@@ -416,11 +422,16 @@ needs a queue policy that allows the worker's execution role.
 
 ### Removing a queue, and what stays
 
-Queues are **never deleted** by Arco, so no message is lost. Removing a queue from `arco.php` (or
+Queues are **kept** by Arco, so no message is lost. Removing a queue from `arco.php` (or
 `arco queue:remove`) makes the next deploy delete its worker and event source mapping and keep the SQS queue
 and its dead-letter queue in AWS, with their messages: the deploy names each kept queue, its URL and about
 how many messages it holds. Read or move what you need, then delete them in the SQS console. `arco remove`
 does the same for every queue of the environment.
+
+The one exception: when the deploy that creates a queue fails and CloudFormation rolls it back, that new
+queue is deleted (`DeletionPolicy: RetainExceptOnCreate`). The resources stack deploys before any code, so
+no app has sent to it yet; keeping it would only make the next deploy stop on its name. Buckets and tables
+follow the same rule (see [What stays](#what-stays)).
 
 - Adding a queue back under a kept name stops the deploy before any change and prints the line to attach
   the kept queue with `existing:` (or delete the kept queue, or choose another name). The same happens for a
@@ -431,10 +442,11 @@ does the same for every queue of the environment.
 
 ### Deploys
 
-The queues Arco creates live in a CloudFormation stack per environment, `arco-<app>-<env>-resources`
-(tagged with the app and environment; Arco refuses a stack of that name that is not tagged as its own). The
-deploy updates it **before** any code, so a new queue exists before code that sends to it; a failure there
-stops the deploy before traffic moves. Workers are created or updated with the rest and switched to the new
+The queues Arco creates live in a CloudFormation stack per environment, `arco-<app>-<env>-resources`, with
+the buckets and tables of [Storage](#storage) and [Cache and failed-jobs tables](#cache-and-failed-jobs-tables)
+(tagged with the app and environment; Arco refuses a stack of that name that is not tagged as its own, and
+leaves it alone when `arco.php` has nothing to put in it). The deploy updates it **before** any code, so a
+new queue exists before code that sends to it; a failure there stops the deploy before traffic moves. Workers are created or updated with the rest and switched to the new
 version (alias and event source mapping) only **after** the web revision is live and verified; a worker
 that cannot be set up is a warning, and the queue keeps its previous worker or none. When a queue's
 reference changes (another `existing:` queue, region or account), the worker's mapping on the old queue is
@@ -495,6 +507,300 @@ worker log groups. With your own `role()`, give it the same:
 
 plus `s3:GetObject` on `runtime/*` of the code bucket, as for the console (workers run the console
 package). The deploy profile's additions are in [Permissions for queues](getting-started.md#permissions-for-queues).
+
+## Storage
+
+`->storage('uploads')` gives the environment an S3 bucket, which the app uses as a Laravel disk:
+
+```php
+App::make('shop')
+    ->region('us-east-1')
+    ->storage('files')                                  // the default disk (the first storage)
+    ->storage('uploads', public: ['avatars/'], expire: ['tmp/' => 1], cors: ['https://shop.example.com'])
+    ->environment('staging', fn (Environment $env) => $env
+        ->storage('uploads', expire: ['tmp/' => 7]))    // merged over the app's options
+    ->environment('production', fn (Environment $env) => $env
+        ->storage('legacy', existing: 'shop-legacy-files'));
+```
+
+### Buckets
+
+Arco names the bucket `<app>-<env>-<name>-<account>` (for example `shop-production-uploads-123456789012`):
+S3 bucket names are global, so the account id keeps them unique. The name must fit S3's 63 characters;
+a longer one is a validation error (the account's 12 digits are counted even before the first deploy
+knows them): use a shorter app, environment or storage name. Storage names use lowercase letters, digits
+and hyphens and start with a letter.
+
+Every bucket Arco creates is private: all four S3 Block Public Access settings on, encrypted with SSE-S3,
+no lifecycle rule without `expire`, no CORS without `cors`, and tagged `arco:app`, `arco:environment` and
+`arco:resource` (`storage:<name>`). Buckets live in the resources stack with the queues (see
+[Deploys](#deploys)): it is updated before any code, so a new bucket exists before code that writes to it.
+
+### Options
+
+`storage()` takes named arguments; options left out keep their defaults, and repeated calls for the same
+name add to each other.
+
+| Argument | Default | What it does |
+|---|---|---|
+| `public` | none | Key prefixes anyone can read, each ending in `/` (for example `['avatars/']`); see [Public prefixes](#public-prefixes) |
+| `expire` | none | Key prefix (ending in `/`) => days (at least 1): a lifecycle rule deletes the objects under the prefix that many days after they were created |
+| `cors` | none | Origins a browser may call the bucket from: `https://example.com`, `http://localhost:5173` or `*`. One CORS rule allows `GET`, `PUT`, `POST` and `HEAD` with any header (max age 3000 seconds) |
+| `existing` | none | Name of an S3 bucket Arco does not manage (below) |
+| `default` | first storage | The storage behind Laravel's default disk; at most one storage may say `default: true` |
+
+- App and environment storage merge by name: the environment's options go over the app's for that storage
+  (an environment's `public` list replaces the app's list as a whole), new names are added, and
+  `->storage('uploads', false)` on an environment drops an app-level storage there.
+- The **default storage** is the first one (app-level storage comes first) unless one says `default: true`.
+- `public`, `expire` and `cors` apply only to buckets Arco creates. On an `existing` bucket they are
+  ignored, with a validation warning (also from `storage:public`, `storage:expire` and `storage:cors`):
+  configure that bucket yourself.
+- Storage cannot be named `s3`, `public` or `local` (a validation error): those are the disks of Laravel's
+  stock `config/filesystems.php`, which keep their own settings, so `Storage::disk('public')` would stay the
+  local disk, on the function's temporary disk, lost when Lambda starts a new instance.
+- Public and expire prefixes cannot contain `*` or `?` (a validation error), so a wildcard never makes more
+  of a bucket public than the prefix names.
+
+### Laravel disks
+
+Arco sets these variables on the web, console and worker functions:
+
+| Variable | Value |
+|---|---|
+| `FILESYSTEM_DISK` | `s3` |
+| `AWS_BUCKET` | the default storage's bucket |
+| `AWS_URL` | `https://<bucket>.s3.<region>.amazonaws.com` of the default storage |
+| `ARCO_STORAGE` | JSON map of every storage name to its bucket and URL |
+
+- The default storage is Laravel's stock `s3` disk, and the default disk: `Storage::put(...)` writes to it
+  and `Storage::url($path)` gives `https://<bucket>.s3.<region>.amazonaws.com/<path>` (readable by anyone only
+  under a public prefix).
+- Every storage is also a disk named after it, which `multiapi/arco-laravel` (0.6 or later) registers from
+  `ARCO_STORAGE`: `Storage::disk('uploads')->put(...)`. It uses the `s3` driver, the function's region and its
+  temporary credentials.
+- A disk your `config/filesystems.php` already defines under the same name stays as the app defines it, and
+  `multiapi/arco-laravel` writes a log line `{"arco":"disk_skipped", ...}`. The stock names `local`, `public`
+  and `s3` are refused by the validation for that reason. A default storage still feeds the stock `s3` disk
+  through `AWS_BUCKET`, whatever its name.
+- Your own `variables()` win over Arco's: setting `FILESYSTEM_DISK`, `AWS_BUCKET` or `AWS_URL` there overrides
+  them, and the deploy prints a note (an `ARCO_STORAGE` of your own overrides the map without a note).
+- Laravel's S3 driver needs `league/flysystem-aws-s3-v3` and `aws/aws-sdk-php` in `require`
+  (`composer require league/flysystem-aws-s3-v3 "^3.0"`), and the named disks need `multiapi/arco-laravel`
+  0.6 or later. With storage in `arco.php`, the deploy checks the package for all three before any change
+  and stops with the `composer require` line to run when one is missing.
+
+### Public prefixes
+
+`public: ['avatars/']` adds a bucket policy that lets anyone read (`s3:GetObject`) the objects under each
+prefix, and nothing else: no listing, no writes, the rest of the bucket private. Files are then at
+`https://<bucket>.s3.<region>.amazonaws.com/<key>`, which the deploy prints. For that policy Arco turns off
+only the two Block Public Access settings about policies on that bucket (`BlockPublicPolicy` and
+`RestrictPublicBuckets`); `BlockPublicAcls` and `IgnorePublicAcls` stay on, so an object ACL never makes a
+file public.
+
+- When S3 Block Public Access is on **for the whole account** (`BlockPublicPolicy`, "block public access
+  granted through new public bucket policies"), it overrides the bucket's own setting: CloudFormation rolls
+  the change back and the deploy stops with an error that names the setting. Turn it off in the S3 console
+  (Block Public Access settings for this account) and deploy again, or remove the public prefixes. A plain
+  access denial on the policy is reported with both possible causes: that setting, or a profile without
+  `s3:PutBucketPolicy`.
+- Removing the last public prefix (or the storage) deletes the bucket policy, so the bucket is private
+  again. A bucket kept after its storage left `arco.php` keeps the two policy settings off, with no policy
+  that makes anything public; turn them back on in the S3 console if you want.
+
+### Existing buckets
+
+`->storage('legacy', existing: 'shop-legacy-files')` uses a bucket Arco does not manage, by name. Arco never
+creates, changes or deletes it, and does not apply `public`, `expire` or `cors` to it. The bucket must be in
+the **app's region**: the disk's region and its URL are the app's. The execution role gets read and write
+access to it (below); a bucket in another account also needs a bucket policy that allows that role.
+
+### What stays
+
+Buckets and tables are kept like [queues](#removing-a-queue-and-what-stays), so no file or item is lost:
+
+- Removing a storage from `arco.php` (or `arco storage:remove`) makes the next deploy keep the bucket in AWS
+  with its files and say whether it still has any. Copy what you need, then empty and delete it in the S3
+  console. `arco remove` keeps every bucket of the environment the same way. Turning `cache()` or
+  `failedJobsTable()` off keeps the table with its items (the deploy prints about how many).
+- The one exception: a bucket or table created by a deploy that fails and rolls back is deleted
+  (`DeletionPolicy: RetainExceptOnCreate`). The resources stack deploys before the app could use it, so it
+  is new and empty.
+- Adding a storage back under a kept name stops the deploy before any change and prints the line to use the
+  kept bucket instead, `->storage('uploads', existing: '<bucket>')` (Arco then no longer manages it), or
+  delete the bucket, or choose another storage name. A kept table stops the deploy the same way, with
+  `->cache(existing: '<table>')` or `->failedJobsTable(existing: '<table>')`.
+- Pointing a storage Arco created at its own bucket with `existing:` hands the bucket over to you: the deploy
+  keeps it, says Arco no longer manages it, and the app goes on using it. The same works for a table.
+- The bucket policy of public prefixes is not kept: it goes with the storage (or with its public prefixes).
+  Re-attaching a formerly public bucket with `existing:` leaves it **private**, so its public URLs answer 403
+  even if `arco.php` still lists `public:` prefixes (they are ignored on an `existing` bucket, with a
+  warning). Add a bucket policy yourself in the S3 console if those files must stay public.
+- S3 bucket names are global. Before creating a bucket the deploy checks its name: when another account
+  (or this account, in another region) holds it, the deploy stops before any change. AWS answers the same
+  way (403) when the profile lacks `s3:ListBucket` on a bucket of this account: allow it and deploy again.
+
+### Commands
+
+```bash
+vendor/bin/arco storage:add uploads --env=production
+vendor/bin/arco storage:add files --app --default
+vendor/bin/arco storage:add legacy --env=production --existing=shop-legacy-files
+vendor/bin/arco storage:public uploads avatars/ --env=production
+vendor/bin/arco storage:public uploads avatars/ --env=production --remove
+vendor/bin/arco storage:expire uploads tmp/ 1 --env=production
+vendor/bin/arco storage:expire uploads tmp/ --env=production --remove
+vendor/bin/arco storage:cors uploads https://shop.example.com http://localhost:5173 --env=production
+vendor/bin/arco storage:cors uploads http://localhost:5173 --env=production --remove
+vendor/bin/arco storage:remove uploads --env=production
+vendor/bin/arco storage:list --env=production
+```
+
+- `storage:add <name>` takes `--existing=<bucket>` and `--default`. `storage:public <name> <prefix>` adds a
+  public prefix, `storage:expire <name> <prefix> <days>` sets the days of a prefix's rule, and
+  `storage:cors <name> <origin>...` adds the origins not already there; with `--remove` each takes the entry
+  out. On an environment that inherits the storage from the app level, they write the environment's whole
+  new value (an environment's option replaces the app's).
+- `storage:remove <name>` takes the storage out (on an environment, a storage defined at app level is dropped
+  with `->storage('<name>', false)`; with `--app`, Arco warns about environments that keep their own call).
+  The bucket stays in AWS.
+- All of them take `--env=<env>` or `--app`, edit `arco.php` only (checked like `arco set`) and need
+  `arco deploy` to apply.
+- `storage:list` shows each storage of the environment: bucket, URL, whether Arco created it, whether it is
+  the default disk, public prefixes, expiry rules and CORS origins. Then it lists the **retained buckets**:
+  buckets Arco created for this app and environment whose storage is no longer in `arco.php` (found by their
+  tags with `tag:GetResources`; without it they show as unknown).
+- `arco info` lists each storage with its bucket (or `<bucket> (existing, not managed by Arco)`), whether it
+  is the default disk and its public prefixes. `--json` adds `storage`: a list of
+  `{name, bucket, url, existing, default, public}`, where `bucket` and `url` are `null` for a bucket Arco
+  creates while the account is unknown (not deployed yet, or not readable).
+
+### Storage permissions
+
+The managed execution role gets two statements for every bucket in `arco.php`, `existing` ones included:
+`ArcoStorage` (`s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, `s3:GetObjectAcl`, `s3:PutObjectAcl` on
+the bucket's objects) and `ArcoStorageList` (`s3:ListBucket` on the bucket). With your own `role()`, give it
+the same:
+
+```json
+{"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:GetObjectAcl", "s3:PutObjectAcl"], "Resource": ["arn:aws:s3:::<app>-<env>-uploads-<account>/*"]},
+{"Effect": "Allow", "Action": ["s3:ListBucket"], "Resource": ["arn:aws:s3:::<app>-<env>-uploads-<account>"]}
+```
+
+The deploy profile's additions are in
+[Permissions for storage and tables](getting-started.md#permissions-for-storage-and-tables).
+
+## Cache and failed-jobs tables
+
+`->cache()` gives the environment a DynamoDB table for Laravel's cache, and `->failedJobsTable()` one for the
+failed jobs of its queues:
+
+```php
+App::make('shop')
+    ->region('us-east-1')
+    ->cache()                                           // shop-<env>-cache
+    ->failedJobsTable()                                 // shop-<env>-failed-jobs
+    ->environment('staging', fn (Environment $env) => $env
+        ->cache(false))                                 // no cache table on staging
+    ->environment('production', fn (Environment $env) => $env
+        ->cache(existing: 'shop-cache'));               // a table Arco does not manage
+```
+
+Each is one setting: an environment's call replaces the app's, `cache(false)` turns it off, and
+`existing: '<table>'` names a table Arco does not manage. The tables Arco creates are on-demand (pay per
+request), have DynamoDB TTL on `expires_at`, are tagged like the buckets, live in the resources stack and
+are kept when they leave `arco.php` (see [What stays](#what-stays)):
+
+| Table | Name | Keys |
+|---|---|---|
+| Cache | `<app>-<env>-cache` | partition key `key` (string): the layout of Laravel's DynamoDB cache store |
+| Failed jobs | `<app>-<env>-failed-jobs` | partition key `application`, sort key `uuid` (strings): the layout of Laravel's DynamoDB failed-job provider |
+
+Both need `aws/aws-sdk-php` in `require` (as queues do), and `multiapi/arco-laravel` 0.6 or later wires the
+failed-jobs table and a cache table Arco creates. Before any change, the deploy checks the package for
+`aws/aws-sdk-php` (cache and failed-jobs table) and `multiapi/arco-laravel` 0.6+ (failed-jobs table: without
+it Laravel's failer has no region and no failed job is recorded), and stops with the `composer require` line
+to run when one is missing. A cache table works with an older `multiapi/arco-laravel` as long as
+`config/cache.php` keeps Laravel's default attributes.
+
+### Cache
+
+| Variable | Value |
+|---|---|
+| `CACHE_STORE` | `dynamodb` |
+| `DYNAMODB_CACHE_TABLE` | the table's name |
+| `ARCO_CACHE_TABLE` | the table's name, only for a table Arco created |
+
+- With a table Arco created, `multiapi/arco-laravel` points Laravel's `dynamodb` store at it with the
+  attributes the table uses (`key`, `value`, `expires_at`) at runtime, **whatever `config/cache.php` says**
+  (for example `id` / `ttl`, copied from Bref's docs). An app that removed the `dynamodb` store gets one.
+- With `existing:`, Arco sets only `CACHE_STORE` and `DYNAMODB_CACHE_TABLE`: the store uses the attributes of
+  your `config/cache.php` (Laravel's default: `key`, `value`, `expires_at`), which must match the table, and
+  Arco does not change the table's TTL.
+- DynamoDB's TTL deletes expired items in the background, which can take a while (AWS gives no exact time);
+  Laravel ignores an expired item meanwhile, so it only costs storage.
+- Laravel's DynamoDB store cannot be flushed: `cache:clear` on it fails ("DynamoDb does not support flushing
+  an entire table").
+- Your own `variables()` win: setting `CACHE_STORE` or `DYNAMODB_CACHE_TABLE` there overrides Arco's value,
+  with a note in the deploy output. Arco then leaves out `ARCO_CACHE_TABLE` (unless your value is the same as
+  Arco's), so `multiapi/arco-laravel` does not change the `dynamodb` store.
+
+### Failed jobs
+
+| Variable | Value |
+|---|---|
+| `QUEUE_FAILED_DRIVER` | `dynamodb` |
+| `ARCO_FAILED_JOBS_TABLE` | the table's name (Arco's or the `existing` one) |
+
+Stock `config/queue.php` does not read the table's name from the environment, so `multiapi/arco-laravel`
+sets `queue.failed` at runtime: driver `dynamodb`, the table, the region and the function's credentials
+(other keys of `queue.failed` stay). Laravel's failed-job handling is unchanged otherwise: `failed()` runs,
+and `queue:failed`, `queue:retry` and `queue:forget` work through `arco command`; `queue:flush` does not
+(Laravel's DynamoDB provider refuses it and points to TTL).
+
+Laravel writes each failed job with `expires_at` one week after it failed, and the table's TTL deletes it
+after that: **failed jobs in DynamoDB disappear after about a week**. Retry or copy them before. An
+`existing` table must have Laravel's layout (`application` + `uuid`), and TTL on `expires_at` for them to
+expire.
+
+Setting `QUEUE_FAILED_DRIVER` in your own `variables()` overrides Arco's, with a note; unless your value is
+`dynamodb`, Arco then leaves out `ARCO_FAILED_JOBS_TABLE`, so `multiapi/arco-laravel` does not change
+`queue.failed`.
+
+### Commands
+
+```bash
+vendor/bin/arco cache:add --env=production
+vendor/bin/arco cache:add --env=production --existing=shop-cache
+vendor/bin/arco cache:remove --env=staging
+vendor/bin/arco queue:failed-table --app
+vendor/bin/arco queue:failed-table --env=production --existing=shop-failed-jobs
+vendor/bin/arco queue:failed-table --env=staging --remove
+```
+
+- `cache:add` and `queue:failed-table` turn the table on (Arco's, or `--existing=<table>`); `cache:remove`
+  and `queue:failed-table --remove` turn it off. On an environment that inherits the table from the app
+  level, turning it off writes `->cache(false)` (or `->failedJobsTable(false)`); otherwise the call is
+  removed. The table stays in AWS.
+- They take `--env=<env>` or `--app`, edit `arco.php` only and need `arco deploy` to apply.
+- `arco info` shows `Cache table` and `Failed jobs table` rows with the table's name (or
+  `<table> (existing, not managed by Arco)`); `--json` adds `cache` and `failedJobsTable`, each
+  `{table, existing}` or `null`.
+
+### Table permissions
+
+The managed execution role gets the `ArcoTables` statement (`dynamodb:GetItem`, `dynamodb:PutItem`,
+`dynamodb:UpdateItem`, `dynamodb:DeleteItem`, `dynamodb:Query`, `dynamodb:Scan`, `dynamodb:BatchGetItem`,
+`dynamodb:BatchWriteItem`, `dynamodb:DescribeTable` on both tables, `existing` ones included). With your own
+`role()`, give it the same:
+
+```json
+{"Effect": "Allow", "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:BatchGetItem", "dynamodb:BatchWriteItem", "dynamodb:DescribeTable"], "Resource": ["arn:aws:dynamodb:<region>:<account>:table/<app>-<env>-cache", "arn:aws:dynamodb:<region>:<account>:table/<app>-<env>-failed-jobs"]}
+```
+
+The deploy profile's additions are in
+[Permissions for storage and tables](getting-started.md#permissions-for-storage-and-tables).
 
 ## Custom domains
 

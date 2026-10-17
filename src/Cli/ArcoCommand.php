@@ -17,6 +17,14 @@ abstract class ArcoCommand extends Command
         return $app->translator()->trans($key, $params);
     }
 
+    /** One expire rule line, with "1 day" in the singular. */
+    protected function expireRule(string $prefix, int $days): string
+    {
+        return $days === 1
+            ? $this->t('storage.expire_rule_one_day', ['prefix' => $prefix])
+            : $this->t('storage.expire_rule', ['prefix' => $prefix, 'days' => $days]);
+    }
+
     protected function projectDir(): string
     {
         $cwd = getcwd();

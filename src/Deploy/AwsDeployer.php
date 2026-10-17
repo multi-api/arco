@@ -8,6 +8,8 @@ use Multiapi\Arco\Aws\AwsClients;
 use Aws\Exception\AwsException;
 use Multiapi\Arco\Config\AppConfig;
 use Multiapi\Arco\Config\QueueConfig;
+use Multiapi\Arco\Config\StorageConfig;
+use Multiapi\Arco\Config\TableConfig;
 use Multiapi\Arco\Deploy\Domains\Certificates;
 use Multiapi\Arco\Deploy\Domains\CustomDomains;
 use Multiapi\Arco\Deploy\Domains\DomainStack;
@@ -64,7 +66,9 @@ final class AwsDeployer implements Deployer
             // a console skipped for size, arco rollback). Dropping it waits for the storage clean-up.
             $policy = PolicyBuilder::document($region, $account, $function, SecretResolver::references($variables), $config->permissions, $bucket,
                 array_map(fn (QueueConfig $queue) => $queue->arn($config), $config->queues),
-                array_map(fn (QueueConfig $queue) => $config->workerFunctionName($queue->name), $config->queues));
+                array_map(fn (QueueConfig $queue) => $config->workerFunctionName($queue->name), $config->queues),
+                array_map(fn (StorageConfig $storage) => $storage->arn($config), $config->storage),
+                array_map(fn (TableConfig $table) => $table->arn($config), array_values(array_filter([$config->cacheTable, $config->failedJobsTable]))));
             ['arn' => $roleArn, 'created' => $roleCreated] = (new ExecutionRole($this->aws->iam()))->ensure(ExecutionRole::roleName($config), $policy, $tags);
         }
 
@@ -338,8 +342,8 @@ final class AwsDeployer implements Deployer
     }
 
     /**
-     * Deletes the resources stack of the queues. Queues are retained: each is listed with its message
-     * count, for the user to read and delete.
+     * Deletes the resources stack. Queues, buckets and tables are retained: each is listed with what
+     * is still in it (messages, files, items), for the user to read and delete.
      *
      * @param callable(string, array<string, string|int>): void $step
      */
@@ -350,7 +354,7 @@ final class AwsDeployer implements Deployer
         try {
             $stack = $stacks->describe($name);
         } catch (AwsException $e) {
-            // Profiles that never used queues may lack CloudFormation permissions: no stack.
+            // Profiles that never used queues, storage or tables may lack CloudFormation permissions: no stack.
             if (in_array($e->getAwsErrorCode(), ['AccessDenied', 'AccessDeniedException'], true)) {
                 return;
             }
@@ -363,13 +367,10 @@ final class AwsDeployer implements Deployer
             // Not ours: left alone, the rest of the remove goes on.
             return;
         }
-        $urls = $this->stackQueues($name);
+        $owned = $this->ownedResources($name);
         $step('remove.step_resources', ['stack' => $name]);
         $stacks->delete($name);
-        $queues = new Queues($this->aws->sqs(), $this->aws->lambda());
-        foreach ($urls as $url) {
-            $step('remove.queue_kept', ['queue' => self::queueName($url), 'url' => $url, 'messages' => $queues->messageCount($url) ?? '?']);
-        }
+        $this->reportKept($owned, $step, 'remove.');
     }
 
     public function consoleExists(AppConfig $config): bool
@@ -492,6 +493,7 @@ final class AwsDeployer implements Deployer
                 // Unknown without EventBridge read access; the rest of the status still shows.
             }
         }
+        $located = $this->located($config);
         return new AppStatus(
             $config->functionName(),
             WebFunctions::text($function['state'] ?? null),
@@ -503,8 +505,29 @@ final class AwsDeployer implements Deployer
             $consoleVersion,
             $consoleVersionError,
             $schedulerPaused,
-            $this->queueStatus($config),
+            $this->queueStatus($config, $located),
+            $located?->account,
         );
+    }
+
+    /**
+     * The config with its account, read from AWS only when arco.php has none and a queue or a created
+     * storage needs it (URL, bucket name); null when it could not be read. Apps without these make no call.
+     */
+    private function located(AppConfig $config): ?AppConfig
+    {
+        if ($config->account !== null) {
+            return $config;
+        }
+        $created = array_filter($config->storage, fn ($storage) => $storage->existing === null);
+        if ($config->queues === [] && $created === []) {
+            return null;
+        }
+        try {
+            return $config->withAccount($this->aws->accountId());
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     /**
@@ -513,18 +536,10 @@ final class AwsDeployer implements Deployer
      *
      * @return array<string, array{url: ?string, version: ?string, error: ?string}>
      */
-    private function queueStatus(AppConfig $config): array
+    private function queueStatus(AppConfig $config, ?AppConfig $located): array
     {
         if ($config->queues === []) {
             return [];
-        }
-        $located = $config;
-        if ($config->account === null) {
-            try {
-                $located = $config->withAccount($this->aws->accountId());
-            } catch (\Throwable) {
-                $located = null;
-            }
         }
         $workers = $this->workerFunctions()->function();
         $status = [];
@@ -544,24 +559,34 @@ final class AwsDeployer implements Deployer
     public function deployResources(AppConfig $config, Closure $onStep): void
     {
         $name = ResourcesStack::name($config);
+        $template = ResourcesStack::template($config);
+        /** @var array<string, mixed> $resources */
+        $resources = $template['Resources'];
+        $wanted = $resources !== [];
         $created = ResourcesStack::createdQueues($config);
+        $storage = ResourcesStack::createdStorage($config);
+        $tables = ResourcesStack::createdTables($config);
         $stacks = new Stacks($this->aws->cloudFormation(), $this->sleeper);
         try {
             $stack = $stacks->describe($name);
         } catch (AwsException $e) {
-            // Without queues, profiles that never used them may lack CloudFormation permissions: no stack.
-            if ($created !== [] || ! in_array($e->getAwsErrorCode(), ['AccessDenied', 'AccessDeniedException'], true)) {
+            // Without resources, profiles that never used them may lack CloudFormation permissions: no stack.
+            if ($wanted || ! in_array($e->getAwsErrorCode(), ['AccessDenied', 'AccessDeniedException'], true)) {
                 throw $e;
             }
             return;
         }
-        if ($stack === null && $created === []) {
+        if ($stack === null && ! $wanted) {
             return;
         }
         if ($stack !== null && (($stack['tags']['arco:app'] ?? null) !== $config->app || ($stack['tags']['arco:environment'] ?? null) !== $config->environment)) {
+            if (! $wanted) {
+                // Someone else's stack with this name, and nothing to deploy: left alone.
+                return;
+            }
             throw DeployException::make('stack.not_ours', ['stack' => $name, 'app' => $config->app, 'environment' => $config->environment]);
         }
-        $owned = $stack === null ? [] : $this->stackQueues($name);
+        $owned = $stack === null ? [] : $this->ownedResources($name);
         $queues = new Queues($this->aws->sqs(), $this->aws->lambda());
 
         // A new QueueName (fifo switched) would make CloudFormation replace the queue: the old one is
@@ -573,14 +598,28 @@ final class AwsDeployer implements Deployer
                 $names[ResourcesStack::dlqLogicalId($queue->name)] = $dlq;
             }
             foreach ($names as $id => $to) {
-                if (isset($owned[$id]) && self::queueName($owned[$id]) !== $to) {
-                    throw DeployException::make('deploy.queue_replaced', ['queue' => $queue->name, 'from' => self::queueName($owned[$id]), 'to' => $to]);
+                if (isset($owned[$id]) && self::queueName($owned[$id]['id']) !== $to) {
+                    throw DeployException::make('deploy.queue_replaced', ['queue' => $queue->name, 'from' => self::queueName($owned[$id]['id']), 'to' => $to]);
                 }
             }
         }
+        // The same for a bucket or table whose name would change.
+        $names = [];
+        foreach ($storage as $bucket) {
+            $names[ResourcesStack::bucketLogicalId($bucket->name)] = ["storage:{$bucket->name}", $bucket->bucketName($config)];
+        }
+        foreach ($tables as $table) {
+            $names[ResourcesStack::tableLogicalId($table->kind)] = [$table->kind, $table->tableName($config)];
+        }
+        foreach ($names as $id => [$resource, $to]) {
+            if (isset($owned[$id]) && $owned[$id]['id'] !== $to) {
+                throw DeployException::make('deploy.resource_replaced', ['resource' => $resource, 'from' => $owned[$id]['id'], 'to' => $to]);
+            }
+        }
 
-        // A queue removed earlier is retained under its name: CloudFormation would fail creating it
-        // again, so the deploy stops here, before any change, and offers to reference it instead.
+        // A queue, bucket or table removed earlier is retained under its name: CloudFormation would
+        // fail creating it again, so the deploy stops here, before any change, and offers to reference
+        // it instead. A bucket name another account holds stops it the same way.
         foreach ($created as $queue) {
             if (! isset($owned[ResourcesStack::logicalId($queue->name)])) {
                 $url = $queues->url($queue->physicalName($config));
@@ -593,33 +632,144 @@ final class AwsDeployer implements Deployer
                 throw DeployException::make('deploy.queue_dlq_retained', ['queue' => $queue->name, 'dlq' => $dlq]);
             }
         }
+        $buckets = new Buckets($this->aws->s3());
+        foreach ($storage as $bucket) {
+            if (isset($owned[ResourcesStack::bucketLogicalId($bucket->name)])) {
+                continue;
+            }
+            $bucketName = $bucket->bucketName($config);
+            match ($buckets->exists($bucketName)) {
+                'ours' => throw DeployException::make('deploy.storage_retained', ['storage' => $bucket->name, 'existing' => "storage('{$bucket->name}', existing: '{$bucketName}')"]),
+                'taken' => throw DeployException::make('deploy.bucket_taken', ['bucket' => $bucketName]),
+                'free' => null,
+            };
+        }
+        $lookup = new Tables($this->aws->dynamoDb());
+        foreach ($tables as $table) {
+            if (! isset($owned[ResourcesStack::tableLogicalId($table->kind)]) && $lookup->exists($table->tableName($config))) {
+                $method = $table->kind === 'cache' ? 'cache' : 'failedJobsTable';
+                throw DeployException::make('deploy.table_retained', ['kind' => $table->kind, 'table' => $table->tableName($config), 'existing' => "{$method}(existing: '{$table->tableName($config)}')"]);
+            }
+        }
 
-        $template = ResourcesStack::template($config);
-        /** @var array<string, mixed> $resources */
-        $resources = $template['Resources'];
         $removed = array_diff_key($owned, $resources);
 
         $onStep('deploy.step_resources', ['stack' => $name]);
-        if ($created === []) {
-            // The queues stay (Retain): only the empty stack goes.
+        if (! $wanted) {
+            // The queues, buckets and tables stay (Retain): only the empty stack goes.
             $stacks->delete($name);
         } else {
-            $stacks->deploy($name, ResourcesStack::body($template), self::tags($config));
+            try {
+                $stacks->deploy($name, ResourcesStack::body($template), self::tags($config));
+            } catch (DeployException $e) {
+                throw self::publicPolicyFailure($config, $e) ?? $e;
+            }
             foreach ($created as $queue) {
                 $key = isset($owned[ResourcesStack::logicalId($queue->name)]) ? 'deploy.queue_updated' : 'deploy.queue_created';
                 $onStep($key, ['queue' => $queue->name, 'name' => $queue->physicalName($config)]);
             }
+            foreach ($storage as $bucket) {
+                $key = isset($owned[ResourcesStack::bucketLogicalId($bucket->name)]) ? 'deploy.storage_updated' : 'deploy.storage_created';
+                $onStep($key, ['storage' => $bucket->name, 'bucket' => $bucket->bucketName($config)]);
+                if ($bucket->public !== []) {
+                    $onStep('deploy.storage_public', ['storage' => $bucket->name, 'prefixes' => implode(', ', $bucket->public), 'url' => $bucket->url($config)]);
+                }
+            }
+            foreach ($tables as $table) {
+                $key = isset($owned[ResourcesStack::tableLogicalId($table->kind)]) ? 'deploy.table_updated' : 'deploy.table_created';
+                $onStep($key, ['kind' => $table->kind, 'name' => $table->tableName($config)]);
+            }
         }
-        foreach ($removed as $url) {
-            // A created queue switched to `existing:` itself (and its dead-letter queue, still its
-            // redrive target) is still in use: no advice to delete it.
-            $referenced = self::stillReferenced($config, $url);
-            if ($referenced !== null) {
-                $onStep($referenced[0], ['queue' => self::queueName($url), 'as' => $referenced[1]]);
+        $this->reportKept($removed, $onStep, 'deploy.', $config);
+    }
+
+    /**
+     * The stack failed on the bucket policy of a public prefix: say why in Arco's words. AWS names the
+     * account (or bucket) Block Public Access setting that refused the policy; a plain access denial
+     * may be that setting or the profile lacking s3:PutBucketPolicy.
+     */
+    private static function publicPolicyFailure(AppConfig $config, DeployException $e): ?DeployException
+    {
+        $reason = (string) ($e->params['reason'] ?? '');
+        if ($e->key !== 'stack.failed') {
+            return null;
+        }
+        foreach (ResourcesStack::createdStorage($config) as $storage) {
+            if ($storage->public === []) {
                 continue;
             }
-            $onStep('deploy.queue_kept', ['queue' => self::queueName($url), 'url' => $url, 'messages' => $queues->messageCount($url) ?? '?']);
+            $bucket = $storage->bucketName($config);
+            $onPolicy = str_starts_with($reason, ResourcesStack::bucketPolicyLogicalId($storage->name) . ':');
+            if (($onPolicy || str_contains($reason, $bucket)) && preg_match('/BlockPublicPolicy|RestrictPublicBuckets|block public access|public policies are blocked/i', $reason) === 1) {
+                return DeployException::make('deploy.public_blocked', ['bucket' => $bucket], $e);
+            }
+            if ($onPolicy && preg_match('/access ?denied|not authorized/i', $reason) === 1) {
+                return DeployException::make('deploy.public_policy_denied', ['bucket' => $bucket, 'reason' => $reason], $e);
+            }
         }
+        return null;
+    }
+
+    /**
+     * Names each queue, bucket and table that left the resources stack, which AWS kept (Retain), with
+     * what is still in it. On deploy, one that arco.php now references with `existing` (or the
+     * dead-letter queue of such a queue) is still in use: no advice to delete it.
+     *
+     * @param array<string, array{type: string, id: string}> $removed
+     * @param callable(string, array<string, string|int>): void $step
+     * @param 'deploy.'|'remove.' $prefix
+     */
+    private function reportKept(array $removed, callable $step, string $prefix, ?AppConfig $config = null): void
+    {
+        $queues = new Queues($this->aws->sqs(), $this->aws->lambda());
+        $buckets = new Buckets($this->aws->s3());
+        $tables = new Tables($this->aws->dynamoDb());
+        foreach ($removed as $resource) {
+            $id = $resource['id'];
+            $referenced = $config === null ? null : self::stillReferenced($config, $resource['type'], $id);
+            if ($referenced !== null) {
+                $step($referenced[0], $referenced[1]);
+                continue;
+            }
+            match ($resource['type']) {
+                'AWS::SQS::Queue' => $step($prefix . 'queue_kept', ['queue' => self::queueName($id), 'url' => $id, 'messages' => $queues->messageCount($id) ?? '?']),
+                'AWS::S3::Bucket' => $step($prefix . 'storage_kept', ['bucket' => $id, 'objects' => match ($buckets->hasObjects($id)) {
+                    true => 'some',
+                    false => 'none',
+                    null => 'unknown',
+                }]),
+                default => ($items = $tables->itemCount($id)) === null
+                    ? $step($prefix . 'table_kept_unknown', ['table' => $id])
+                    : $step($prefix . 'table_kept', ['table' => $id, 'items' => $items]),
+            };
+        }
+    }
+
+    /**
+     * Whether a resource that left the resources stack is referenced in arco.php with `existing`.
+     *
+     * @return array{0: string, 1: array<string, string>}|null the step key and its params
+     */
+    private static function stillReferenced(AppConfig $config, string $type, string $id): ?array
+    {
+        if ($type === 'AWS::SQS::Queue') {
+            $queue = self::queueReferenced($config, $id);
+            return $queue === null ? null : [$queue[0], ['queue' => self::queueName($id), 'as' => $queue[1]]];
+        }
+        if ($type === 'AWS::S3::Bucket') {
+            foreach ($config->storage as $storage) {
+                if ($storage->existing === $id) {
+                    return ['deploy.storage_now_existing', ['bucket' => $id, 'as' => $storage->name]];
+                }
+            }
+            return null;
+        }
+        foreach ([$config->cacheTable, $config->failedJobsTable] as $table) {
+            if ($table !== null && $table->existing === $id) {
+                return ['deploy.table_now_existing', ['table' => $id, 'as' => $table->kind]];
+            }
+        }
+        return null;
     }
 
     /**
@@ -628,7 +778,7 @@ final class AwsDeployer implements Deployer
      *
      * @return array{0: string, 1: string}|null the step key and the arco.php queue name
      */
-    private static function stillReferenced(AppConfig $config, string $url): ?array
+    private static function queueReferenced(AppConfig $config, string $url): ?array
     {
         $removed = QueueConfig::parseExisting($url);
         if ($removed === null) {
@@ -654,21 +804,30 @@ final class AwsDeployer implements Deployer
         return null;
     }
 
-    /** @return array<string, string> URL of each SQS queue the stack owns, by logical id */
-    private function stackQueues(string $stack): array
+    /** Resource types of the resources stack that hold data, and are retained when they leave it. */
+    private const RETAINED_TYPES = ['AWS::SQS::Queue', 'AWS::S3::Bucket', 'AWS::DynamoDB::Table'];
+
+    /**
+     * The queues, buckets and tables the stack owns, by logical id, with their physical id: the URL of
+     * a queue, the name of a bucket or table.
+     *
+     * @return array<string, array{type: string, id: string}>
+     */
+    private function ownedResources(string $stack): array
     {
-        $queues = [];
+        $owned = [];
         $result = Domains\Aws::call($this->aws->cloudFormation(), 'DescribeStackResources', ['StackName' => $stack]);
         foreach (Domains\Aws::maps($result['StackResources'] ?? []) as $resource) {
             $id = Domains\Aws::string($resource['LogicalResourceId'] ?? null);
-            $url = Domains\Aws::string($resource['PhysicalResourceId'] ?? null);
+            $physical = Domains\Aws::string($resource['PhysicalResourceId'] ?? null);
+            $type = Domains\Aws::string($resource['ResourceType'] ?? null);
             $status = (string) Domains\Aws::string($resource['ResourceStatus'] ?? null);
-            if ($id !== null && $url !== null && ($resource['ResourceType'] ?? null) === 'AWS::SQS::Queue'
+            if ($id !== null && $physical !== null && $type !== null && in_array($type, self::RETAINED_TYPES, true)
                 && ! in_array($status, ['CREATE_FAILED', 'DELETE_COMPLETE', 'DELETE_SKIPPED'], true)) {
-                $queues[$id] = $url;
+                $owned[$id] = ['type' => $type, 'id' => $physical];
             }
         }
-        return $queues;
+        return $owned;
     }
 
     private static function queueName(string $url): string

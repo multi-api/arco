@@ -3,6 +3,7 @@
 namespace Multiapi\Arco\Logs;
 
 use Multiapi\Arco\Config\AppConfig;
+use Multiapi\Arco\Config\Partition;
 
 /** The log groups of an environment, by --source. */
 final class LogGroups
@@ -31,11 +32,7 @@ final class LogGroups
 
     public static function arn(string $region, string $account, string $group): string
     {
-        $partition = match (true) {
-            str_starts_with($region, 'cn-') => 'aws-cn',
-            str_starts_with($region, 'us-gov-') => 'aws-us-gov',
-            default => 'aws',
-        };
+        $partition = Partition::of($region);
         return "arn:$partition:logs:$region:$account:log-group:$group";
     }
 }

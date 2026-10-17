@@ -5,6 +5,7 @@ namespace Multiapi\Arco\Aws;
 use Aws\Acm\AcmClient;
 use Aws\CloudFormation\CloudFormationClient;
 use Aws\CloudWatchLogs\CloudWatchLogsClient;
+use Aws\DynamoDb\DynamoDbClient;
 use Aws\EventBridge\EventBridgeClient;
 use Aws\Credentials\CredentialProvider;
 use Aws\Credentials\Credentials;
@@ -211,6 +212,7 @@ final class AwsClients
     public function acm(): AcmClient { return $this->sdk->createAcm(['region' => 'us-east-1']); }
     public function cloudFormation(): CloudFormationClient { return $this->sdk->createCloudFormation(); }
     public function sqs(): SqsClient { return $this->sdk->createSqs(); }
+    public function dynamoDb(): DynamoDbClient { return $this->sdk->createDynamoDb(); }
     public function route53(): Route53Client { return $this->sdk->createRoute53(); }
     public function taggingApi(): ResourceGroupsTaggingAPIClient { return $this->sdk->createResourceGroupsTaggingAPI(); }
 

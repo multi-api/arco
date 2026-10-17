@@ -18,9 +18,11 @@ final class PolicyBuilder
      * @param string|null $codeBucket the code bucket whose runtime/* binaries the console function reads
      * @param list<string> $queueArns the queues the app sends to and the workers read from (not their dead-letter queues)
      * @param list<string> $workerFunctions queue worker function names, for their log groups
+     * @param list<string> $bucketArns the storage buckets the app reads and writes (created and existing)
+     * @param list<string> $tableArns the DynamoDB tables of the cache and the failed jobs (created and existing)
      * @return array{Version: string, Statement: list<array<string, mixed>>}
      */
-    public static function document(string $region, string $account, string $function, array $references, array $permissions = [], ?string $codeBucket = null, array $queueArns = [], array $workerFunctions = []): array
+    public static function document(string $region, string $account, string $function, array $references, array $permissions = [], ?string $codeBucket = null, array $queueArns = [], array $workerFunctions = [], array $bucketArns = [], array $tableArns = []): array
     {
         // Web Functions log to /aws/lambda/web/<function> and also to a "<group>.local" group; the
         // console function to the classic /aws/lambda/<function>-console group.
@@ -39,6 +41,29 @@ final class PolicyBuilder
                 'Effect' => 'Allow',
                 'Action' => ['sqs:SendMessage', 'sqs:ReceiveMessage', 'sqs:DeleteMessage', 'sqs:ChangeMessageVisibility', 'sqs:GetQueueAttributes', 'sqs:GetQueueUrl'],
                 'Resource' => $queueArns,
+            ];
+        }
+        if ($bucketArns !== []) {
+            // Object actions on the keys, listing on the bucket: one statement each, so neither applies to the other's resources.
+            $statements[] = [
+                'Sid' => 'ArcoStorage',
+                'Effect' => 'Allow',
+                'Action' => ['s3:GetObject', 's3:PutObject', 's3:DeleteObject', 's3:GetObjectAcl', 's3:PutObjectAcl'],
+                'Resource' => array_map(fn (string $arn) => "$arn/*", $bucketArns),
+            ];
+            $statements[] = [
+                'Sid' => 'ArcoStorageList',
+                'Effect' => 'Allow',
+                'Action' => ['s3:ListBucket'],
+                'Resource' => $bucketArns,
+            ];
+        }
+        if ($tableArns !== []) {
+            $statements[] = [
+                'Sid' => 'ArcoTables',
+                'Effect' => 'Allow',
+                'Action' => ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:DeleteItem', 'dynamodb:Query', 'dynamodb:Scan', 'dynamodb:BatchGetItem', 'dynamodb:BatchWriteItem', 'dynamodb:DescribeTable'],
+                'Resource' => $tableArns,
             ];
         }
         if ($codeBucket !== null) {

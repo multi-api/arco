@@ -17,6 +17,8 @@ final class Validator
     private const NAME = '/^[a-z][a-z0-9-]*$/';
     private const VARIABLE = '/^[A-Za-z_][A-Za-z0-9_]*$/';
     private const SECRET_LIKE = '/(_KEY|_SECRET|_PASSWORD|_TOKEN)$/';
+    /** Disks Laravel's stock config/filesystems.php defines: a storage cannot take their names. */
+    private const LARAVEL_DISKS = ['s3', 'public', 'local'];
     private const LOG_LEVELS = ['trace', 'debug', 'info', 'warn', 'error', 'fatal'];
     /** Environment variables Lambda sets itself and refuses in function configuration. */
     private const RESERVED = [
@@ -141,6 +143,12 @@ final class Validator
 
         self::validateDomains($config, $result);
         self::validateQueues($config, $result);
+        self::validateStorage($config, $result);
+        foreach ([$config->cacheTable, $config->failedJobsTable] as $table) {
+            if ($table?->existing !== null && ! TableConfig::isTableName($table->existing)) {
+                $result->error('validation.table_existing', ['table' => $table->kind, 'value' => $table->existing]);
+            }
+        }
 
         // The script every command goes through (artisan), as the console runtime runs it: php <entry> <args>.
         $entry = null;
@@ -321,6 +329,66 @@ final class Validator
             if ($owner !== null) {
                 $result->error('validation.queue_name_clash', ['queue' => $queue->name, 'other' => $owner, 'name' => $queue->physicalName($config)]);
             }
+        }
+    }
+
+    private static function validateStorage(AppConfig $config, ValidationResult $result): void
+    {
+        $defaults = 0;
+        foreach ($config->storage as $storage) {
+            $name = $storage->name;
+            if (! preg_match(self::NAME, $name)) {
+                $result->error('validation.storage_name', ['name' => $name]);
+                continue;
+            }
+            if (in_array($name, self::LARAVEL_DISKS, true)) {
+                // Laravel's own disks: arco-laravel never replaces an app-defined disk, so `public` would stay
+                // the local disk under /tmp on Lambda (lost on every new instance) and `s3` the default bucket.
+                $result->error('validation.storage_reserved', ['name' => $name]);
+                continue;
+            }
+            if ($storage->existing === null) {
+                // Before the credentials resolve the account, count its 12 digits anyway.
+                $bucket = $storage->bucketName($config) . ($config->account === null ? '123456789012' : '');
+                if (strlen($bucket) > 63) {
+                    $result->error('validation.bucket_name_length', ['storage' => $name, 'name' => $bucket]);
+                }
+            } elseif (! StorageConfig::isBucketName($storage->existing)) {
+                $result->error('validation.storage_existing', ['storage' => $name, 'value' => $storage->existing]);
+            } else {
+                // Arco manages no policy, lifecycle or CORS on a bucket it did not create. A warning, not an
+                // error: an environment's existing: merged over an app-level public: is legitimate.
+                $ignored = array_keys(array_filter(['public' => $storage->public, 'expire' => $storage->expire, 'cors' => $storage->cors], fn (array $v) => $v !== []));
+                if ($ignored !== []) {
+                    $result->warning('validation.storage_existing_options', ['storage' => $name, 'options' => implode(', ', $ignored), 'bucket' => $storage->existing]);
+                }
+            }
+            foreach ($storage->public as $prefix) {
+                if ($prefix === '' || ! str_ends_with($prefix, '/')) {
+                    $result->error('validation.storage_public', ['storage' => $name, 'prefix' => $prefix]);
+                } elseif (strpbrk($prefix, '*?') !== false) {
+                    // The prefix becomes <bucket>/<prefix>* in the bucket policy: a wildcard would make more public.
+                    $result->error('validation.storage_public_wildcard', ['storage' => $name, 'prefix' => $prefix]);
+                }
+            }
+            foreach ($storage->expire as $prefix => $days) {
+                if ($days < 1 || ! str_ends_with($prefix, '/')) {
+                    $result->error('validation.storage_expire', ['storage' => $name, 'prefix' => $prefix, 'days' => $days]);
+                } elseif (strpbrk($prefix, '*?') !== false) {
+                    $result->error('validation.storage_expire_wildcard', ['storage' => $name, 'prefix' => $prefix]);
+                }
+            }
+            foreach ($storage->cors as $origin) {
+                if ($origin !== '*' && ! preg_match('#^https?://[^\s/]+$#', $origin)) {
+                    $result->error('validation.storage_cors', ['storage' => $name, 'origin' => $origin]);
+                }
+            }
+            if ($storage->default) {
+                $defaults++;
+            }
+        }
+        if ($defaults > 1) {
+            $result->error('validation.storage_default_twice');
         }
     }
 

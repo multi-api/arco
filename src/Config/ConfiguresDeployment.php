@@ -4,7 +4,7 @@ namespace Multiapi\Arco\Config;
 
 trait ConfiguresDeployment
 {
-    /** @var array<string, string|int|bool> */
+    /** @var array<string, string|int|bool|array<string, string>> */
     private array $settings = [];
     /** @var array<string, string> */
     private array $variables = [];
@@ -17,6 +17,8 @@ trait ConfiguresDeployment
     private ?array $deployCommands = null;
     /** @var array<string, array<string, mixed>|false> */
     private array $queues = [];
+    /** @var array<string, array<string, mixed>|false> */
+    private array $storage = [];
 
     public function concurrency(int $requests): static { $this->settings['concurrency'] = $requests; return $this; }
     public function timeout(int $seconds): static { $this->settings['timeout'] = $seconds; return $this; }
@@ -117,6 +119,67 @@ trait ConfiguresDeployment
         return $this;
     }
 
+    /**
+     * An S3 bucket, named <app>-<env>-<name>-<account>. Options not given keep their defaults (private,
+     * no expiry, no CORS); repeated calls for a name accumulate. An environment's entry merges over the
+     * app's; `storage('name', false)` drops the bucket there.
+     *
+     * @param list<string>|null $public key prefixes anyone can read, each ending in "/"
+     * @param array<string, int>|null $expire key prefix (ending in "/") => days before its objects are deleted
+     * @param list<string>|null $cors origins allowed from a browser ("https://example.com" or "*")
+     * @param string|null $existing name of a bucket Arco does not manage
+     */
+    public function storage(
+        string $name,
+        false|null $remove = null,
+        ?array $public = null,
+        ?array $expire = null,
+        ?array $cors = null,
+        ?string $existing = null,
+        ?bool $default = null,
+    ): static {
+        if ($remove === false) {
+            $this->storage[$name] = false;
+            return $this;
+        }
+        $options = array_filter(
+            ['public' => $public, 'expire' => $expire, 'cors' => $cors, 'existing' => $existing, 'default' => $default],
+            fn (mixed $value): bool => $value !== null,
+        );
+        $current = $this->storage[$name] ?? [];
+        $this->storage[$name] = [...(is_array($current) ? $current : []), ...$options];
+        return $this;
+    }
+
+    /**
+     * A DynamoDB table for Laravel's cache (<app>-<env>-cache); `existing` names a table Arco does not
+     * manage; false turns it off.
+     */
+    public function cache(bool|null $enabled = true, ?string $existing = null): static
+    {
+        $this->settings['cache'] = self::tableSetting($enabled, $existing);
+        return $this;
+    }
+
+    /**
+     * A DynamoDB table for Laravel's failed jobs (<app>-<env>-failed-jobs); `existing` names a table
+     * Arco does not manage; false turns it off.
+     */
+    public function failedJobsTable(bool|null $enabled = true, ?string $existing = null): static
+    {
+        $this->settings['failedJobsTable'] = self::tableSetting($enabled, $existing);
+        return $this;
+    }
+
+    /** @return bool|array{existing: string} */
+    private static function tableSetting(?bool $enabled, ?string $existing): bool|array
+    {
+        if ($existing !== null && $enabled !== false) {
+            return ['existing' => $existing];
+        }
+        return $enabled ?? true;
+    }
+
     /** @param array<string, string> $variables */
     public function variables(array $variables): static
     {
@@ -144,7 +207,7 @@ trait ConfiguresDeployment
         return $this;
     }
 
-    /** @return array{settings: array<string, string|int|bool>, variables: array<string, string>, runtime: array<string, mixed>, permissions: list<array<string, mixed>>, domains: list<string>|null, deployCommands: list<string>|null, queues: array<string, array<string, mixed>|false>} */
+    /** @return array{settings: array<string, string|int|bool|array<string, string>>, variables: array<string, string>, runtime: array<string, mixed>, permissions: list<array<string, mixed>>, domains: list<string>|null, deployCommands: list<string>|null, queues: array<string, array<string, mixed>|false>, storage: array<string, array<string, mixed>|false>} */
     protected function deploymentArray(): array
     {
         return [
@@ -155,6 +218,7 @@ trait ConfiguresDeployment
             'domains' => $this->domains,
             'deployCommands' => $this->deployCommands,
             'queues' => $this->queues,
+            'storage' => $this->storage,
         ];
     }
 }

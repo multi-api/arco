@@ -7,6 +7,7 @@ use Multiapi\Arco\Config\ArcoFileEditor;
 use Multiapi\Arco\Config\ConfigException;
 use Multiapi\Arco\Config\ConfigLoader;
 use Multiapi\Arco\Config\ConfigResolver;
+use Multiapi\Arco\Config\Validator;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Style\SymfonyStyle;
@@ -116,15 +117,54 @@ trait EditsSettings
     /** Writes the call (or removes it when $value is null), or explains the line to change by hand. */
     private function writeSetting(?string $environment, string $method, int|string|bool|null $value): void
     {
-        $byHand = $this->t('settings.edit_by_hand', ['where' => $this->where($environment)]) . "\n    "
-            . ($value === null ? $this->t('settings.remove_call', ['method' => $method]) : ArcoFileEditor::settingLine($method, $value));
+        $this->writeOrExplain(
+            $environment,
+            $value === null ? $this->t('settings.remove_call', ['method' => $method]) : ArcoFileEditor::settingLine($method, $value),
+            fn (): bool => ArcoFileEditor::setSetting($this->arcoPhp(), $environment, $method, $value),
+        );
+    }
+
+    /**
+     * Runs an arco.php edit; when the editor cannot make it (or refuses with an error), stops with the line
+     * to write by hand in this level.
+     *
+     * @param callable(): bool $write
+     */
+    private function writeOrExplain(?string $environment, string $line, callable $write): void
+    {
+        $byHand = $this->t('settings.edit_by_hand', ['where' => $this->where($environment)]) . "\n    " . $line;
         try {
-            $written = ArcoFileEditor::setSetting($this->arcoPhp(), $environment, $method, $value);
+            $written = $write();
         } catch (ConfigException $e) {
             throw new UserError($this->t($e->key, $e->params) . "\n" . $byHand);
         }
         if (! $written) {
             throw new UserError($byHand);
+        }
+    }
+
+    /**
+     * Stops with the validation errors whose key starts with one of $prefixes in any environment the change
+     * reaches, so arco.php stays as it is.
+     *
+     * @param array<string, mixed> $changed
+     * @param list<string> $prefixes
+     */
+    private function assertNoErrors(array $changed, ?string $environment, array $prefixes): void
+    {
+        $messages = [];
+        foreach ($environment === null ? ConfigResolver::environments($changed) : [$environment] as $env) {
+            $result = (new Validator())->validate(ConfigResolver::resolve($changed, $env), $this->projectDir());
+            foreach ($result->errors as $error) {
+                foreach ($prefixes as $prefix) {
+                    if (str_starts_with($error['key'], $prefix)) {
+                        $messages[$this->t($error['key'], $error['params'])] = true;
+                    }
+                }
+            }
+        }
+        if ($messages !== []) {
+            throw new UserError(implode("\n", array_map(static fn (string $m): string => '• ' . $m, array_keys($messages))));
         }
     }
 

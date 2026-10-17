@@ -47,6 +47,10 @@ vendor/bin/arco deploy --env=production
 - **Queues.** `->queue('emails')` creates an SQS queue with a dead-letter queue and a worker function that
   runs the jobs with Laravel's own worker (retries, `failed()` and `failed_jobs` as usual);
   `->onQueue('emails')` works without app changes.
+- **Storage, cache and failed jobs.** `->storage('uploads')` creates a private S3 bucket that is a Laravel
+  disk (the first one is the default disk), with optional public prefixes, expiry rules and CORS;
+  `->cache()` and `->failedJobsTable()` create DynamoDB tables for Laravel's cache and failed jobs. Each can
+  point at one you already have (`existing:`), and removed ones stay in AWS with their data.
 - **Custom domains** in one line: certificate, CloudFront and DNS records, with the DNS zone in the
   same AWS account, another account, or outside AWS.
 
@@ -113,6 +117,8 @@ The main options:
 | `scheduler(int\|false)` | off | Run `schedule:run` every N minutes (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60), clock-aligned in UTC; needs the console |
 | `logRetention(int\|false)` | not managed | Days CloudWatch keeps the logs; `false` = never expire |
 | `queue(name, ...)` | none | An SQS queue and its worker function; named options `timeout`, `memory`, `concurrency`, `batchSize`, `tries`, `dlq`, `fifo`, `existing`, `default` |
+| `storage(name, ...)` | none | An S3 bucket used as a Laravel disk; named options `public`, `expire`, `cors`, `existing`, `default` |
+| `cache()` / `failedJobsTable()` | off | DynamoDB tables for Laravel's cache and failed jobs; `existing:` names your own table |
 | `consoleTimeout(int)` | 900 | Seconds a console command may run (3–900) |
 | `protected()` | `production` | Ask before `arco tinker` on this environment |
 
@@ -134,6 +140,11 @@ Every option, the packaging rules and the Laravel preset are in the
 | `arco queue:add <name> --env=<env>` / `queue:set` / `queue:remove` | Add, change or remove a queue in `arco.php` (removed queues stay in AWS with their messages) |
 | `arco queue:list --env=<env>` | Each queue's messages, dead-letter queue and worker version |
 | `arco queue:dlq <name> --env=<env>` | Show the messages in a queue's dead-letter queue; `--redrive` moves them back |
+| `arco queue:failed-table --env=<env>` | Turn the DynamoDB failed-jobs table on (`--existing=<table>`) or off (`--remove`) in `arco.php` |
+| `arco storage:add <name> --env=<env>` / `storage:remove` | Add or remove a storage in `arco.php` (`--existing=<bucket>`, `--default`; removed buckets stay in AWS with their files) |
+| `arco storage:public` / `storage:expire` / `storage:cors` | Public prefixes, expiry rules and CORS origins of a storage (`--remove` takes one out) |
+| `arco storage:list --env=<env>` | Each storage's bucket, URL and options, and the retained buckets no longer in `arco.php` |
+| `arco cache:add --env=<env>` / `cache:remove` | Turn the DynamoDB cache table on (`--existing=<table>`) or off in `arco.php` |
 | `arco logs --env=<env>` | Web, console and queue worker logs merged, filtered and colored (`--follow`, `--since`, `--level`, `--request`, `--filter`, `--queue`) |
 | `arco package --env=<env>` | Build the zip only (for CI: build once, deploy later) |
 | `arco info --env=<env>` | Resolved settings with their source, URL, active revision (`--json` too) |
@@ -141,7 +152,7 @@ Every option, the packaging rules and the Laravel preset are in the
 | `arco set <key> <value> --env=<env>` / `arco unset <key>` | Change `concurrency`, `max-instances`, `rate-limit`, `timeout`, `log-level` in `arco.php` |
 | `arco domain:add <host> --env=<env>` / `domain:remove` | Change an environment's domains in `arco.php` |
 | `arco profile --env=<env>` | Show or change the AWS profile remembered for an environment |
-| `arco remove --env=<env>` | Delete the function, its endpoint, role, workers and domain resources (queues are kept) |
+| `arco remove --env=<env>` | Delete the function, its endpoint, role, workers and domain resources (queues, buckets and tables are kept) |
 
 Messages are in English or Spanish (`--lang=es` or `ARCO_LANG=es`).
 
@@ -158,8 +169,9 @@ Messages are in English or Spanish (`--lang=es` or `ARCO_LANG=es`).
   unzipped package, with a static PHP CLI instead of the FrankenPHP binary
 - The queue workers are classic Lambda functions running the console package (250 MB unzipped), one per
   queue; a batch of jobs runs for at most the worker's `timeout` (up to 900 s)
-- Arco deploys HTTP functions, an optional console function for commands and the scheduler, and SQS queue
-  workers; S3 storage and DynamoDB cache tables are on the roadmap
+- Arco deploys HTTP functions, an optional console function for commands and the scheduler, SQS queue
+  workers, S3 buckets and DynamoDB tables for the cache and failed jobs; next on the roadmap is
+  `arco init` detecting what the app uses and offering each piece
 
 ## Upgrading to 0.4
 

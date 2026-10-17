@@ -53,12 +53,102 @@ final class DeployPipeline
     {
         return [
             ...$preset->defaultVariables(),
-            ...self::queueVariables($config),
+            ...self::injectedVariables($config),
             ...$config->variables,
             'ARCO' => '1',
             'ARCO_APP' => $config->app,
             'ARCO_ENV' => $config->environment,
         ];
+    }
+
+    /**
+     * The variables Arco adds for the queues, the storage and the tables; the user's own win over them.
+     *
+     * @return array<string, string>
+     */
+    public static function injectedVariables(AppConfig $config): array
+    {
+        return [...self::queueVariables($config), ...self::storageVariables($config), ...self::tableVariables($config)];
+    }
+
+    /**
+     * The variables storage adds: the default bucket behind Laravel's stock s3 disk, and every bucket
+     * (ARCO_STORAGE, name => bucket and url) for the named disks arco-laravel registers.
+     *
+     * @return array<string, string>
+     */
+    public static function storageVariables(AppConfig $config): array
+    {
+        $default = $config->defaultStorage();
+        if ($default === null) {
+            return [];
+        }
+        $buckets = [];
+        foreach ($config->storage as $storage) {
+            $buckets[$storage->name] = ['bucket' => $storage->bucketName($config), 'url' => $storage->url($config)];
+        }
+        return [
+            'FILESYSTEM_DISK' => 's3',
+            'AWS_BUCKET' => $default->bucketName($config),
+            'AWS_URL' => $default->url($config),
+            'ARCO_STORAGE' => json_encode($buckets, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+        ];
+    }
+
+    /**
+     * The user variables() that replace what storageVariables() would set for the default disk
+     * (FILESYSTEM_DISK, AWS_BUCKET), as key => the user's value. A created bucket's name needs the
+     * account: without it ($located null) any user AWS_BUCKET counts as an override.
+     *
+     * @return array<string, string>
+     */
+    public static function storageOverrides(AppConfig $config, ?AppConfig $located): array
+    {
+        $default = $config->defaultStorage();
+        if ($default === null) {
+            return [];
+        }
+        $expected = $default->existing !== null || $located !== null ? $default->bucketName($located ?? $config) : null;
+        $overrides = [];
+        if (isset($config->variables['FILESYSTEM_DISK']) && $config->variables['FILESYSTEM_DISK'] !== 's3') {
+            $overrides['FILESYSTEM_DISK'] = $config->variables['FILESYSTEM_DISK'];
+        }
+        if (isset($config->variables['AWS_BUCKET']) && $config->variables['AWS_BUCKET'] !== $expected) {
+            $overrides['AWS_BUCKET'] = $config->variables['AWS_BUCKET'];
+        }
+        return $overrides;
+    }
+
+    /**
+     * The variables the cache and failed-jobs tables add. ARCO_CACHE_TABLE only for a table Arco
+     * created: arco-laravel then matches the store's attributes to it (key, value, expires_at).
+     * arco-laravel applies ARCO_CACHE_TABLE and ARCO_FAILED_JOBS_TABLE over the app's config, so they are
+     * left out when the user's own variables choose another cache table or store (DYNAMODB_CACHE_TABLE,
+     * CACHE_STORE) or another failed-jobs driver (QUEUE_FAILED_DRIVER): the user's value must win.
+     *
+     * @return array<string, string>
+     */
+    public static function tableVariables(AppConfig $config): array
+    {
+        $variables = [];
+        $user = $config->variables;
+        if ($config->cacheTable !== null) {
+            $table = $config->cacheTable->tableName($config);
+            $variables['CACHE_STORE'] = 'dynamodb';
+            $variables['DYNAMODB_CACHE_TABLE'] = $table;
+            $overridden = (array_key_exists('DYNAMODB_CACHE_TABLE', $user) && $user['DYNAMODB_CACHE_TABLE'] !== $table)
+                || (array_key_exists('CACHE_STORE', $user) && $user['CACHE_STORE'] !== 'dynamodb');
+            if ($config->cacheTable->existing === null && ! $overridden) {
+                $variables['ARCO_CACHE_TABLE'] = $table;
+            }
+        }
+        if ($config->failedJobsTable !== null) {
+            $variables['QUEUE_FAILED_DRIVER'] = 'dynamodb';
+            if (! array_key_exists('QUEUE_FAILED_DRIVER', $user) || $user['QUEUE_FAILED_DRIVER'] === 'dynamodb') {
+                $variables['ARCO_FAILED_JOBS_TABLE'] = $config->failedJobsTable->tableName($config);
+            }
+        }
+        return $variables;
     }
 
     /**
@@ -145,41 +235,88 @@ final class DeployPipeline
         }
     }
 
-    /**
-     * Files in the package that show each package the queues need, and the requirement to install:
-     * WorkCommand (`arco:work`) first shipped in multiapi/arco-laravel 0.5.
-     */
-    public const QUEUE_PACKAGES = [
-        'multiapi/arco-laravel:^0.5' => 'app/vendor/multiapi/arco-laravel/src/Console/WorkCommand.php',
-        'aws/aws-sdk-php' => 'app/vendor/aws/aws-sdk-php/src/Sdk.php',
-    ];
+    /** WorkCommand (`arco:work`) first shipped in multiapi/arco-laravel 0.5. */
+    private const ARCO_LARAVEL_05 = 'multiapi/arco-laravel:^0.5';
+
+    /** The storage disks and the table wiring first shipped in multiapi/arco-laravel 0.6. */
+    private const ARCO_LARAVEL_06 = 'multiapi/arco-laravel:^0.6';
+
+    private const PROVIDER = 'app/vendor/multiapi/arco-laravel/src/ArcoServiceProvider.php';
+
+    private const AWS_SDK = ['aws/aws-sdk-php', 'app/vendor/aws/aws-sdk-php/src/Sdk.php', null];
 
     /**
-     * With queues, stops the deploy when the package lacks multiapi/arco-laravel 0.5+ (the worker's
-     * `arco:work` and the queue name mapping) or aws/aws-sdk-php: every job would land in the
-     * dead-letter queue while the deploy reported success.
+     * What each arco.php feature needs in the package: [requirement for `composer require`, file in the
+     * zip, string that file must contain or null]. A dev version of arco-laravel is recognised by what
+     * its provider reads (ARCO_STORAGE, ARCO_FAILED_JOBS_TABLE), not by its version string.
      *
-     * @throws DeployException deploy.queues_need_packages
+     * @return array<string, list<array{0: string, 1: string, 2: string|null}>> feature (its arco.php call) => requirements
      */
-    private static function checkQueuePackages(AppConfig $config, Package $package): void
+    private static function requiredPackages(AppConfig $config): array
     {
-        if ($config->queues === []) {
+        $features = [];
+        if ($config->queues !== []) {
+            $features['queue()'] = [[self::ARCO_LARAVEL_05, 'app/vendor/multiapi/arco-laravel/src/Console/WorkCommand.php', null], self::AWS_SDK];
+        }
+        if ($config->storage !== []) {
+            $features['storage()'] = [
+                ['league/flysystem-aws-s3-v3:^3.0', 'app/vendor/league/flysystem-aws-s3-v3/AwsS3V3Adapter.php', null],
+                self::AWS_SDK,
+                [self::ARCO_LARAVEL_06, self::PROVIDER, 'ARCO_STORAGE'],
+            ];
+        }
+        if ($config->cacheTable !== null) {
+            $features['cache()'] = [self::AWS_SDK];
+        }
+        if ($config->failedJobsTable !== null) {
+            $features['failedJobsTable()'] = [self::AWS_SDK, [self::ARCO_LARAVEL_06, self::PROVIDER, 'ARCO_FAILED_JOBS_TABLE']];
+        }
+        return $features;
+    }
+
+    /**
+     * Stops the deploy when the package lacks a package the app's features need: without
+     * multiapi/arco-laravel or aws/aws-sdk-php every job would land in the dead-letter queue; without
+     * league/flysystem-aws-s3-v3 every default-disk call fails; without the AWS SDK every cache call fails;
+     * without arco-laravel 0.6 the named disks are missing and failed jobs are lost. The deploy would
+     * still report success, since the health check touches none of them.
+     *
+     * @throws DeployException deploy.needs_packages
+     */
+    private static function checkPackages(AppConfig $config, Package $package): void
+    {
+        $features = self::requiredPackages($config);
+        if ($features === []) {
             return;
         }
         $zip = new \ZipArchive();
         if ($zip->open($package->path, \ZipArchive::RDONLY) !== true) {
             return; // the upload reports an unreadable package
         }
+        /** @var array<string, list<string>> $missing requirement => features that need it */
         $missing = [];
-        foreach (self::QUEUE_PACKAGES as $requirement => $file) {
-            if ($zip->locateName($file) === false) {
-                $missing[] = $requirement;
+        foreach ($features as $feature => $requirements) {
+            foreach ($requirements as [$requirement, $file, $needle]) {
+                $found = $needle === null ? $zip->locateName($file) !== false : str_contains((string) $zip->getFromName($file), $needle);
+                if (! $found) {
+                    $missing[$requirement][] = $feature;
+                }
             }
         }
         $zip->close();
-        if ($missing !== []) {
-            throw DeployException::make('deploy.queues_need_packages', ['packages' => implode(' ', $missing)]);
+        if (isset($missing[self::ARCO_LARAVEL_05], $missing[self::ARCO_LARAVEL_06])) {
+            // 0.6 brings what 0.5 did: one requirement for both.
+            $missing[self::ARCO_LARAVEL_06] = [...$missing[self::ARCO_LARAVEL_05], ...$missing[self::ARCO_LARAVEL_06]];
+            unset($missing[self::ARCO_LARAVEL_05]);
         }
+        if ($missing === []) {
+            return;
+        }
+        $list = [];
+        foreach ($missing as $requirement => $needs) {
+            $list[] = "- $requirement (" . implode(', ', $needs) . ')';
+        }
+        throw DeployException::make('deploy.needs_packages', ['packages' => implode(' ', array_keys($missing)), 'list' => implode("\n", $list)]);
     }
 
     /** @param callable(string, array<string, string|int>): void $onStep */
@@ -244,13 +381,14 @@ final class DeployPipeline
     private function deployBuilt(AppConfig $config, FrameworkPreset $preset, Package $package, Deployer $deployer, Verifier $verifier, callable $onStep, ?CommandPlan $plan, bool $removeConsole): DeployOutcome
     {
         $variables = self::variables($config, $preset);
-        foreach (array_keys(self::queueVariables($config)) as $key) {
-            if ($key !== 'ARCO_QUEUES' && array_key_exists($key, $config->variables)) {
-                $onStep('deploy.queue_variable_overridden', ['key' => $key]);
+        foreach (array_keys(self::injectedVariables($config)) as $key) {
+            // ARCO_* values are Arco's own wiring: a user value for them is not an override worth a note.
+            if (! str_starts_with($key, 'ARCO_') && array_key_exists($key, $config->variables)) {
+                $onStep('deploy.variable_overridden', ['key' => $key]);
             }
         }
-        // Before any AWS change: workers need arco:work and Laravel's SQS driver needs the AWS SDK.
-        self::checkQueuePackages($config, $package);
+        // Before any AWS change: workers need arco:work, Laravel's SQS, S3 and DynamoDB drivers need their packages.
+        self::checkPackages($config, $package);
         // The console zip and the binary are derived from the web zip in a scratch directory.
         $work = sys_get_temp_dir() . '/arco-console-' . bin2hex(random_bytes(4));
         try {

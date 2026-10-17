@@ -42,6 +42,15 @@ final class Application extends SymfonyApplication
             new \Multiapi\Arco\Commands\QueueRemoveCommand(),
             new \Multiapi\Arco\Commands\QueueListCommand(),
             new \Multiapi\Arco\Commands\QueueDlqCommand(),
+            new \Multiapi\Arco\Commands\QueueFailedTableCommand(),
+            new \Multiapi\Arco\Commands\StorageAddCommand(),
+            new \Multiapi\Arco\Commands\StorageRemoveCommand(),
+            new \Multiapi\Arco\Commands\StorageExpireCommand(),
+            new \Multiapi\Arco\Commands\StoragePublicCommand(),
+            new \Multiapi\Arco\Commands\StorageCorsCommand(),
+            new \Multiapi\Arco\Commands\StorageListCommand(),
+            new \Multiapi\Arco\Commands\CacheAddCommand(),
+            new \Multiapi\Arco\Commands\CacheRemoveCommand(),
             new \Multiapi\Arco\Commands\LogsRetentionCommand(),
         ]);
         return $app;

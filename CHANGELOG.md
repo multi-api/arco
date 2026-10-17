@@ -3,6 +3,71 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.6.0
+
+- **Added:** S3 storage. `->storage('uploads')` (app or environment level, merged by name; `->storage('uploads',
+  false)` drops an app-level storage from an environment) creates a private bucket
+  `<app>-<env>-uploads-<account>` (at most 63 characters, checked by validation): all Block Public Access
+  settings on, SSE-S3, tagged. Named options: `public` (key prefixes anyone can read), `expire` (prefix =>
+  days, a lifecycle rule), `cors` (origins; `GET`, `PUT`, `POST`, `HEAD`), `existing` (a bucket Arco does not
+  manage, in the app's region) and `default` (the first storage unless one says `default: true`).
+- **Added:** the default storage is Laravel's `s3` disk and default disk (Arco sets `FILESYSTEM_DISK=s3`,
+  `AWS_BUCKET` and `AWS_URL`), and `multiapi/arco-laravel` registers every storage as a disk of its own name
+  from `ARCO_STORAGE` (`Storage::disk('uploads')`). A disk the app already defines under that name is left
+  alone, with a `disk_skipped` log line; the stock names `s3`, `public` and `local` are refused by the
+  validation. The app needs `league/flysystem-aws-s3-v3`.
+- **Added:** public prefixes use a bucket policy (`s3:GetObject` on `<prefix>*` only) and relax only
+  `BlockPublicPolicy` and `RestrictPublicBuckets` on that bucket. When the account's own Block Public Access
+  refuses the policy, the deploy stops with an error that names the setting.
+- **Added:** validation of storage: public and expire prefixes cannot contain `*` or `?`; `public`, `expire`
+  or `cors` on an `existing` bucket are ignored, with a warning (also from the `storage:*` commands).
+- **Added:** DynamoDB tables. `->cache()` creates `<app>-<env>-cache` (key `key`, TTL on `expires_at`) and sets
+  `CACHE_STORE=dynamodb` and `DYNAMODB_CACHE_TABLE`; `multiapi/arco-laravel` points the `dynamodb` store at it
+  with the attributes `key` / `value` / `expires_at`, whatever `config/cache.php` says. With
+  `cache(existing: '<table>')` the app's own attributes are used. `->failedJobsTable()` creates
+  `<app>-<env>-failed-jobs` (Laravel's `application` + `uuid` layout, TTL on `expires_at`), sets
+  `QUEUE_FAILED_DRIVER=dynamodb`, and `multiapi/arco-laravel` sends failed jobs there; Laravel gives them an
+  expiry of one week, so they disappear after about a week. Both tables are on-demand; `false` turns them off
+  on an environment.
+- **Added:** buckets and tables are kept like queues: one removed from `arco.php` (or by `arco remove`) stays
+  in AWS with its files or items and the deploy names it. Adding a kept name back stops the deploy before any
+  change and prints the `existing:` line to use instead; a bucket name held by another account (or a 403
+  without `s3:ListBucket`) stops it the same way.
+- **Added:** `arco storage:add`, `storage:remove`, `storage:public`, `storage:expire`, `storage:cors`,
+  `cache:add`, `cache:remove` and `queue:failed-table` edit `arco.php`; `arco storage:list` shows each
+  storage's bucket and options and the retained buckets (`tag:GetResources`).
+- **Added:** `arco info` lists the storage, the cache table and the failed-jobs table; `--json` adds `storage`
+  (`name`, `bucket`, `url`, `existing`, `default`, `public`), `cache` and `failedJobsTable` (`{table,
+  existing}` or `null`).
+- **Added:** the managed execution role gets `ArcoStorage` (object read, write, delete and ACL actions on the
+  buckets' objects), `ArcoStorageList` (`s3:ListBucket` on the buckets) and `ArcoTables` (item actions,
+  `Query`, `Scan`, batch actions and `DescribeTable` on the tables), `existing` ones included. With your own
+  `role()`, add them yourself (see the configuration reference).
+- **Added:** deploy-profile permissions for storage and tables (see Permissions for storage and tables in the
+  getting-started guide): on the app's bucket ARNs only (`arn:aws:s3:::<app>-*`, no object access)
+  `s3:Get*`, `s3:Put*`, `s3:CreateBucket`, `s3:DeleteBucketPolicy`, `s3:ListBucket` and `s3:DeleteBucket`
+  (rollback only); on the app's tables `dynamodb:CreateTable`, `UpdateTable`, `Describe*`, `UpdateTimeToLive`,
+  `TagResource`, `UntagResource`, `ListTagsOfResource` and `DeleteTable` (rollback only); and
+  `tag:GetResources`. An action a failed stack event names goes on the same ARNs.
+- **Added:** before any change, the deploy checks the package for what `arco.php` needs: storage needs
+  `league/flysystem-aws-s3-v3`, `aws/aws-sdk-php` and `multiapi/arco-laravel` 0.6+; the cache table
+  `aws/aws-sdk-php`; the failed-jobs table `aws/aws-sdk-php` and `multiapi/arco-laravel` 0.6+ (queues as in
+  0.5). A missing one stops the deploy with the `composer require` line to run. The error key
+  `deploy.queues_need_packages` is now `deploy.needs_packages` and lists each package with the `arco.php`
+  calls that need it.
+- **Changed:** queues, buckets and tables use `DeletionPolicy: RetainExceptOnCreate`: one created by a deploy
+  that fails and rolls back is deleted (it is new and unused, and keeping it would block the next deploy on
+  its name); every other one is still kept. CloudFormation then needs `sqs:DeleteQueue` for that rollback.
+  Existing resources stacks switch on their next deploy.
+- **Changed:** the note for a variable of your own that overrides Arco's now covers every variable Arco sets
+  (queues, storage, tables), not only the queue ones; `ARCO_*` variables never get it. A user value for
+  `CACHE_STORE` or `DYNAMODB_CACHE_TABLE` (or `QUEUE_FAILED_DRIVER`) also leaves out `ARCO_CACHE_TABLE` (or
+  `ARCO_FAILED_JOBS_TABLE`), so `multiapi/arco-laravel` does not put Arco's table back.
+- **Changed:** `queue:remove --app` (and `storage:remove --app`) warns about environments that keep their own
+  call for that name.
+- **Changed:** a stack named `arco-<app>-<env>-resources` that Arco did not create no longer fails deploys of
+  apps without queues, storage or tables; it is left alone.
+
 ## 0.5.0
 
 - **Added:** SQS queues. `->queue('emails')` (app or environment level, merged by name; `->queue('emails', false)`

@@ -13,6 +13,7 @@ final readonly class AppConfig
      * @param list<string> $domains
      * @param list<string> $deployCommands
      * @param list<QueueConfig> $queues
+     * @param list<StorageConfig> $storage
      */
     public function __construct(
         public string $app,
@@ -51,6 +52,12 @@ final readonly class AppConfig
         public int|false|null $logRetention = null,
         /** declaration order, app level first */
         public array $queues = [],
+        /** declaration order, app level first */
+        public array $storage = [],
+        /** null: no cache table */
+        public ?TableConfig $cacheTable = null,
+        /** null: no failed-jobs table */
+        public ?TableConfig $failedJobsTable = null,
     ) {
     }
 
@@ -88,6 +95,9 @@ final readonly class AppConfig
             scheduler: $this->scheduler,
             logRetention: $this->logRetention,
             queues: $this->queues,
+            storage: $this->storage,
+            cacheTable: $this->cacheTable,
+            failedJobsTable: $this->failedJobsTable,
         );
     }
 
@@ -111,6 +121,16 @@ final readonly class AppConfig
         foreach ($this->queues as $queue) {
             if ($queue->default) {
                 return $queue;
+            }
+        }
+        return null;
+    }
+
+    public function defaultStorage(): ?StorageConfig
+    {
+        foreach ($this->storage as $storage) {
+            if ($storage->default) {
+                return $storage;
             }
         }
         return null;

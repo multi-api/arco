@@ -4,12 +4,18 @@ namespace Multiapi\Arco\Deploy;
 
 use Multiapi\Arco\Config\AppConfig;
 use Multiapi\Arco\Config\QueueConfig;
+use Multiapi\Arco\Config\StorageConfig;
+use Multiapi\Arco\Config\TableConfig;
 
 /**
  * The CloudFormation template of an environment's AWS resources other than functions: the SQS
- * queues Arco creates and their dead-letter queues. Every queue is retained (DeletionPolicy and
- * UpdateReplacePolicy Retain): removing it from arco.php, or deleting the stack, never deletes its
- * messages. Queues referenced with `existing` are not in the template.
+ * queues Arco creates and their dead-letter queues, the S3 buckets of its storage, and the DynamoDB
+ * cache and failed-jobs tables. Every queue, bucket and table is retained when it is removed from
+ * arco.php or when the stack is deleted, with its messages, files or items (DeletionPolicy
+ * RetainExceptOnCreate, UpdateReplacePolicy Retain). It is deleted only when the very operation that
+ * created it rolls back: it is then new and unused, since the resources stack deploys before the app
+ * that could use it, and keeping it would block the next deploy with "name already exists".
+ * Resources referenced with `existing` are not in the template.
  */
 final class ResourcesStack
 {
@@ -18,6 +24,10 @@ final class ResourcesStack
     public const VISIBILITY_FACTOR = 6;
     /** Receives a message gets before it goes to the dead-letter queue, besides the worker's tries. */
     public const EXTRA_RECEIVES = 2;
+    /** See the class docblock: retained, except when the operation that created the resource rolls back. */
+    public const DELETION_POLICY = 'RetainExceptOnCreate';
+    /** The attribute Laravel's DynamoDB cache store and failed-job provider write the expiry to. */
+    public const TTL_ATTRIBUTE = 'expires_at';
 
     public static function name(AppConfig $config): string
     {
@@ -38,10 +48,40 @@ final class ResourcesStack
         return self::logicalId($queue) . 'Dlq';
     }
 
+    /** The logical id of a storage's bucket. "Storage" never starts a queue id; the name rules match logicalId(). */
+    public static function bucketLogicalId(string $storage): string
+    {
+        return 'Storage' . str_replace('-', 'X', ucfirst($storage));
+    }
+
+    /** The bucket policy of a storage's public prefixes: no storage name ends its id in "Policy" (names are lowercase). */
+    public static function bucketPolicyLogicalId(string $storage): string
+    {
+        return self::bucketLogicalId($storage) . 'Policy';
+    }
+
+    /** @param 'cache'|'failed-jobs' $kind */
+    public static function tableLogicalId(string $kind): string
+    {
+        return 'Table' . str_replace('-', 'X', ucfirst($kind));
+    }
+
     /** @return list<QueueConfig> the queues Arco creates (not `existing` ones) */
     public static function createdQueues(AppConfig $config): array
     {
         return array_values(array_filter($config->queues, static fn (QueueConfig $queue): bool => $queue->existing === null));
+    }
+
+    /** @return list<StorageConfig> the storage whose bucket Arco creates (not `existing` ones) */
+    public static function createdStorage(AppConfig $config): array
+    {
+        return array_values(array_filter($config->storage, static fn (StorageConfig $storage): bool => $storage->existing === null));
+    }
+
+    /** @return list<TableConfig> the tables Arco creates (not `existing` ones): cache, then failed jobs */
+    public static function createdTables(AppConfig $config): array
+    {
+        return array_values(array_filter([$config->cacheTable, $config->failedJobsTable], static fn (?TableConfig $table): bool => $table !== null && $table->existing === null));
     }
 
     /** @return array<string, mixed> */
@@ -81,6 +121,23 @@ final class ResourcesStack
             $outputs["{$id}Arn"] = ['Value' => ['Fn::GetAtt' => [$id, 'Arn']]];
         }
 
+        foreach (self::createdStorage($config) as $storage) {
+            $id = self::bucketLogicalId($storage->name);
+            $resources[$id] = self::bucket($config, $storage);
+            if ($storage->public !== []) {
+                $resources[self::bucketPolicyLogicalId($storage->name)] = self::publicPolicy($config, $storage);
+            }
+            $outputs["{$id}Name"] = ['Value' => ['Ref' => $id]];
+            $outputs["{$id}Arn"] = ['Value' => ['Fn::GetAtt' => [$id, 'Arn']]];
+        }
+
+        foreach (self::createdTables($config) as $table) {
+            $id = self::tableLogicalId($table->kind);
+            $resources[$id] = self::table($config, $table);
+            $outputs["{$id}Name"] = ['Value' => ['Ref' => $id]];
+            $outputs["{$id}Arn"] = ['Value' => ['Fn::GetAtt' => [$id, 'Arn']]];
+        }
+
         return [
             'AWSTemplateFormatVersion' => '2010-09-09',
             'Description' => "Arco resources for {$config->app}/{$config->environment}",
@@ -103,9 +160,114 @@ final class ResourcesStack
     {
         return [
             'Type' => 'AWS::SQS::Queue',
-            'DeletionPolicy' => 'Retain',
+            'DeletionPolicy' => self::DELETION_POLICY,
             'UpdateReplacePolicy' => 'Retain',
             'Properties' => $properties,
+        ];
+    }
+
+    /**
+     * A private bucket (spec §8): every Block Public Access setting on, SSE-S3, no lifecycle rule
+     * without `expire`, no CORS without `cors`. Public prefixes relax only the two policy settings
+     * their bucket policy needs; ACLs stay blocked.
+     *
+     * @return array<string, mixed>
+     */
+    private static function bucket(AppConfig $config, StorageConfig $storage): array
+    {
+        $public = $storage->public !== [];
+        $properties = [
+            'BucketName' => $storage->bucketName($config),
+            'BucketEncryption' => ['ServerSideEncryptionConfiguration' => [['ServerSideEncryptionByDefault' => ['SSEAlgorithm' => 'AES256']]]],
+            'PublicAccessBlockConfiguration' => [
+                'BlockPublicAcls' => true,
+                'BlockPublicPolicy' => ! $public,
+                'IgnorePublicAcls' => true,
+                'RestrictPublicBuckets' => ! $public,
+            ],
+        ];
+        if ($storage->expire !== []) {
+            $rules = [];
+            foreach ($storage->expire as $prefix => $days) {
+                $rules[] = ['Id' => 'arco-expire-' . (count($rules) + 1), 'Prefix' => (string) $prefix, 'ExpirationInDays' => $days, 'Status' => 'Enabled'];
+            }
+            $properties['LifecycleConfiguration'] = ['Rules' => $rules];
+        }
+        if ($storage->cors !== []) {
+            $properties['CorsConfiguration'] = ['CorsRules' => [[
+                'AllowedOrigins' => $storage->cors,
+                'AllowedMethods' => ['GET', 'PUT', 'POST', 'HEAD'],
+                'AllowedHeaders' => ['*'],
+                'MaxAge' => 3000,
+            ]]];
+        }
+        $properties['Tags'] = self::tags($config, "storage:{$storage->name}");
+        return [
+            'Type' => 'AWS::S3::Bucket',
+            'DeletionPolicy' => self::DELETION_POLICY,
+            'UpdateReplacePolicy' => 'Retain',
+            'Properties' => $properties,
+        ];
+    }
+
+    /**
+     * Anyone may read the objects under each public prefix, and nothing else. Not retained: a bucket
+     * that leaves arco.php (or its last public prefix) goes back to private.
+     *
+     * @return array<string, mixed>
+     */
+    private static function publicPolicy(AppConfig $config, StorageConfig $storage): array
+    {
+        $bucket = $storage->bucketName($config);
+        $statements = [];
+        foreach ($storage->public as $prefix) {
+            $statements[] = [
+                'Sid' => 'ArcoPublicRead' . (count($statements) + 1),
+                'Effect' => 'Allow',
+                'Principal' => '*',
+                'Action' => 's3:GetObject',
+                // The partition of the stack's region (aws, aws-cn, aws-us-gov).
+                'Resource' => ['Fn::Join' => ['', ['arn:', ['Ref' => 'AWS::Partition'], ":s3:::{$bucket}/{$prefix}*"]]],
+            ];
+        }
+        return [
+            'Type' => 'AWS::S3::BucketPolicy',
+            'DependsOn' => self::bucketLogicalId($storage->name),
+            'Properties' => [
+                'Bucket' => $bucket,
+                'PolicyDocument' => ['Version' => '2012-10-17', 'Statement' => $statements],
+            ],
+        ];
+    }
+
+    /**
+     * An on-demand table with the layout Laravel uses: DynamoDbStore (`key`) for the cache, and
+     * DynamoDbFailedJobProvider (`application` + `uuid`) for failed jobs. Both write the expiry
+     * (epoch seconds) to `expires_at`, which TTL must name exactly, or items are never deleted.
+     *
+     * @return array<string, mixed>
+     */
+    private static function table(AppConfig $config, TableConfig $table): array
+    {
+        $keys = $table->kind === 'cache' ? ['key' => 'HASH'] : ['application' => 'HASH', 'uuid' => 'RANGE'];
+        $attributes = [];
+        $schema = [];
+        foreach ($keys as $name => $type) {
+            $attributes[] = ['AttributeName' => $name, 'AttributeType' => 'S'];
+            $schema[] = ['AttributeName' => $name, 'KeyType' => $type];
+        }
+        return [
+            'Type' => 'AWS::DynamoDB::Table',
+            'DeletionPolicy' => self::DELETION_POLICY,
+            'UpdateReplacePolicy' => 'Retain',
+            'Properties' => [
+                'TableName' => $table->tableName($config),
+                'BillingMode' => 'PAY_PER_REQUEST',
+                'AttributeDefinitions' => $attributes,
+                'KeySchema' => $schema,
+                'TimeToLiveSpecification' => ['AttributeName' => self::TTL_ATTRIBUTE, 'Enabled' => true],
+                'Tags' => self::tags($config, $table->kind),
+            ],
         ];
     }
 
