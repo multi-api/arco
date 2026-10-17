@@ -70,6 +70,7 @@ final class InfoCommand extends ArcoCommand
                         + ($status?->consoleVersionError !== null ? ['error' => $status->consoleVersionError] : [])
                         + ['enabled' => true]
                     : ['enabled' => false, 'function' => $config->consoleFunctionName()],
+                'queues' => $this->jsonQueues($config, $status),
                 'deployCommands' => $config->deployCommands,
                 'settings' => $this->jsonSettings($settings, $status),
             ] + ($remoteError !== null ? ['error' => $remoteError] : []), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
@@ -102,9 +103,43 @@ final class InfoCommand extends ArcoCommand
                 [$this->t('info.revision') => $status->activeRevisionId ?? '-'],
                 [$this->t('info.console') => $config->consoleEnabled() ? $this->consoleStatus($status) : $this->t('info.console_off')],
                 ...($status->distributionDomain !== null ? [[$this->t('info.distribution') => "{$status->distributionDomain} ({$status->distributionStatus})"]] : []),
+                ...array_map(fn ($queue) => [$this->t('info.queue', ['queue' => $queue->name]) => $this->t('info.queue_status', [
+                    'url' => $status->queues[$queue->name]['url'] ?? '-',
+                    'worker' => $this->workerStatus($config->workerFunctionName($queue->name), $status->queues[$queue->name] ?? null),
+                ])], $config->queues),
             );
         }
         return self::SUCCESS;
+    }
+
+    /** @param array{url: ?string, version: ?string, error: ?string}|null $queue */
+    private function workerStatus(string $function, ?array $queue): string
+    {
+        $error = $queue['error'] ?? null;
+        return match (true) {
+            ($queue['version'] ?? null) !== null => $this->t('queue.worker_version', ['function' => $function, 'version' => (string) $queue['version']]),
+            $error === null => $this->t('queue.worker_missing'),
+            str_contains($error, 'AccessDenied') => $this->t('queue.worker_denied'),
+            default => $this->t('queue.worker_unknown', ['error' => $error]),
+        };
+    }
+
+    /**
+     * The queues in arco.php, with the URL and the worker's live version when AWS was read.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function jsonQueues(AppConfig $config, ?AppStatus $status): array
+    {
+        return array_map(fn ($queue) => [
+            'name' => $queue->name,
+            'url' => $status?->queues[$queue->name]['url'] ?? null,
+            'existing' => $queue->existing !== null,
+            'dlq' => $queue->dlqName($config),
+            // Like the console: error only when the version could not be read (unknown, not missing).
+            'worker' => ['function' => $config->workerFunctionName($queue->name), 'version' => $status?->queues[$queue->name]['version'] ?? null]
+                + (($status?->queues[$queue->name]['error'] ?? null) !== null ? ['error' => $status->queues[$queue->name]['error']] : []),
+        ], $config->queues);
     }
 
     private function consoleStatus(AppStatus $status): string

@@ -25,13 +25,25 @@ final class FallbackFollower implements Follower
     }
 
     /**
-     * Live Tail needs a followed group that exists (a missing one fails the whole session).
+     * Live Tail needs a followed group that exists (a missing one fails the whole session) and takes
+     * at most LiveTailFollower::MAX_GROUPS of them: with more (many queue workers), polling follows all.
      *
      * @param list<string> $groups
      */
     public function usesLiveTail(array $groups): bool
     {
-        return array_intersect($groups, $this->existing) !== [];
+        $count = $this->liveGroups($groups);
+        return $count > 0 && $count <= LiveTailFollower::MAX_GROUPS;
+    }
+
+    /**
+     * How many of the followed groups Live Tail would follow (those that exist).
+     *
+     * @param list<string> $groups
+     */
+    public function liveGroups(array $groups): int
+    {
+        return count(array_intersect($groups, $this->existing));
     }
 
     public function follow(array $groups, int $fromMs, ?string $pattern, callable $onEvent, callable $stop): void

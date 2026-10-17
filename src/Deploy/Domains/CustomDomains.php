@@ -31,7 +31,7 @@ final class CustomDomains
     public static function create(AppConfig $config, AwsClients $aws, ?AwsClients $dnsAws, Sleeper $sleeper, bool $forceDns = false): self
     {
         $dns = $config->dnsManual && $dnsAws === null ? null : new Dns(($dnsAws ?? $aws)->route53(), $sleeper);
-        return new self(new Certificates($aws->acm(), $sleeper), new Stacks($aws->cloudFormation(), $sleeper), $dns, $forceDns);
+        return new self(new Certificates($aws->acm(), $sleeper), new Stacks($aws->cloudFormation(), $sleeper, 'domains.stack_'), $dns, $forceDns);
     }
 
     /**

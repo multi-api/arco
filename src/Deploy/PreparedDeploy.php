@@ -18,6 +18,8 @@ final readonly class PreparedDeploy
         public ?string $consoleKey = null,
         /** runtime binary the console version of this deploy downloads; never pruned by this deploy */
         public ?string $binaryKey = null,
+        /** @var array<string, array{version: string, previous: ?string}> worker version published for each queue, and the one its live alias pointed to before */
+        public array $workerVersions = [],
     ) {
     }
 }

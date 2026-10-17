@@ -53,10 +53,36 @@ final class DeployPipeline
     {
         return [
             ...$preset->defaultVariables(),
+            ...self::queueVariables($config),
             ...$config->variables,
             'ARCO' => '1',
             'ARCO_APP' => $config->app,
             'ARCO_ENV' => $config->environment,
+        ];
+    }
+
+    /**
+     * The variables queues add (the user's own win over them): the sqs connection, the queue URL prefix, the default queue and every queue's URL.
+     *
+     * @return array<string, string>
+     */
+    public static function queueVariables(AppConfig $config): array
+    {
+        if ($config->queues === []) {
+            return [];
+        }
+        $default = $config->defaultQueue();
+        $queues = $config->queues;
+        usort($queues, fn ($a, $b) => ($b === $default) <=> ($a === $default));
+        $urls = [];
+        foreach ($queues as $queue) {
+            $urls[$queue->name] = $queue->url($config);
+        }
+        return [
+            'QUEUE_CONNECTION' => 'sqs',
+            'SQS_PREFIX' => "https://sqs.$config->region.amazonaws.com/$config->account",
+            ...($default === null ? [] : ['SQS_QUEUE' => $default->url($config)]),
+            'ARCO_QUEUES' => json_encode($urls, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
         ];
     }
 
@@ -116,6 +142,43 @@ final class DeployPipeline
                 'tasks' => implode(', ', $missed),
                 'required' => SchedulerInterval::required($minutes),
             ]);
+        }
+    }
+
+    /**
+     * Files in the package that show each package the queues need, and the requirement to install:
+     * WorkCommand (`arco:work`) first shipped in multiapi/arco-laravel 0.5.
+     */
+    public const QUEUE_PACKAGES = [
+        'multiapi/arco-laravel:^0.5' => 'app/vendor/multiapi/arco-laravel/src/Console/WorkCommand.php',
+        'aws/aws-sdk-php' => 'app/vendor/aws/aws-sdk-php/src/Sdk.php',
+    ];
+
+    /**
+     * With queues, stops the deploy when the package lacks multiapi/arco-laravel 0.5+ (the worker's
+     * `arco:work` and the queue name mapping) or aws/aws-sdk-php: every job would land in the
+     * dead-letter queue while the deploy reported success.
+     *
+     * @throws DeployException deploy.queues_need_packages
+     */
+    private static function checkQueuePackages(AppConfig $config, Package $package): void
+    {
+        if ($config->queues === []) {
+            return;
+        }
+        $zip = new \ZipArchive();
+        if ($zip->open($package->path, \ZipArchive::RDONLY) !== true) {
+            return; // the upload reports an unreadable package
+        }
+        $missing = [];
+        foreach (self::QUEUE_PACKAGES as $requirement => $file) {
+            if ($zip->locateName($file) === false) {
+                $missing[] = $requirement;
+            }
+        }
+        $zip->close();
+        if ($missing !== []) {
+            throw DeployException::make('deploy.queues_need_packages', ['packages' => implode(' ', $missing)]);
         }
     }
 
@@ -181,10 +244,25 @@ final class DeployPipeline
     private function deployBuilt(AppConfig $config, FrameworkPreset $preset, Package $package, Deployer $deployer, Verifier $verifier, callable $onStep, ?CommandPlan $plan, bool $removeConsole): DeployOutcome
     {
         $variables = self::variables($config, $preset);
+        foreach (array_keys(self::queueVariables($config)) as $key) {
+            if ($key !== 'ARCO_QUEUES' && array_key_exists($key, $config->variables)) {
+                $onStep('deploy.queue_variable_overridden', ['key' => $key]);
+            }
+        }
+        // Before any AWS change: workers need arco:work and Laravel's SQS driver needs the AWS SDK.
+        self::checkQueuePackages($config, $package);
         // The console zip and the binary are derived from the web zip in a scratch directory.
         $work = sys_get_temp_dir() . '/arco-console-' . bin2hex(random_bytes(4));
         try {
-            $console = $config->consoleEnabled() ? $this->consoleArtifacts($package, $work, $plan, $onStep) : null;
+            // The queue workers run the console zip too: it is built when queues exist even if the console is off.
+            $console = $config->consoleEnabled() || $config->queues !== [] ? $this->consoleArtifacts($package, $work, $plan, $onStep) : null;
+            if ($console === null && $config->queues !== []) {
+                // Before any AWS change: without the zip there are no workers, and the queues would never be read.
+                throw DeployException::make('deploy.workers_package_too_large', ['max' => (int) round(ConsoleFunction::MAX_UNZIPPED_BYTES / 1048576)]);
+            }
+
+            // Queues exist before any code that could use them; a failure stops the deploy before traffic moves.
+            $deployer->deployResources($config, $onStep(...));
 
             $since = (int) floor(microtime(true) * 1000) - 5000;
             $prepared = $deployer->prepare($config, $package, $console, $variables, $onStep);
@@ -236,6 +314,16 @@ final class DeployPipeline
             }
             if ($verification->ok && $config->consoleEnabled()) {
                 $this->syncScheduler($config, $deployer, $consoleActivated, $onStep);
+            }
+            // Workers follow the same rule as the console: their aliases and mappings move only to a version whose web revision works.
+            if ($verification->ok) {
+                try {
+                    $deployer->syncWorkers($config, $result->workerVersions, $onStep(...));
+                } catch (Throwable $e) {
+                    // Per-queue failures are deploy.worker_failed inside syncWorkers(); this is anything else
+                    // (most often removing the workers of queues taken out of arco.php).
+                    $onStep('deploy.workers_sync_failed', ['error' => self::errorMessage($e)]);
+                }
             }
             // console(false): the old console goes only once the new revision serves and is verified.
             if ($verification->ok && $removeConsole) {

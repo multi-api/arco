@@ -18,6 +18,7 @@ use Aws\ResourceGroupsTaggingAPI\ResourceGroupsTaggingAPIClient;
 use Aws\Route53\Route53Client;
 use Aws\S3\S3Client;
 use Aws\Sdk;
+use Aws\Sqs\SqsClient;
 use Aws\SecretsManager\SecretsManagerClient;
 use Aws\Ssm\SsmClient;
 use Aws\Sts\StsClient;
@@ -209,6 +210,7 @@ final class AwsClients
     /** CloudFront only uses certificates from us-east-1, whatever the app region. */
     public function acm(): AcmClient { return $this->sdk->createAcm(['region' => 'us-east-1']); }
     public function cloudFormation(): CloudFormationClient { return $this->sdk->createCloudFormation(); }
+    public function sqs(): SqsClient { return $this->sdk->createSqs(); }
     public function route53(): Route53Client { return $this->sdk->createRoute53(); }
     public function taggingApi(): ResourceGroupsTaggingAPIClient { return $this->sdk->createResourceGroupsTaggingAPI(); }
 

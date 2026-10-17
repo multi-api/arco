@@ -3,6 +3,67 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.5.0
+
+- **Added:** SQS queues. `->queue('emails')` (app or environment level, merged by name; `->queue('emails', false)`
+  drops an app-level queue from an environment) creates an SQS queue `<app>-<env>-emails` with a dead-letter
+  queue, and a worker function `<app>-<env>-queue-emails` fed by an SQS event source mapping. Named options:
+  `timeout` (60, 10 to 900), `memory` (1024), `concurrency` (unset; at least 2), `batchSize` (1), `tries` (3),
+  `dlq` (on), `fifo` (off), `existing` and `default` (the first queue unless one says `default: true`).
+  Above 10 messages a batch on a standard queue, the event source mapping gets a 1-second batching window
+  (AWS requires one).
+- **Added:** the worker runs jobs with Laravel's own queue `Worker`, booted once per instance
+  (`multiapi/arco-laravel`'s internal `arco:work`): retries, `$backoff`, `$timeout`, `failed()` and the
+  app's failed-jobs store work as with `queue:work`, with partial batch responses. The dead-letter queue
+  (`maxReceiveCount` = `tries` + 2) only catches messages the worker never answered for (crash, out of
+  memory, Lambda timeout); on the last delivery before it, a job that would be retried again is failed into
+  `failed_jobs`, so jobs whose own `$tries`, `retryUntil()` or releasing middleware go beyond the queue's
+  `tries` end there earlier than they asked. In maintenance mode jobs wait without spending attempts.
+  Job time limits use `pcntl` signals; a job blocked in one long C call (curl, a database query) times out
+  only when the call returns. The app needs `multiapi/arco-laravel` 0.5+ and `aws/aws-sdk-php`: with
+  queues, the deploy checks the package for both before any change and names the `composer require` to run.
+- **Added:** Arco sets `QUEUE_CONNECTION=sqs`, `SQS_PREFIX`, `SQS_QUEUE` (the default queue) and `ARCO_QUEUES`
+  (every queue's URL) on all functions, and `multiapi/arco-laravel` maps queue names to their URLs, so
+  `->onQueue('emails')` and `Queue::route(...)` work without app changes (Laravel 11 to 13). Your own
+  `variables()` win, with a note in the deploy output.
+- **Added:** FIFO queues (`fifo: true`) work on Laravel 11 to 13: messages without a group get the queue
+  name as their group and the job's UUID as their deduplication id, and a delay is dropped. In a batch,
+  the messages after one that comes back are not run (they come back too), so a message group keeps its order.
+- **Added:** `existing:` attaches a worker to a queue Arco does not manage (name, URL or ARN); Arco never
+  changes its attributes and warns when it already has other consumers. When a queue's reference changes,
+  the worker's event source mapping on the old queue is deleted once the new one exists.
+- **Added:** queues are never deleted. A queue removed from `arco.php` (or by `arco remove`) is kept in AWS
+  with its messages and the deploy names it with its message count; adding the name back, or switching
+  `fifo` on a queue Arco created, stops the deploy before any change. The queues live in a CloudFormation
+  stack per environment, `arco-<app>-<env>-resources`, updated before any code is deployed; workers switch
+  to the new version only after the web revision is live and verified (a failure there is a warning).
+- **Added:** `arco queue:add`, `queue:set` (`concurrency none` clears the limit; `fifo` and `existing` are
+  fixed) and `queue:remove` edit `arco.php`; `arco queue:list` shows messages, dead-letter queue and worker
+  version; `arco queue:dlq <name>` shows a sample of the dead-letter queue and `--redrive` moves the messages
+  back.
+- **Added:** `arco logs --queue=<name>` and `--source=queues` (worker logs; one JSON line per job with its
+  status), and `--console` as a short form of `--source=console`. With more than 10 log groups, `--follow`
+  polls instead of using Live Tail and says so.
+- **Added:** `arco info` lists the queues with their URL and worker version; `--json` adds `queues`
+  (`name`, `url`, `existing` as a boolean, `dlq` as the dead-letter queue name or `null`, `worker`).
+- **Added:** the managed execution role gets an `ArcoQueues` statement (send, receive, delete, change
+  visibility, read attributes and URL on the queues in `arco.php`) and the worker log groups. With your own
+  `role()`, add them yourself (see Queue permissions in the configuration reference).
+- **Added:** deploy-profile permissions for queues (see Permissions for queues in the getting-started guide):
+  CloudFormation on `stack/arco-*-resources`, `sqs:CreateQueue`, `GetQueueUrl`, `GetQueueAttributes`,
+  `SetQueueAttributes`, `TagQueue`, `UntagQueue`, `ListQueueTags`, `ReceiveMessage`, `StartMessageMoveTask`
+  (plus `DeleteMessage` / `SendMessage` for a redrive), `lambda:CreateEventSourceMapping`,
+  `UpdateEventSourceMapping`, `DeleteEventSourceMapping`, `ListEventSourceMappings`, `GetEventSourceMapping`,
+  the console function's Lambda actions on `function:*-queue-*`, and `tag:GetResources`.
+- **Changed:** `arco logs` without `--source` (`all`) and `->logRetention()` now include the queue worker log
+  groups.
+- **Changed:** with queues, the console package is built and uploaded even when the console is off (the
+  workers run it); a console package over 250 MB then stops the deploy before any change.
+- **Changed:** `arco remove` also deletes the queue workers with their event source mappings and the
+  resources stack, keeping the queues and listing them.
+- **Changed:** every deploy looks for the resources stack (`cloudformation:DescribeStacks`) and for workers of
+  removed queues (`tag:GetResources`). Without queues in `arco.php`, a profile denied either is not warned.
+
 ## 0.4.1
 
 - **Added:** `arco scheduler:pause` / `arco scheduler:resume` disable or enable the environment's scheduler

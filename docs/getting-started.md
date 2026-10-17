@@ -223,9 +223,9 @@ vendor/bin/arco info --env=production --json   # machine-readable output
 vendor/bin/arco remove --env=production        # asks you to type the environment name
 ```
 
-`remove` deletes the function, the console function and the endpoint and the execution role, and with custom domains the
-CloudFront stack, its DNS aliases and a certificate Arco requested. The shared code bucket and
-your SSM parameters are kept.
+`remove` deletes the function, the console function, the queue workers and the endpoint and the execution role, and with custom domains the
+CloudFront stack, its DNS aliases and a certificate Arco requested. The shared code bucket,
+your SSM parameters and the SQS queues (with their messages; `remove` lists them) are kept.
 
 ## Operating the app
 
@@ -252,10 +252,30 @@ right away, without a deploy (`--apply` skips the question). `arco scheduler:pau
 scheduler:resume --env=<env>` stop and restart the rule at once without editing `arco.php`; deploys keep a
 paused scheduler paused.
 
-`arco logs:retention 30 --env=<env>` (or `->logRetention(30)`) keeps the web and console logs for 30 days;
+`arco logs:retention 30 --env=<env>` (or `->logRetention(30)`) keeps the web, console and queue worker logs for 30 days;
 `never` stops them from expiring, `--remove` leaves retention unmanaged (the default). Each deploy also
 deletes unused `runtime/*` binaries from the code bucket (older than 24 hours, none referenced by a published
 version), best effort with a warning.
+
+### Queues
+
+```bash
+vendor/bin/arco queue:add emails --env=production      # writes ->queue('emails') in arco.php
+vendor/bin/arco deploy --env=production
+vendor/bin/arco queue:list --env=production             # messages, dead-letter queue, worker
+vendor/bin/arco queue:dlq emails --env=production       # what ended in the dead-letter queue
+vendor/bin/arco logs --env=production --queue=emails --follow
+```
+
+Each `->queue('<name>')` in `arco.php` gets an SQS queue (`<app>-<env>-<name>`) with a dead-letter queue, and a
+worker function (`<app>-<env>-queue-<name>`) that Lambda feeds from it. The worker runs your jobs with
+Laravel's own queue worker, booted once per instance, so retries, `$backoff`, `failed()` and the
+`failed_jobs` table work as with `queue:work`. Arco sets `QUEUE_CONNECTION=sqs` and maps queue names, so
+`dispatch(...)->onQueue('emails')` needs no other change. The app needs `multiapi/arco-laravel` 0.5+ and
+`aws/aws-sdk-php` in `require` (`composer require aws/aws-sdk-php`); the deploy checks the package for both
+and stops before any change when one is missing.
+`arco queue:set` and `arco queue:remove` change a queue in `arco.php`; removed queues stay in AWS with their
+messages. Options, FIFO, existing queues and permissions: [Queues](configuration.md#queues).
 
 ### Commands
 
@@ -361,15 +381,16 @@ written to the console function's log, as an audit trail (with its SHA-256 and l
 ### Logs
 
 ```bash
-vendor/bin/arco logs --env=production                         # last 10 minutes, web and console
+vendor/bin/arco logs --env=production                         # last 10 minutes, web, console and queue workers
 vendor/bin/arco logs --env=production --follow
 vendor/bin/arco logs --env=production --since=2h --level=error
 vendor/bin/arco logs --env=production --request=<request id> -v
 ```
 
 Laravel log lines show as `HH:MM:SS LEVEL message [requestId=...]`; `-v` adds the context and stack
-traces, `--platform` shows Lambda's own events, `--json` prints raw events, `--source=all|web|console`
-(default `all`) picks the function, `--filter="text"` searches on CloudWatch's side and `--level` sets a
+traces, `--platform` shows Lambda's own events, `--json` prints raw events, `--source=all|web|console|queues`
+(default `all`) picks the functions (`queues`: every queue worker; `--queue=<name>` one worker, `--console`
+the console), `--filter="text"` searches on CloudWatch's side and `--level` sets a
 minimum level.
 
 `--since` and `--until` take `30s`, `10m`, `2h`, `1d` or a date (`"2026-10-15 14:00"`); bare numbers are
@@ -381,7 +402,9 @@ rejected. `--since` defaults to `10m`. `--until` cannot be combined with `--foll
 2 seconds instead; CloudWatch Logs receives events 10-40 s after they happen, so expect that delay.
 Live Tail does not backfill, and the session needs a few seconds after it starts before new events
 stream: events written between the history read and that moment can be missed. An event that appears
-in both the history and Live Tail is printed once. Ctrl+C ends `--follow` cleanly; a second Ctrl+C exits at once.
+in both the history and Live Tail is printed once. Live Tail follows at most 10 log groups (the web function
+uses two, the console one, each queue worker one): with more, `--follow` polls and says so; narrow it with
+`--source`, `--console` or `--queue`. Ctrl+C ends `--follow` cleanly; a second Ctrl+C exits at once.
 
 ## Using Arco in CI
 
@@ -426,6 +449,7 @@ The role used by the E2E workflow lives in a dedicated test account and needs:
 - for log retention: `logs:CreateLogGroup`, `logs:PutRetentionPolicy`, `logs:DeleteRetentionPolicy`
 - for the runtime clean-up: `s3:ListBucket` on the code bucket and `s3:GetObject`, `s3:PutObject`,
   `s3:DeleteObject` on `runtime/*`
+- for queues (only when `arco.php` has `queue()`; see [Permissions for queues](#permissions-for-queues))
 
 For your own apps, scope the SSM resource to your parameters and add Secrets Manager read access
 if you use `arco-secret:` references. If a permission is missing, Arco reports which operation
@@ -434,11 +458,38 @@ basis: without `lambda:ListVersionsByFunction` or `lambda:DeleteFunction` that s
 
 People who only run `arco command`, `arco tinker` or `arco logs` need `lambda:InvokeFunction` on the console
 function (`arco logs` needs the `logs:` actions above). The function's execution role is separate: for the managed role Arco
-adds `logs:CreateLogGroup`, `logs:CreateLogStream` and `logs:PutLogEvents` on the web and console log
-groups, `s3:GetObject` on `runtime/*` of the code bucket (the console function only reads it when it
+adds `logs:CreateLogGroup`, `logs:CreateLogStream` and `logs:PutLogEvents` on the web, console and queue
+worker log groups, the SQS actions the app and workers need on the queues in `arco.php` (`ArcoQueues`), `s3:GetObject` on `runtime/*` of the code bucket (the console function only reads it when it
 downloads the binary, but the role keeps it: a console version that downloads can be live after a
 rollback), and read access to the
 secrets you reference.
+
+### Permissions for queues
+
+With `queue()`, the deploy profile also needs:
+
+- `cloudformation:CreateStack`, `UpdateStack`, `DeleteStack`, `DescribeStacks`, `DescribeStackEvents`,
+  `DescribeStackResources` on `arn:aws:cloudformation:*:*:stack/arco-*-resources/*` (the queue stack;
+  `cloudformation:*Stack*` on `stack/arco-*`, as for custom domains, covers it)
+- `sqs:CreateQueue`, `sqs:GetQueueUrl`, `sqs:GetQueueAttributes`, `sqs:SetQueueAttributes`, `sqs:TagQueue`,
+  `sqs:UntagQueue`, `sqs:ListQueueTags` (CloudFormation creates and updates the queues with the profile's
+  credentials), `sqs:ReceiveMessage` (the `queue:dlq` sample) and `sqs:StartMessageMoveTask` (`queue:dlq
+  --redrive`, which also needs `sqs:DeleteMessage` on the dead-letter queue and `sqs:SendMessage` on the
+  queue), on your queues and their dead-letter queues (`arn:aws:sqs:*:*:<app>-*`) and any `existing` queue
+- `lambda:CreateEventSourceMapping`, `lambda:UpdateEventSourceMapping`, `lambda:DeleteEventSourceMapping`,
+  `lambda:ListEventSourceMappings`, `lambda:GetEventSourceMapping` (resource `*`; `CreateEventSourceMapping`
+  can be limited with the `lambda:FunctionArn` condition)
+- on the workers (`arn:aws:lambda:*:*:function:*-queue-*` and `...:*-queue-*:*`) the console function's
+  actions except `lambda:PutFunctionEventInvokeConfig` and `lambda:InvokeFunction`: `lambda:CreateFunction`,
+  `lambda:UpdateFunctionCode`, `lambda:UpdateFunctionConfiguration`, `lambda:GetFunctionConfiguration`,
+  `lambda:PublishVersion`, `lambda:CreateAlias`, `lambda:UpdateAlias`, `lambda:GetAlias`,
+  `lambda:TagResource`, `lambda:ListVersionsByFunction`, `lambda:DeleteFunction`
+- `tag:GetResources`, to find the workers of queues removed from `arco.php` (without it the deploy warns and
+  leaves them)
+
+Without queues in `arco.php` a deploy reads the queue stack only to clean up after removed queues, and a
+profile without CloudFormation access is not asked for any of this. The execution role's statements (and
+what to add to your own `role()`) are in [Queue permissions](configuration.md#queue-permissions).
 
 ### Permissions for custom domains
 

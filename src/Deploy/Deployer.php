@@ -11,8 +11,8 @@ interface Deployer
 {
     /**
      * Uploads the package and puts the code in place without moving traffic: execution role, a new
-     * web revision, and (with $console) the console zip and runtime binary uploaded and the console
-     * function updated with a published version.
+     * web revision, and (with $console) the console zip and runtime binary uploaded, the console
+     * function (when the console is on) and one worker per queue updated with a published version.
      *
      * @param ConsoleArtifacts|null $console null leaves the console function as it is
      * @param array<string, string> $variables final environment variables
@@ -39,8 +39,27 @@ interface Deployer
      */
     public function prune(AppConfig $config, PreparedDeploy $prepared, ?callable $onStep = null): void;
 
-    /** Sends traffic back to $revisionId and, when given, the console's live alias back to $consoleVersion. */
-    public function rollback(AppConfig $config, string $revisionId, ?string $consoleVersion = null): void;
+    /**
+     * Sends traffic back to $revisionId and, when given, the console's live alias back to $consoleVersion
+     * and each worker's live alias back to its version in $workerVersions (queue name => version), so an
+     * event source mapping never feeds a version that is not live.
+     *
+     * @param array<string, string> $workerVersions
+     */
+    public function rollback(AppConfig $config, string $revisionId, ?string $consoleVersion = null, array $workerVersions = []): void;
+
+    /**
+     * Once the deploy is verified: points each queue worker's live alias at the version this deploy
+     * published and creates or updates its SQS event source mapping (steps deploy.worker_ready,
+     * deploy.worker_mapping; warning deploy.queue_other_consumer for another consumer of an existing
+     * queue). A queue whose worker fails is a warning (deploy.worker_failed), the others go on. Then
+     * deletes the mapping and function of every worker whose queue left arco.php (step
+     * deploy.worker_removed). Without queues and without workers left, no change.
+     *
+     * @param array<string, array{version: string, previous: ?string}> $workerVersions by queue name
+     * @param Closure(string, array<string, string|int>): void $onStep
+     */
+    public function syncWorkers(AppConfig $config, array $workerVersions, Closure $onStep): void;
 
     /**
      * Puts the deployed endpoint behind the configured custom domains (certificate, CloudFront, DNS).
@@ -93,4 +112,17 @@ interface Deployer
      * @param Closure(string, array<string, string|int>): void $onStep
      */
     public function applyLogRetention(AppConfig $config, Closure $onStep): void;
+
+    /**
+     * After the build and before anything else changes: creates or updates the resources stack
+     * (ResourcesStack) with the queues Arco creates, and deletes it once none remain. Queues are
+     * retained: a queue removed from arco.php stays in AWS with its messages (warning step
+     * deploy.queue_kept, with its approximate message count). Nothing happens, no change, without
+     * queues or a stack left from earlier ones.
+     *
+     * @param Closure(string, array<string, string|int>): void $onStep
+     * @throws DeployException deploy.queue_retained (with an `existing:` reference to use instead) or
+     *         deploy.queue_dlq_retained when a queue to create already exists outside the stack, before any change
+     */
+    public function deployResources(AppConfig $config, Closure $onStep): void;
 }

@@ -154,15 +154,17 @@ final class DeployCommand extends ArcoCommand
                     $output->writeln('');
                 }
             });
+            // Queue URLs carry the account: when arco.php does not lock one, the credentials' account is it.
+            $target = $config->account === null ? $config->withAccount($aws->accountId()) : $config;
             if ($package?->manifest !== null) {
                 $steps('deploy.using_package', [
                     'path' => $package->path,
                     'created' => $package->manifest->createdAt,
                     'hash' => substr($package->hash, 0, 12),
                 ]);
-                $outcome = $this->pipeline->deployPackage($config, $preset, $package, $deployer, $verifier, $steps, $plan);
+                $outcome = $this->pipeline->deployPackage($target, $preset, $package, $deployer, $verifier, $steps, $plan);
             } else {
-                $outcome = $this->pipeline->deploy($config, $preset, $this->projectDir(), $deployer, $verifier, $steps, $plan);
+                $outcome = $this->pipeline->deploy($target, $preset, $this->projectDir(), $deployer, $verifier, $steps, $plan);
             }
 
             if (! $outcome->verification->ok) {

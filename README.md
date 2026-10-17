@@ -44,6 +44,9 @@ vendor/bin/arco deploy --env=production
 - **Operations.** `arco logs` inspects the deployed app from your terminal. With the opt-in console
   function (`->console()`), `arco command` and `arco tinker` run on it and migrations can run on every deploy
   before traffic moves; `->scheduler(N)` runs Laravel's scheduler on a UTC clock-aligned EventBridge rule.
+- **Queues.** `->queue('emails')` creates an SQS queue with a dead-letter queue and a worker function that
+  runs the jobs with Laravel's own worker (retries, `failed()` and `failed_jobs` as usual);
+  `->onQueue('emails')` works without app changes.
 - **Custom domains** in one line: certificate, CloudFront and DNS records, with the DNS zone in the
   same AWS account, another account, or outside AWS.
 
@@ -109,6 +112,7 @@ The main options:
 | `console(bool = true)` | off | Deploy the console function (`arco command`, `arco tinker`, deploy commands); `console(false)` deletes it |
 | `scheduler(int\|false)` | off | Run `schedule:run` every N minutes (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60), clock-aligned in UTC; needs the console |
 | `logRetention(int\|false)` | not managed | Days CloudWatch keeps the logs; `false` = never expire |
+| `queue(name, ...)` | none | An SQS queue and its worker function; named options `timeout`, `memory`, `concurrency`, `batchSize`, `tries`, `dlq`, `fifo`, `existing`, `default` |
 | `consoleTimeout(int)` | 900 | Seconds a console command may run (3–900) |
 | `protected()` | `production` | Ask before `arco tinker` on this environment |
 
@@ -127,14 +131,17 @@ Every option, the packaging rules and the Laravel preset are in the
 | `arco scheduler:set [N] --env=<env>` / `scheduler:remove` | Run Laravel's scheduler every N minutes (suggests N from your tasks; turns the console on) / turn it off; `--apply` (or answer yes) applies it in AWS without a deploy |
 | `arco scheduler:pause --env=<env>` / `scheduler:resume` | Pause or resume the scheduler in AWS at once, without editing `arco.php` (deploys keep it paused) |
 | `arco logs:retention <days\|never> --env=<env>` | Set how long CloudWatch keeps the logs (`--remove` stops managing it) |
-| `arco logs --env=<env>` | Web and console logs merged, filtered and colored (`--follow`, `--since`, `--level`, `--request`, `--filter`) |
+| `arco queue:add <name> --env=<env>` / `queue:set` / `queue:remove` | Add, change or remove a queue in `arco.php` (removed queues stay in AWS with their messages) |
+| `arco queue:list --env=<env>` | Each queue's messages, dead-letter queue and worker version |
+| `arco queue:dlq <name> --env=<env>` | Show the messages in a queue's dead-letter queue; `--redrive` moves them back |
+| `arco logs --env=<env>` | Web, console and queue worker logs merged, filtered and colored (`--follow`, `--since`, `--level`, `--request`, `--filter`, `--queue`) |
 | `arco package --env=<env>` | Build the zip only (for CI: build once, deploy later) |
 | `arco info --env=<env>` | Resolved settings with their source, URL, active revision (`--json` too) |
 | `arco secret:set <name> --env=<env>` | Store a secret in SSM and print the reference to use |
 | `arco set <key> <value> --env=<env>` / `arco unset <key>` | Change `concurrency`, `max-instances`, `rate-limit`, `timeout`, `log-level` in `arco.php` |
 | `arco domain:add <host> --env=<env>` / `domain:remove` | Change an environment's domains in `arco.php` |
 | `arco profile --env=<env>` | Show or change the AWS profile remembered for an environment |
-| `arco remove --env=<env>` | Delete the function, its endpoint, role and domain resources |
+| `arco remove --env=<env>` | Delete the function, its endpoint, role, workers and domain resources (queues are kept) |
 
 Messages are in English or Spanish (`--lang=es` or `ARCO_LANG=es`).
 
@@ -149,7 +156,10 @@ Messages are in English or Spanish (`--lang=es` or `ARCO_LANG=es`).
 - Regions: us-east-1, us-east-2, us-west-2, ap-northeast-1, eu-west-1
 - The console function (commands, tinker, scheduler) is opt-in and a classic Lambda function: 250 MB
   unzipped package, with a static PHP CLI instead of the FrankenPHP binary
-- Arco deploys HTTP functions, an optional console function for commands and the scheduler; queues are on the roadmap
+- The queue workers are classic Lambda functions running the console package (250 MB unzipped), one per
+  queue; a batch of jobs runs for at most the worker's `timeout` (up to 900 s)
+- Arco deploys HTTP functions, an optional console function for commands and the scheduler, and SQS queue
+  workers; S3 storage and DynamoDB cache tables are on the roadmap
 
 ## Upgrading to 0.4
 

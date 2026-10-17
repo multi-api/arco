@@ -16,7 +16,7 @@ final class StepPrinter
 {
     public const PROGRESS = 'package.progress';
     /** Steps that report something the user should act on, not progress. */
-    public const WARNINGS = ['deploy.console_downloads_binary', 'deploy.console_skipped_size', 'deploy.console_not_activated', 'deploy.console_retries_not_disabled', 'deploy.console_remove_failed', 'deploy.prune_versions_failed', 'deploy.prune_packages_failed', 'deploy.prune_runtime_failed', 'deploy.scheduler_too_slow', 'deploy.scheduler_skipped', 'deploy.scheduler_failed', 'deploy.scheduler_unreadable', 'deploy.log_retention_failed', 'remove.scheduler_unreadable'];
+    public const WARNINGS = ['deploy.console_downloads_binary', 'deploy.console_skipped_size', 'deploy.console_not_activated', 'deploy.console_retries_not_disabled', 'deploy.console_remove_failed', 'deploy.prune_versions_failed', 'deploy.prune_packages_failed', 'deploy.prune_runtime_failed', 'deploy.scheduler_too_slow', 'deploy.scheduler_skipped', 'deploy.scheduler_failed', 'deploy.scheduler_unreadable', 'deploy.log_retention_failed', 'deploy.queue_kept', 'deploy.worker_failed', 'deploy.workers_sync_failed', 'deploy.worker_scan_failed', 'remove.worker_scan_failed', 'deploy.queue_other_consumer', 'remove.queue_kept', 'remove.scheduler_unreadable'];
     /** Codes of a WARNINGS step's `reason` that are a deliberate choice with nothing to act on: printed as bullets. */
     private const BULLET_REASONS = ['deploy.console_downloads_binary' => ['custom_binary']];
     private const MARKS = [25, 50, 75, 100];

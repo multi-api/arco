@@ -37,6 +37,10 @@ if [ -x "$ROOT/bin/php" ]; then
   cd "$ROOT/app"
   step="starting $ARCO_PHP_BINARY"
   trap - EXIT
+  # A queue's worker function (ARCO_WORKER_QUEUE) runs the worker runtime, which becomes `artisan arco:work`.
+  if [ -n "${ARCO_WORKER_QUEUE:-}" ]; then
+    exec "$ARCO_PHP_BINARY" "$ROOT/runtime/worker.php"
+  fi
   exec "$ARCO_PHP_BINARY" "$ROOT/runtime/console.php"
 elif [ -e "$ROOT/bin/php" ]; then
   # Arco always packages bin/php as 0755: without the bit the zip was damaged, and a redeploy of the
@@ -88,4 +92,7 @@ export ARCO_PHP_BINARY="$BIN"
 step="entering $ROOT/app"
 cd "$ROOT/app"
 step="starting $BIN"
+if [ -n "${ARCO_WORKER_QUEUE:-}" ]; then
+  exec "$BIN" php-cli "$ROOT/runtime/worker.php"
+fi
 exec "$BIN" php-cli "$ROOT/runtime/console.php"

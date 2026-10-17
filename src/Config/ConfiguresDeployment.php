@@ -15,6 +15,8 @@ trait ConfiguresDeployment
     private ?array $domains = null;
     /** @var list<string>|null */
     private ?array $deployCommands = null;
+    /** @var array<string, array<string, mixed>|false> */
+    private array $queues = [];
 
     public function concurrency(int $requests): static { $this->settings['concurrency'] = $requests; return $this; }
     public function timeout(int $seconds): static { $this->settings['timeout'] = $seconds; return $this; }
@@ -81,6 +83,40 @@ trait ConfiguresDeployment
     /** Ask for confirmation before `arco tinker` (on by default for an environment named production). */
     public function protected(bool $protected = true): static { $this->settings['protected'] = $protected; return $this; }
 
+    /**
+     * An SQS queue with a worker function that consumes it. Options not given keep their defaults
+     * (timeout 60, memory 1024, batchSize 1, tries 3, dlq on); repeated calls for a name accumulate.
+     * An environment's entry merges over the app's; `queue('name', false)` drops the queue there.
+     *
+     * @param string|null $existing name, URL or ARN of a queue Arco does not manage
+     */
+    public function queue(
+        string $name,
+        false|null $remove = null,
+        ?int $timeout = null,
+        ?int $memory = null,
+        ?int $concurrency = null,
+        ?int $batchSize = null,
+        ?int $tries = null,
+        ?bool $dlq = null,
+        ?bool $fifo = null,
+        ?string $existing = null,
+        ?bool $default = null,
+    ): static {
+        if ($remove === false) {
+            $this->queues[$name] = false;
+            return $this;
+        }
+        $options = array_filter(
+            ['timeout' => $timeout, 'memory' => $memory, 'concurrency' => $concurrency, 'batchSize' => $batchSize,
+                'tries' => $tries, 'dlq' => $dlq, 'fifo' => $fifo, 'existing' => $existing, 'default' => $default],
+            fn (mixed $value): bool => $value !== null,
+        );
+        $current = $this->queues[$name] ?? [];
+        $this->queues[$name] = [...(is_array($current) ? $current : []), ...$options];
+        return $this;
+    }
+
     /** @param array<string, string> $variables */
     public function variables(array $variables): static
     {
@@ -108,7 +144,7 @@ trait ConfiguresDeployment
         return $this;
     }
 
-    /** @return array{settings: array<string, string|int|bool>, variables: array<string, string>, runtime: array<string, mixed>, permissions: list<array<string, mixed>>, domains: list<string>|null, deployCommands: list<string>|null} */
+    /** @return array{settings: array<string, string|int|bool>, variables: array<string, string>, runtime: array<string, mixed>, permissions: list<array<string, mixed>>, domains: list<string>|null, deployCommands: list<string>|null, queues: array<string, array<string, mixed>|false>} */
     protected function deploymentArray(): array
     {
         return [
@@ -118,6 +154,7 @@ trait ConfiguresDeployment
             'permissions' => $this->permissions,
             'domains' => $this->domains,
             'deployCommands' => $this->deployCommands,
+            'queues' => $this->queues,
         ];
     }
 }

@@ -28,6 +28,8 @@ final class Validator
     private const HOSTNAME = '/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/';
     private const CERTIFICATE = '/^arn:aws[a-z-]*:acm:us-east-1:\d{12}:certificate\/[A-Za-z0-9-]+$/';
     public const MAX_DOMAINS = 10;
+    /** The worker keeps 3 s to answer for its batch and skips a job with less than 4 s left: below 10 s jobs barely run. */
+    public const MIN_QUEUE_TIMEOUT = 10;
     /** Minutes between schedule:run invocations: the divisors of an hour that an EventBridge rate or cron expresses. */
     public const SCHEDULER_INTERVALS = SchedulerInterval::ALLOWED;
     /** Retention periods (days) CloudWatch Logs accepts. */
@@ -138,6 +140,7 @@ final class Validator
         }
 
         self::validateDomains($config, $result);
+        self::validateQueues($config, $result);
 
         // The script every command goes through (artisan), as the console runtime runs it: php <entry> <args>.
         $entry = null;
@@ -255,6 +258,69 @@ final class Validator
         $error = $value === null ? null : self::settingError($setting, $value);
         if ($error !== null) {
             $result->error($error['key'], $error['params']);
+        }
+    }
+
+    private static function validateQueues(AppConfig $config, ValidationResult $result): void
+    {
+        $defaults = 0;
+        foreach ($config->queues as $queue) {
+            $name = $queue->name;
+            if (! preg_match(self::NAME, $name)) {
+                $result->error('validation.queue_name', ['name' => $name]);
+                continue;
+            }
+            $longest = max(strlen($queue->physicalName($config)), strlen($queue->dlqName($config) ?? ''));
+            if ($queue->existing === null && $longest > 80) {
+                $result->error('validation.queue_name_length', ['queue' => $name, 'name' => $queue->dlqName($config) ?? $queue->physicalName($config)]);
+            }
+            if (strlen($config->workerFunctionName($name)) > 64) {
+                $result->error('validation.worker_name_length', ['name' => $config->workerFunctionName($name)]);
+            }
+            if ($queue->timeout < self::MIN_QUEUE_TIMEOUT || $queue->timeout > 900) {
+                $result->error('validation.queue_timeout', ['queue' => $name, 'value' => $queue->timeout]);
+            }
+            if ($queue->memory < 128 || $queue->memory > 10240) {
+                $result->error('validation.queue_memory', ['queue' => $name, 'value' => $queue->memory]);
+            }
+            if ($queue->concurrency !== null && $queue->concurrency < 2) {
+                $result->error('validation.queue_concurrency', ['queue' => $name, 'value' => $queue->concurrency]);
+            }
+            $maxBatch = $queue->fifo ? 10 : 10000;
+            if ($queue->batchSize < 1 || $queue->batchSize > $maxBatch) {
+                $result->error('validation.queue_batch_size', ['queue' => $name, 'value' => $queue->batchSize, 'max' => $maxBatch]);
+            }
+            if ($queue->tries < 1) {
+                $result->error('validation.queue_tries', ['queue' => $name, 'value' => $queue->tries]);
+            }
+            if ($queue->default) {
+                $defaults++;
+            }
+            if ($queue->existing !== null) {
+                $parsed = QueueConfig::parseExisting($queue->existing);
+                if ($parsed === null) {
+                    $result->error('validation.queue_existing', ['queue' => $name, 'value' => $queue->existing]);
+                } elseif (str_ends_with($parsed['name'], '.fifo') !== $queue->fifo) {
+                    $result->error('validation.queue_existing_fifo', ['queue' => $name, 'value' => $queue->existing]);
+                }
+            }
+        }
+        if ($defaults > 1) {
+            $result->error('validation.queue_default_twice');
+        }
+        // A created queue cannot take the name of another queue's dead-letter queue: one SQS name, two resources.
+        $dlqs = [];
+        foreach ($config->queues as $queue) {
+            $dlq = $queue->dlqName($config);
+            if ($dlq !== null) {
+                $dlqs[$dlq] = $queue->name;
+            }
+        }
+        foreach ($config->queues as $queue) {
+            $owner = $queue->existing === null ? ($dlqs[$queue->physicalName($config)] ?? null) : null;
+            if ($owner !== null) {
+                $result->error('validation.queue_name_clash', ['queue' => $queue->name, 'other' => $owner, 'name' => $queue->physicalName($config)]);
+            }
         }
     }
 

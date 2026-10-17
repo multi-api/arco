@@ -40,6 +40,7 @@ final class Packager
         $entries['bootstrap'] = [$this->runtimeDir . '/bootstrap', 0755];
         $entries['runtime/console.php'] = [$this->runtimeDir . '/console.php', 0644];
         $entries['runtime/console-cli.php'] = [$this->runtimeDir . '/console-cli.php', 0644];
+        $entries['runtime/worker.php'] = [$this->runtimeDir . '/worker.php', 0644];
         foreach (glob($this->runtimeDir . '/console/*.php') ?: [] as $file) {
             $entries['runtime/console/' . basename($file)] = [$file, 0644];
         }

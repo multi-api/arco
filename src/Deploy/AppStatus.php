@@ -18,6 +18,14 @@ final readonly class AppStatus
         public ?string $consoleVersionError = null,
         /** whether the scheduler rule is disabled (arco scheduler:pause); null without a scheduler, a rule, or EventBridge read access */
         public ?bool $schedulerPaused = null,
+        /**
+         * Per queue in arco.php: its URL (null when the account could not be read), the version its
+         * worker's live alias points to (null when not deployed or unreadable) and the AWS error code
+         * when the version could not be read.
+         *
+         * @var array<string, array{url: ?string, version: ?string, error: ?string}>
+         */
+        public array $queues = [],
     ) {
     }
 }

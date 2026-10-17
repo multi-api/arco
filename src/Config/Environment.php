@@ -12,7 +12,7 @@ final class Environment
         return $this;
     }
 
-    /** @return array{settings: array<string, string|int|bool>, variables: array<string, string>, runtime: array<string, mixed>, permissions: list<array<string, mixed>>, domains: list<string>|null, deployCommands: list<string>|null} */
+    /** @return array{settings: array<string, string|int|bool>, variables: array<string, string>, runtime: array<string, mixed>, permissions: list<array<string, mixed>>, domains: list<string>|null, deployCommands: list<string>|null, queues: array<string, array<string, mixed>|false>} */
     public function toArray(): array
     {
         return $this->deploymentArray();

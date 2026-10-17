@@ -9,6 +9,8 @@ final class ArcoFileEditor
 {
     /** Older method names that write the same setting; an edit replaces them with the current name. */
     private const ALIASES = ['maxInstances' => ['maxEnvironments']];
+    /** The order queue() options are written in. */
+    private const QUEUE_OPTIONS = ['existing', 'default', 'timeout', 'memory', 'concurrency', 'batchSize', 'tries', 'dlq', 'fifo'];
     /** Writes ->account('...') for an environment. Returns false when arco.php has an unexpected shape. */
     public static function addAccount(string $arcoPhpPath, string $environment, string $account): bool
     {
@@ -59,6 +61,35 @@ final class ArcoFileEditor
         return self::update($arcoPhpPath, $environment, ['settings' => [$method => $value]]);
     }
 
+    /**
+     * Sets the ->queue('<name>', ...) call in an environment, or on the App chain when $environment is
+     * null: options write named arguments, false writes ->queue('<name>', false) and null removes the
+     * call. Other queue() calls are matched by their first argument and left alone; a new queue goes
+     * after the last one. Returns false, without writing, when arco.php has a shape this editor does
+     * not understand (such as the same queue twice, or a non-literal argument).
+     *
+     * @param array<string, int|bool|string>|false|null $options
+     */
+    public static function setQueue(string $arcoPhpPath, ?string $environment, string $name, array|false|null $options): bool
+    {
+        return self::update($arcoPhpPath, $environment, ['queues' => [$name => $options]]);
+    }
+
+    /** @param array<string, int|bool|string>|false $options */
+    public static function queueLine(string $name, array|false $options): string
+    {
+        $args = [var_export($name, true)];
+        if ($options === false) {
+            $args[] = 'false';
+        } else {
+            $ordered = array_replace(array_intersect_key(array_flip(self::QUEUE_OPTIONS), $options), $options);
+            foreach ($ordered as $key => $value) {
+                $args[] = $key . ': ' . (is_int($value) ? (string) $value : var_export($value, true));
+            }
+        }
+        return '->queue(' . implode(', ', $args) . ')';
+    }
+
     /** Whether arco.php calls an older name of $method (such as maxEnvironments for maxInstances). */
     public static function usesAlias(string $arcoPhpPath, string $method): bool
     {
@@ -85,7 +116,7 @@ final class ArcoFileEditor
      * Returns false, writing nothing, when any change has a shape this editor does not understand.
      * A null environment means the App chain (settings only).
      *
-     * @param array{domains?: list<string>, dns?: string|false|null, settings?: array<string, int|string|bool|null>} $changes
+     * @param array{domains?: list<string>, dns?: string|false|null, settings?: array<string, int|string|bool|null>, queues?: array<string, array<string, int|bool|string>|false|null>} $changes
      */
     public static function update(string $arcoPhpPath, ?string $environment, array $changes): bool
     {
@@ -106,6 +137,12 @@ final class ArcoFileEditor
         if ($updated !== null && array_key_exists('dns', $changes)) {
             $dns = $changes['dns'];
             $updated = self::edit($updated, $environment, 'dns', $dns === null ? null : self::dnsLine($dns));
+        }
+        foreach ($changes['queues'] ?? [] as $name => $options) {
+            if ($updated !== null) {
+                $name = (string) $name;
+                $updated = self::edit($updated, $environment, 'queue', $options === null ? null : self::queueLine($name, $options), $name);
+            }
         }
         if ($updated === null) {
             return false;
@@ -140,7 +177,7 @@ final class ArcoFileEditor
      * configuration with only the asked changes (in the environment, or the app when null). On any
      * difference or load error the original bytes are restored and ConfigException editor.verify_failed is thrown.
      *
-     * @param array{domains?: list<string>, dns?: string|false|null, settings?: array<string, int|string|bool|null>} $changes
+     * @param array{domains?: list<string>, dns?: string|false|null, settings?: array<string, int|string|bool|null>, queues?: array<string, array<string, int|bool|string>|false|null>} $changes
      */
     public static function verifiedWrite(string $arcoPhpPath, string $contents, ?string $environment, array $changes): void
     {
@@ -210,7 +247,7 @@ final class ArcoFileEditor
      * The loaded configuration as it should be after the changes.
      *
      * @param array<string, mixed> $raw
-     * @param array{domains?: list<string>, dns?: string|false|null, settings?: array<string, int|string|bool|null>} $changes
+     * @param array{domains?: list<string>, dns?: string|false|null, settings?: array<string, int|string|bool|null>, queues?: array<string, array<string, int|bool|string>|false|null>} $changes
      * @return array<string, mixed>
      */
     private static function expected(array $raw, ?string $environment, array $changes): array
@@ -219,15 +256,21 @@ final class ArcoFileEditor
         if (array_key_exists('dns', $changes)) {
             $settings['dns'] = $changes['dns'];
         }
+        $queues = $changes['queues'] ?? [];
         if ($environment === null) {
             /** @var array<string, mixed> $app */
             $app = is_array($raw['settings'] ?? null) ? $raw['settings'] : [];
             $raw['settings'] = self::withSettings($app, $settings);
+            if ($queues !== []) {
+                /** @var array<string, mixed> $current */
+                $current = is_array($raw['queues'] ?? null) ? $raw['queues'] : [];
+                $raw['queues'] = self::withSettings($current, $queues);
+            }
             return $raw;
         }
         /** @var array<string, array<string, mixed>> $environments */
         $environments = is_array($raw['environments'] ?? null) ? $raw['environments'] : [];
-        $env = $environments[$environment] ?? ['settings' => [], 'variables' => [], 'runtime' => [], 'permissions' => [], 'domains' => null];
+        $env = $environments[$environment] ?? ['settings' => [], 'variables' => [], 'runtime' => [], 'permissions' => [], 'domains' => null, 'queues' => []];
         if (array_key_exists('domains', $changes)) {
             $env['domains'] = $changes['domains'] === [] ? null : $changes['domains'];
         }
@@ -235,6 +278,11 @@ final class ArcoFileEditor
             /** @var array<string, mixed> $current */
             $current = is_array($env['settings'] ?? null) ? $env['settings'] : [];
             $env['settings'] = self::withSettings($current, $settings);
+        }
+        if ($queues !== []) {
+            /** @var array<string, mixed> $current */
+            $current = is_array($env['queues'] ?? null) ? $env['queues'] : [];
+            $env['queues'] = self::withSettings($current, $queues);
         }
         $environments[$environment] = $env;
         $raw['environments'] = $environments;
@@ -260,9 +308,11 @@ final class ArcoFileEditor
 
     /**
      * The source with the call set, replaced or removed (in the environment's closure, or on the App
-     * chain when $environment is null); null when the shape is not recognised.
+     * chain when $environment is null); null when the shape is not recognised. With a $key, only the
+     * calls whose first argument is that string literal count (queue('name', ...)), and a new call
+     * goes after the last call of $method.
      */
-    private static function edit(string $source, ?string $environment, string $method, ?string $line): ?string
+    private static function edit(string $source, ?string $environment, string $method, ?string $line, ?string $key = null): ?string
     {
         $nl = str_contains($source, "\r\n") ? "\r\n" : "\n";
         $t = array_values(array_filter(PhpToken::tokenize($source), fn (PhpToken $token) => ! $token->isIgnorable()));
@@ -276,6 +326,24 @@ final class ArcoFileEditor
             return null;
         }
         ['calls' => $calls, 'at' => $at, 'prefix' => $prefix] = $scope;
+        if ($key !== null && $calls !== []) {
+            $last = self::matching($t, $depths, $calls[count($calls) - 1] + 2);
+            if ($last === null) {
+                return null;
+            }
+            $at = $t[$last]->pos + 1;
+            $keyed = [];
+            foreach ($calls as $call) {
+                $first = self::firstLiteral($t, $call);
+                if ($first === null) {
+                    return null;
+                }
+                if ($first === $key) {
+                    $keyed[] = $call;
+                }
+            }
+            $calls = $keyed;
+        }
         if (count($calls) > 1) {
             return null;
         }
@@ -607,9 +675,63 @@ final class ArcoFileEditor
         return null;
     }
 
+    /**
+     * The value of the string literal that is the whole first argument of the call at $i, or null.
+     *
+     * @param list<PhpToken> $t
+     */
+    private static function firstLiteral(array $t, int $i): ?string
+    {
+        if (! isset($t[$i + 4]) || $t[$i + 3]->id !== T_CONSTANT_ENCAPSED_STRING || ! (self::is($t[$i + 4], ',') || self::is($t[$i + 4], ')'))) {
+            return null;
+        }
+        $text = $t[$i + 3]->text;
+        $body = substr($text, 1, -1);
+        return $text[0] === "'" ? str_replace(['\\\\', "\\'"], ['\\', "'"], $body) : stripcslashes($body);
+    }
+
+    /**
+     * queue() arguments: a string literal, then `false` or named literal arguments (name: value).
+     *
+     * @param list<PhpToken> $args
+     */
+    private static function isQueueLiteral(array $args): bool
+    {
+        if ($args === [] || $args[0]->id !== T_CONSTANT_ENCAPSED_STRING) {
+            return false;
+        }
+        $i = 1;
+        while ($i < count($args)) {
+            if (! self::is($args[$i], ',')) {
+                return false;
+            }
+            $i++;
+            if ($i === count($args)) {
+                return true; // trailing comma
+            }
+            if (isset($args[$i + 1]) && self::is($args[$i + 1], ':') && preg_match('/^[A-Za-z_]\w*$/', $args[$i]->text) === 1) {
+                $i += 2;
+            }
+            if (! isset($args[$i]) || ! self::isScalarToken($args[$i])) {
+                return false;
+            }
+            $i++;
+        }
+        return true;
+    }
+
+    private static function isScalarToken(PhpToken $token): bool
+    {
+        return in_array($token->id, [T_LNUMBER, T_CONSTANT_ENCAPSED_STRING], true)
+            || ($token->id === T_STRING && in_array(strtolower($token->text), ['true', 'false', 'null'], true));
+    }
+
     /** @param list<PhpToken> $args */
     private static function isLiteral(array $args, string $method): bool
     {
+        if ($method === 'queue') {
+            return self::isQueueLiteral($args);
+        }
         if ($method !== 'domain' && $method !== 'dns') {
             // A scalar setting: no argument, or exactly one integer, plain string or true/false.
             if ($args === []) {

@@ -14,7 +14,8 @@ final class Stacks
     /** States UpdateStack accepts. */
     private const UPDATABLE = ['CREATE_COMPLETE', 'UPDATE_COMPLETE', 'UPDATE_ROLLBACK_COMPLETE', 'IMPORT_COMPLETE', 'IMPORT_ROLLBACK_COMPLETE'];
 
-    public function __construct(private readonly CloudFormationClient $cloudFormation, private readonly Sleeper $sleeper)
+    /** @param string $keys prefix of the error keys (failed, not_updatable): the domain flows keep their own wording */
+    public function __construct(private readonly CloudFormationClient $cloudFormation, private readonly Sleeper $sleeper, private readonly string $keys = 'stack.')
     {
     }
 
@@ -53,7 +54,7 @@ final class Stacks
         }
 
         if ($stack !== null && ! in_array($stack['StackStatus'] ?? null, self::UPDATABLE, true)) {
-            throw DeployException::make('domains.stack_not_updatable', ['stack' => $name, 'status' => (string) Aws::string($stack['StackStatus'] ?? null)]);
+            throw DeployException::make($this->keys . 'not_updatable', ['stack' => $name, 'status' => (string) Aws::string($stack['StackStatus'] ?? null)]);
         }
 
         $args = [
@@ -74,10 +75,10 @@ final class Stacks
             }
         }
 
-        $stack = $this->waitStable($name, $timeout) ?? throw DeployException::make('domains.stack_failed', ['stack' => $name, 'status' => 'DELETED', 'reason' => '-']);
+        $stack = $this->waitStable($name, $timeout) ?? throw DeployException::make($this->keys . 'failed', ['stack' => $name, 'status' => 'DELETED', 'reason' => '-']);
         $status = (string) Aws::string($stack['StackStatus'] ?? null);
         if (! in_array($status, self::SUCCESS, true)) {
-            throw DeployException::make('domains.stack_failed', ['stack' => $name, 'status' => $status, 'reason' => $this->failureReason($name)]);
+            throw DeployException::make($this->keys . 'failed', ['stack' => $name, 'status' => $status, 'reason' => $this->failureReason($name)]);
         }
         return self::outputs($stack);
     }
@@ -95,7 +96,7 @@ final class Stacks
         Aws::call($this->cloudFormation, 'DeleteStack', ['StackName' => $name]);
         $stack = $this->waitStable($name, $timeout);
         if ($stack !== null && ($stack['StackStatus'] ?? null) !== 'DELETE_COMPLETE') {
-            throw DeployException::make('domains.stack_failed', ['stack' => $name, 'status' => (string) Aws::string($stack['StackStatus'] ?? null), 'reason' => $this->failureReason($name)]);
+            throw DeployException::make($this->keys . 'failed', ['stack' => $name, 'status' => (string) Aws::string($stack['StackStatus'] ?? null), 'reason' => $this->failureReason($name)]);
         }
     }
 

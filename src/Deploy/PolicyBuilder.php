@@ -16,20 +16,31 @@ final class PolicyBuilder
      * @param array<string, SecretReference> $references
      * @param list<array<string, mixed>> $permissions extra statements from permissions()
      * @param string|null $codeBucket the code bucket whose runtime/* binaries the console function reads
+     * @param list<string> $queueArns the queues the app sends to and the workers read from (not their dead-letter queues)
+     * @param list<string> $workerFunctions queue worker function names, for their log groups
      * @return array{Version: string, Statement: list<array<string, mixed>>}
      */
-    public static function document(string $region, string $account, string $function, array $references, array $permissions = [], ?string $codeBucket = null): array
+    public static function document(string $region, string $account, string $function, array $references, array $permissions = [], ?string $codeBucket = null, array $queueArns = [], array $workerFunctions = []): array
     {
         // Web Functions log to /aws/lambda/web/<function> and also to a "<group>.local" group; the
         // console function to the classic /aws/lambda/<function>-console group.
         $group = "arn:aws:logs:$region:$account:log-group:/aws/lambda/web/$function";
         $console = "arn:aws:logs:$region:$account:log-group:/aws/lambda/$function-console";
+        $workerGroups = array_map(fn (string $worker) => "arn:aws:logs:$region:$account:log-group:/aws/lambda/$worker:*", $workerFunctions);
         $statements = [[
             'Sid' => 'ArcoLogs',
             'Effect' => 'Allow',
             'Action' => ['logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents'],
-            'Resource' => ["$group:*", "$group.local:*", "$console:*"],
+            'Resource' => ["$group:*", "$group.local:*", "$console:*", ...$workerGroups],
         ]];
+        if ($queueArns !== []) {
+            $statements[] = [
+                'Sid' => 'ArcoQueues',
+                'Effect' => 'Allow',
+                'Action' => ['sqs:SendMessage', 'sqs:ReceiveMessage', 'sqs:DeleteMessage', 'sqs:ChangeMessageVisibility', 'sqs:GetQueueAttributes', 'sqs:GetQueueUrl'],
+                'Resource' => $queueArns,
+            ];
+        }
         if ($codeBucket !== null) {
             // The console function downloads the FrankenPHP binary it shares with the web revision.
             $statements[] = [

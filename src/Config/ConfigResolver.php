@@ -46,7 +46,7 @@ final class ConfigResolver
     /** @param array<string, mixed> $raw */
     public static function resolve(array $raw, string $environment): AppConfig
     {
-        /** @var array<string, array{settings: array<string, mixed>, variables: array<string, string>, runtime: array<string, mixed>, permissions?: list<array<string, mixed>>, domains?: list<string>|null, deployCommands?: list<string>|null}> $environments */
+        /** @var array<string, array{settings: array<string, mixed>, variables: array<string, string>, runtime: array<string, mixed>, permissions?: list<array<string, mixed>>, domains?: list<string>|null, deployCommands?: list<string>|null, queues?: array<string, array<string, mixed>|false>}> $environments */
         $environments = $raw['environments'] ?? [];
         if (! isset($environments[$environment])) {
             throw ConfigException::make('config.unknown_environment', [
@@ -127,6 +127,10 @@ final class ConfigResolver
         $appCommands = $raw['deployCommands'] ?? null;
         $envCommands = $env['deployCommands'] ?? null;
         $sources['deployCommands'] = $envCommands !== null ? 'environment' : ($appCommands !== null ? 'app' : 'default');
+        /** @var array<string, array<string, mixed>|false> $appQueues */
+        $appQueues = $raw['queues'] ?? [];
+        $queues = self::queues($appQueues, $env['queues'] ?? []);
+        $sources['queues'] = ($env['queues'] ?? []) !== [] ? 'environment' : ($appQueues !== [] ? 'app' : 'default');
         $protected = $setting('protected');
         $consoleTimeout = (int) $setting('consoleTimeout');
         $console = $setting('console');
@@ -163,9 +167,49 @@ final class ConfigResolver
             console: is_bool($console) ? $console : null,
             scheduler: $scheduler === false ? null : self::nullableInt($scheduler),
             logRetention: $logRetention === false ? false : self::nullableInt($logRetention),
+            queues: $queues,
         );
 
         return $config;
+    }
+
+    /**
+     * App queues with the environment's merged over them by name: `false` drops one, new names append.
+     * The first queue is the default unless one asks for it.
+     *
+     * @param array<string, array<string, mixed>|false> $app
+     * @param array<string, array<string, mixed>|false> $env
+     * @return list<QueueConfig>
+     */
+    private static function queues(array $app, array $env): array
+    {
+        $merged = array_filter($app, 'is_array');
+        foreach ($env as $name => $options) {
+            $name = (string) $name;
+            if ($options === false) {
+                unset($merged[$name]);
+            } else {
+                $merged[$name] = [...($merged[$name] ?? []), ...$options];
+            }
+        }
+        $explicitDefault = array_filter($merged, fn (array $o): bool => ($o['default'] ?? false) === true) !== [];
+        $queues = [];
+        foreach ($merged as $name => $o) {
+            $existing = isset($o['existing']) && is_scalar($o['existing']) ? (string) $o['existing'] : null;
+            $queues[] = new QueueConfig(
+                name: (string) $name,
+                timeout: self::nullableInt($o['timeout'] ?? null) ?? 60,
+                memory: self::nullableInt($o['memory'] ?? null) ?? 1024,
+                concurrency: self::nullableInt($o['concurrency'] ?? null),
+                batchSize: self::nullableInt($o['batchSize'] ?? null) ?? 1,
+                tries: self::nullableInt($o['tries'] ?? null) ?? 3,
+                dlq: (bool) ($o['dlq'] ?? $existing === null),
+                fifo: (bool) ($o['fifo'] ?? false),
+                existing: $existing,
+                default: $explicitDefault ? ($o['default'] ?? false) === true : $queues === [],
+            );
+        }
+        return $queues;
     }
 
     private static function nullableString(mixed $value): ?string

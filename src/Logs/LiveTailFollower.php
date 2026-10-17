@@ -20,6 +20,8 @@ final class LiveTailFollower implements Follower
      */
     public const READ_TIMEOUT_SECONDS = 5;
     public const IDLE_SECONDS = 30.0;
+    /** StartLiveTail accepts at most this many log groups in one session. */
+    public const MAX_GROUPS = 10;
 
     /** @param list<string> $existing groups known to exist: a missing group fails the whole session */
     public function __construct(

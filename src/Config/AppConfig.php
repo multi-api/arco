@@ -12,6 +12,7 @@ final readonly class AppConfig
      * @param list<array<string, mixed>> $permissions
      * @param list<string> $domains
      * @param list<string> $deployCommands
+     * @param list<QueueConfig> $queues
      */
     public function __construct(
         public string $app,
@@ -48,7 +49,46 @@ final readonly class AppConfig
         public ?int $scheduler = null,
         /** days to keep logs; false: never expire; null: Arco does not manage retention */
         public int|false|null $logRetention = null,
+        /** declaration order, app level first */
+        public array $queues = [],
     ) {
+    }
+
+    /** The same configuration with the account the credentials resolved to (arco.php did not lock one). */
+    public function withAccount(string $account): self
+    {
+        return new self(
+            app: $this->app,
+            environment: $this->environment,
+            region: $this->region,
+            concurrency: $this->concurrency,
+            timeout: $this->timeout,
+            maxInstances: $this->maxInstances,
+            rateLimit: $this->rateLimit,
+            auth: $this->auth,
+            logLevel: $this->logLevel,
+            role: $this->role,
+            kmsKey: $this->kmsKey,
+            profile: $this->profile,
+            account: $account,
+            runtime: $this->runtime,
+            variables: $this->variables,
+            exclude: $this->exclude,
+            include: $this->include,
+            sources: $this->sources,
+            permissions: $this->permissions,
+            domains: $this->domains,
+            dnsProfile: $this->dnsProfile,
+            dnsManual: $this->dnsManual,
+            certificate: $this->certificate,
+            deployCommands: $this->deployCommands,
+            consoleTimeout: $this->consoleTimeout,
+            protected: $this->protected,
+            console: $this->console,
+            scheduler: $this->scheduler,
+            logRetention: $this->logRetention,
+            queues: $this->queues,
+        );
     }
 
     public function functionName(): string
@@ -59,6 +99,21 @@ final readonly class AppConfig
     public function consoleFunctionName(): string
     {
         return $this->functionName() . '-console';
+    }
+
+    public function workerFunctionName(string $queue): string
+    {
+        return $this->functionName() . '-queue-' . $queue;
+    }
+
+    public function defaultQueue(): ?QueueConfig
+    {
+        foreach ($this->queues as $queue) {
+            if ($queue->default) {
+                return $queue;
+            }
+        }
+        return null;
     }
 
     /** Whether the console function is deployed: asked for, or needed by the scheduler. */

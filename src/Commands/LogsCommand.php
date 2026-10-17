@@ -30,12 +30,12 @@ use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Style\SymfonyStyle;
 use Throwable;
 
-#[AsCommand(name: 'logs', description: 'Show or follow the logs of an environment (web and console)')]
+#[AsCommand(name: 'logs', description: 'Show or follow the logs of an environment (web, console and queue workers)')]
 final class LogsCommand extends ArcoCommand
 {
     use ResolvesTarget;
 
-    private const SOURCES = ['all', 'web', 'console'];
+    private const SOURCES = ['all', 'web', 'console', 'queues'];
 
     /** @var Closure(AwsClients, array<string, mixed>): CloudWatchLogsClient extra client config as 2nd argument (Live Tail's http_handler) */
     private Closure $logsFactory;
@@ -77,7 +77,9 @@ final class LogsCommand extends ArcoCommand
             ->addOption('level', null, InputOption::VALUE_REQUIRED, 'Minimum level: debug, info, warning or error')
             ->addOption('request', null, InputOption::VALUE_REQUIRED, 'Only lines of this request id')
             ->addOption('filter', null, InputOption::VALUE_REQUIRED, 'Only events containing this text')
-            ->addOption('source', null, InputOption::VALUE_REQUIRED, 'all, web or console', 'all')
+            ->addOption('source', null, InputOption::VALUE_REQUIRED, 'all, web, console or queues (every queue worker)', 'all')
+            ->addOption('console', null, InputOption::VALUE_NONE, 'Only the console function (same as --source=console)')
+            ->addOption('queue', null, InputOption::VALUE_REQUIRED, 'Only the worker of this queue')
             ->addOption('platform', null, InputOption::VALUE_NONE, 'Show every Lambda platform event')
             ->addOption('json', null, InputOption::VALUE_NONE, 'Print raw events as JSON, one per line');
     }
@@ -88,11 +90,7 @@ final class LogsCommand extends ArcoCommand
         $errors = $io->getErrorStyle();
         try {
             $config = $this->loadTarget($input, $errors);
-            $sourceOption = $input->getOption('source');
-            $source = is_string($sourceOption) ? $sourceOption : '';
-            if (! in_array($source, self::SOURCES, true)) {
-                throw new UserError($this->t('logs.invalid_source', ['value' => $source]));
-            }
+            [$source, $queue] = $this->source($input, $config);
             $levelOption = $input->getOption('level');
             $level = is_string($levelOption) ? strtolower($levelOption) : null;
             if ($levelOption !== null && ! in_array($level, LogFilter::LEVELS, true)) {
@@ -129,7 +127,7 @@ final class LogsCommand extends ArcoCommand
             };
 
             $aws = $this->awsClients($config, $input, $errors);
-            $groups = LogGroups::for($config, $source);
+            $groups = LogGroups::for($config, $source, $queue);
             $read = (new LogReader(($this->logsFactory)($aws, [])))->read($groups, $sinceMs, $untilMs, $pattern);
             foreach ($read['events'] as $event) {
                 $print($event);
@@ -152,6 +150,9 @@ final class LogsCommand extends ArcoCommand
             };
             $follower = ($this->followerFactory)($aws, $config, $read['existing'], $notify);
             $live = $follower instanceof FallbackFollower && $follower->usesLiveTail($groups);
+            if ($follower instanceof FallbackFollower && $follower->liveGroups($groups) > LiveTailFollower::MAX_GROUPS) {
+                $errors->note($this->t('logs.live_tail_too_many', ['max' => LiveTailFollower::MAX_GROUPS, 'count' => $follower->liveGroups($groups)]));
+            }
             $errors->writeln($this->t($live ? 'logs.following' : 'logs.following_polling', ['groups' => implode(', ', $groups)]));
             // Events already printed from the history are not printed again. By content, not eventId:
             // Live Tail events have none, so the same event would get a different id from each source.
@@ -172,6 +173,33 @@ final class LogsCommand extends ArcoCommand
             $errors->error($this->describeError($e) ?? throw $e);
             return self::FAILURE;
         }
+    }
+
+    /**
+     * The LogGroups source and queue from --source, --console and --queue (only one of them).
+     *
+     * @return array{0: string, 1: ?string}
+     */
+    private function source(InputInterface $input, AppConfig $config): array
+    {
+        $sourceOption = $input->getOption('source');
+        $source = is_string($sourceOption) ? $sourceOption : '';
+        if (! in_array($source, self::SOURCES, true)) {
+            throw new UserError($this->t('logs.invalid_source', ['value' => $source]));
+        }
+        $console = (bool) $input->getOption('console');
+        $queue = self::stringOption($input->getOption('queue'));
+        if (count(array_filter([$source !== 'all', $console, $queue !== null])) > 1) {
+            throw new UserError($this->t('logs.source_conflict'));
+        }
+        if ($queue === null) {
+            return [$console ? 'console' : $source, null];
+        }
+        $names = array_map(fn ($q) => $q->name, $config->queues);
+        if (! in_array($queue, $names, true)) {
+            throw new UserError($this->t('queue.unknown', ['queue' => $queue, 'queues' => $names === [] ? $this->t('queue.none') : implode(', ', $names)]));
+        }
+        return ['queue', $queue];
     }
 
     /** @param array<string, mixed> $overrides */
