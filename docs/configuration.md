@@ -59,6 +59,9 @@ Settings, `variables()`, `permissions()`, `runtime()` and the custom domain meth
 | `domain(string\|array)` | none | Custom domains served through CloudFront (below); lowercase hostnames, no wildcards, at most 10 |
 | `dns(string\|false)` | Route 53 in the deploy account | `dns('profile')`: Route 53 in the account of that AWS profile; `dns(false)`: DNS is elsewhere, Arco prints the records |
 | `deployCommands(array)` | `[]` | Commands run on the console function during every deploy, before traffic moves; an environment's list replaces the app's |
+| `console(bool = true)` | off | Deploy the console function (`arco command`, `arco tinker`, `deployCommands()`); `console(false)` deletes an existing one on the next deploy; a scheduler implies it |
+| `scheduler(int\|false)` | off | Run Laravel's `schedule:run` every N minutes (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30 or 60), aligned to the UTC clock; needs the console, which it turns on |
+| `logRetention(int\|false)` | not managed | Days CloudWatch keeps the web and console logs (1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288 or 3653); `false` = never expire; not set = Arco leaves the groups as they are |
 | `consoleTimeout(int)` | 900 | Timeout of the console function in seconds (3 to 900) |
 | `protected(bool = true)` | on for `production` | Ask for confirmation before `arco tinker`; `protected(false)` turns it off |
 | `certificate(arn)` | looked up or requested | ACM certificate ARN in `us-east-1` to use for the domains |
@@ -182,7 +185,19 @@ App::make('shop')
 
 ## Console function
 
-`arco deploy` creates or updates `<app>-<env>-console` (runtime `provided.al2023`, arm64, 2048 MB,
+The console function is **opt-in**: by default `arco deploy` creates only the web function. Turn it on with
+`->console()` in `arco.php` (or `arco console:add`); `->console(false)` (or `arco console:remove`) deletes it
+on the next deploy, and a failed delete is a warning. `arco command`, `arco tinker`, `deployCommands()` and
+`arco deploy --migrate` need it and fail before touching AWS when it is off, naming `arco console:add`.
+`arco info` shows it as `on`, `off` or `not set` (in your language); in `--json`, `settings.console` is `true`,
+`false` or `null`, `settings.scheduler` the minutes or `null`, and `settings.logRetention` the days, `false`
+(never expire) or `null` (not managed), as `arco.php` writes them.
+
+**Upgrading to 0.4.** An environment deployed with Arco 0.2 or 0.3 already has a console function. If
+`arco.php` has no `console()` setting for it, `arco deploy` stops before changing anything: add `->console()`
+to keep it, or `->console(false)` to delete it.
+
+When on, `arco deploy` creates or updates `<app>-<env>-console` (runtime `provided.al2023`, arm64, 2048 MB,
 1024 MB of `/tmp`, timeout `consoleTimeout()`; the name must fit Lambda's 64 characters), with the web
 revision's variables, secrets and execution role. It publishes a version and points the `live` alias at it
 once traffic has moved and the health check passed. If AWS refuses that alias move (for example a profile
@@ -211,6 +226,42 @@ read `runtime/*` of the code bucket in every case; with your own `role()`, allow
 and `logs:CreateLogStream` / `logs:PutLogEvents` on the console log group. If the console package is
 still over 250 MB, the web function deploys, the console function is skipped with a warning and deploy
 commands are refused: leave large folders out with `->exclude([...])`.
+
+### Scheduler
+
+`->scheduler(N)` (or `arco scheduler:set [N]`) runs Laravel's `schedule:run` every N minutes on the console
+function, through an EventBridge rule named `arco-<function>-scheduler` (for example `arco-shop-production-scheduler`) that invokes the `live` alias. N is
+one of 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30 or 60. The rule is clock-aligned cron in UTC (every 5 minutes
+fires at :00, :05, :10 and so on, whenever the rule was created), so `->everyFiveMinutes()` tasks line up
+with it. The scheduler needs the console, so `scheduler()` turns it on and `console(false)` with a scheduler
+is a config error. `scheduler:set` and `scheduler:remove` also write `->console()` where the console is not
+set, so `scheduler:remove` turns the scheduler off and keeps the console; `console:remove`
+refuses while a scheduler runs.
+
+`arco scheduler:set` without N suggests an interval from your tasks: it runs
+`php artisan arco:schedule-intervals` (from `multiapi/arco-laravel`) with `ARCO=1` in the environment, so
+any `env('ARCO')` branch in your own app sees it while the schedule is read. A deploy warns when a task
+needs a shorter interval than the one configured (for example an `everyMinute()` task with `scheduler(5)`).
+The rule is only created or updated after the console function was activated successfully, so it never
+fires at an older version, and it is deleted when the scheduler is off. If EventBridge cannot be read
+(missing `events:DescribeRule`), the deploy warns instead of guessing.
+
+### Log retention
+
+`->logRetention(30)` (or `arco logs:retention 30`) sets the CloudWatch retention of the web function's log
+group and, when the console is on, the console's; creating the groups first when they do not exist yet.
+`->logRetention(false)` (`arco logs:retention never`) makes them never expire. With no setting Arco does not
+touch retention; `arco logs:retention --remove` goes back to that. Allowed days are the ones CloudWatch
+accepts (1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922,
+3288, 3653).
+
+### Runtime binary clean-up
+
+Each deploy that needs the FrankenPHP binary in the code bucket uploads it to `runtime/<build>/...`. After a
+deploy Arco deletes `runtime/*` objects older than 24 hours that no published version of any Arco function in the region
+(found by the `arco:app` tag, all versions, since any can be rolled back to) references; the 24-hour grace
+period protects a deploy that has uploaded a binary but not yet published.
+This is best effort: when it cannot list or delete, the deploy warns and goes on.
 
 ## Custom domains
 

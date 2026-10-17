@@ -54,7 +54,7 @@ final class ArcoFileEditor
      * The method is the setting's key (concurrency, timeout, maxInstances, rateLimit, logLevel).
      * Returns false, without writing, when arco.php has a shape this editor does not understand.
      */
-    public static function setSetting(string $arcoPhpPath, ?string $environment, string $method, int|string|null $value): bool
+    public static function setSetting(string $arcoPhpPath, ?string $environment, string $method, int|string|bool|null $value): bool
     {
         return self::update($arcoPhpPath, $environment, ['settings' => [$method => $value]]);
     }
@@ -71,8 +71,12 @@ final class ArcoFileEditor
         return false;
     }
 
-    public static function settingLine(string $method, int|string $value): string
+    /** true renders a no-argument call such as ->console(); false renders ->console(false). */
+    public static function settingLine(string $method, int|string|bool $value): string
     {
+        if ($value === true) {
+            return '->' . $method . '()';
+        }
         return '->' . $method . '(' . (is_int($value) ? (string) $value : var_export($value, true)) . ')';
     }
 
@@ -81,7 +85,7 @@ final class ArcoFileEditor
      * Returns false, writing nothing, when any change has a shape this editor does not understand.
      * A null environment means the App chain (settings only).
      *
-     * @param array{domains?: list<string>, dns?: string|false|null, settings?: array<string, int|string|null>} $changes
+     * @param array{domains?: list<string>, dns?: string|false|null, settings?: array<string, int|string|bool|null>} $changes
      */
     public static function update(string $arcoPhpPath, ?string $environment, array $changes): bool
     {
@@ -136,7 +140,7 @@ final class ArcoFileEditor
      * configuration with only the asked changes (in the environment, or the app when null). On any
      * difference or load error the original bytes are restored and ConfigException editor.verify_failed is thrown.
      *
-     * @param array{domains?: list<string>, dns?: string|false|null, settings?: array<string, int|string|null>} $changes
+     * @param array{domains?: list<string>, dns?: string|false|null, settings?: array<string, int|string|bool|null>} $changes
      */
     public static function verifiedWrite(string $arcoPhpPath, string $contents, ?string $environment, array $changes): void
     {
@@ -206,7 +210,7 @@ final class ArcoFileEditor
      * The loaded configuration as it should be after the changes.
      *
      * @param array<string, mixed> $raw
-     * @param array{domains?: list<string>, dns?: string|false|null, settings?: array<string, int|string|null>} $changes
+     * @param array{domains?: list<string>, dns?: string|false|null, settings?: array<string, int|string|bool|null>} $changes
      * @return array<string, mixed>
      */
     private static function expected(array $raw, ?string $environment, array $changes): array
@@ -607,8 +611,14 @@ final class ArcoFileEditor
     private static function isLiteral(array $args, string $method): bool
     {
         if ($method !== 'domain' && $method !== 'dns') {
-            // A scalar setting: exactly one integer or plain string.
-            return count($args) === 1 && in_array($args[0]->id, [T_LNUMBER, T_CONSTANT_ENCAPSED_STRING], true);
+            // A scalar setting: no argument, or exactly one integer, plain string or true/false.
+            if ($args === []) {
+                return true;
+            }
+            return count($args) === 1 && (
+                in_array($args[0]->id, [T_LNUMBER, T_CONSTANT_ENCAPSED_STRING], true)
+                || ($args[0]->id === T_STRING && in_array(strtolower($args[0]->text), ['true', 'false'], true))
+            );
         }
         foreach ($args as $token) {
             $ok = $token->id === T_CONSTANT_ENCAPSED_STRING

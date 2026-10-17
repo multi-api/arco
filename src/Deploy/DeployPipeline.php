@@ -3,6 +3,7 @@
 namespace Multiapi\Arco\Deploy;
 
 use Aws\Exception\AwsException;
+use Closure;
 use Multiapi\Arco\Binary\BinaryException;
 use Multiapi\Arco\Binary\BinaryProvider;
 use Multiapi\Arco\Binary\RuntimeBuild;
@@ -11,7 +12,10 @@ use Multiapi\Arco\Build\BuildResult;
 use Multiapi\Arco\Build\CachesPaths;
 use Multiapi\Arco\Build\FrameworkPreset;
 use Multiapi\Arco\Build\ProcessCommandRunner;
+use Multiapi\Arco\Build\ScheduleInspector;
 use Multiapi\Arco\Config\AppConfig;
+use Multiapi\Arco\Config\SchedulerInterval;
+use Multiapi\Arco\Package\ConsoleArtifacts;
 use Multiapi\Arco\Package\ConsolePackager;
 use Multiapi\Arco\Package\Package;
 use Multiapi\Arco\Package\Packager;
@@ -20,11 +24,17 @@ use Throwable;
 
 final class DeployPipeline
 {
+    /** @var Closure(string): (list<array{task: string, minutes: list<int>}>|null) the app's scheduled tasks, read in the build's app dir */
+    private readonly Closure $scheduleInspector;
+
+    /** @param (Closure(string): (list<array{task: string, minutes: list<int>}>|null))|null $scheduleInspector default: ScheduleInspector with this PHP */
     public function __construct(
         private readonly Builder $builder,
         private readonly BinaryProvider $binaries,
         private readonly Packager $packager,
+        ?Closure $scheduleInspector = null,
     ) {
+        $this->scheduleInspector = $scheduleInspector ?? static fn (string $appDir): ?array => (new ScheduleInspector())->tasks($appDir, PHP_BINARY);
     }
 
     public static function default(): self
@@ -63,6 +73,7 @@ final class DeployPipeline
             foreach ($build->skipped as $path) {
                 $onStep('build.symlink_skipped', ['path' => $path]);
             }
+            $this->checkSchedule($config, $build, $onStep);
             $runtimeBuild = $this->binaries->describe($config->runtime);
             if ($runtimeBuild !== null) {
                 $onStep('binary.using', ['build' => $runtimeBuild->id, 'frankenphp' => $runtimeBuild->frankenphp, 'php' => $runtimeBuild->php]);
@@ -78,12 +89,43 @@ final class DeployPipeline
         return [$build, $package];
     }
 
+    /**
+     * Warns (deploy.scheduler_too_slow) when the scheduler runs schedule:run less often than some of
+     * the app's tasks need, so they would be skipped. Best effort: an unreadable schedule says nothing.
+     *
+     * @param callable(string, array<string, string|int>): void $onStep
+     */
+    private function checkSchedule(AppConfig $config, BuildResult $build, callable $onStep): void
+    {
+        if ($config->scheduler === null) {
+            return;
+        }
+        try {
+            $tasks = ($this->scheduleInspector)($build->appDir);
+        } catch (Throwable) {
+            return;
+        }
+        if ($tasks === null) {
+            return;
+        }
+        $missed = SchedulerInterval::missed($config->scheduler, $tasks);
+        if ($missed !== []) {
+            $minutes = array_merge([], ...array_map(static fn (array $task): array => $task['minutes'], $tasks));
+            $onStep('deploy.scheduler_too_slow', [
+                'every' => $config->scheduler,
+                'tasks' => implode(', ', $missed),
+                'required' => SchedulerInterval::required($minutes),
+            ]);
+        }
+    }
+
     /** @param callable(string, array<string, string|int>): void $onStep */
     public function deploy(AppConfig $config, FrameworkPreset $preset, string $projectDir, Deployer $deployer, Verifier $verifier, callable $onStep, ?CommandPlan $plan = null): DeployOutcome
     {
+        $removeConsole = $this->checkConsole($config, $deployer, $plan);
         [$build, $package] = $this->package($config, $preset, $projectDir, $onStep);
         try {
-            return $this->deployPackage($config, $preset, $package, $deployer, $verifier, $onStep, $plan);
+            return $this->deployBuilt($config, $preset, $package, $deployer, $verifier, $onStep, $plan, $removeConsole);
         } finally {
             $build->cleanup();
         }
@@ -100,55 +142,49 @@ final class DeployPipeline
      */
     public function deployPackage(AppConfig $config, FrameworkPreset $preset, Package $package, Deployer $deployer, Verifier $verifier, callable $onStep, ?CommandPlan $plan = null): DeployOutcome
     {
+        $removeConsole = $this->checkConsole($config, $deployer, $plan);
+        return $this->deployBuilt($config, $preset, $package, $deployer, $verifier, $onStep, $plan, $removeConsole);
+    }
+
+    /**
+     * Runs before anything is built or changed. An environment whose console is off (not set, or
+     * console(false), and no scheduler) cannot run deploy commands. An existing console function with
+     * no console setting at all is an app deployed by an Arco that always deployed it: the deploy
+     * stops, before any change, so the user says whether to keep it. With console(false) it is deleted
+     * once the new revision is verified.
+     *
+     * @return bool whether this deploy removes the existing console function
+     * @throws DeployException deploy.commands_need_console, deploy.console_setting_missing
+     */
+    private function checkConsole(AppConfig $config, Deployer $deployer, ?CommandPlan $plan): bool
+    {
+        if ($config->consoleEnabled()) {
+            return false;
+        }
+        if ($plan !== null && $plan->commands !== []) {
+            throw DeployException::make('deploy.commands_need_console', ['environment' => $config->environment]);
+        }
+        if (! $deployer->consoleExists($config)) {
+            return false;
+        }
+        if ($config->console === null) {
+            throw DeployException::make('deploy.console_setting_missing', ['environment' => $config->environment]);
+        }
+        return true;
+    }
+
+    /**
+     * @param callable(string, array<string, string|int>): void $onStep
+     * @param bool $removeConsole delete the console function once the deploy is verified (checkConsole())
+     * @throws DeployCommandFailed at the first deploy command that fails or crashes
+     */
+    private function deployBuilt(AppConfig $config, FrameworkPreset $preset, Package $package, Deployer $deployer, Verifier $verifier, callable $onStep, ?CommandPlan $plan, bool $removeConsole): DeployOutcome
+    {
         $variables = self::variables($config, $preset);
         // The console zip and the binary are derived from the web zip in a scratch directory.
         $work = sys_get_temp_dir() . '/arco-console-' . bin2hex(random_bytes(4));
         try {
-            // The console runs the runtime build's PHP CLI (bin/php in its zip) when the build has one;
-            // otherwise (custom binary, unknown or older build, CLI unreachable) it downloads FrankenPHP
-            // at cold start. $note holds the reason (and its params) for that fallback.
-            $buildId = $package->manifest?->runtimeBuild;
-            $build = $buildId === null ? null : $this->binaries->build($buildId);
-            $note = match (true) {
-                $buildId === null => ['reason' => 'custom_binary'],
-                $build === null => ['reason' => 'unknown_build', 'build' => $buildId],
-                default => ['reason' => 'no_php_cli'],
-            };
-            $phpCli = null;
-            if ($build !== null) {
-                try {
-                    $phpCli = $this->binaries->phpCli($build, self::downloadProgress($build, $onStep));
-                } catch (BinaryException $e) {
-                    // Only reachability falls back (network, proxy, GitHub outage): a size or checksum
-                    // mismatch or an unwritable cache stops the deploy, still before any AWS change.
-                    if ($e->key !== 'binary.download_failed') {
-                        throw $e;
-                    }
-                    $note = ['reason' => 'php_cli_unavailable', 'url' => (string) ($e->params['url'] ?? ''), 'message' => (string) ($e->params['message'] ?? '')];
-                }
-            }
-            $console = ConsolePackager::fromWeb($package, $work, $phpCli);
-            if ($phpCli !== null && $console->package->bytes > ConsoleFunction::MAX_UNZIPPED_BYTES) {
-                // bin/php alone can push the console over Lambda's limit: without it, the console still
-                // deploys and downloads FrankenPHP at cold start.
-                $console = ConsolePackager::fromWeb($package, $work, null);
-                $note = ['reason' => 'php_cli_too_large'];
-            }
-            if ($console->package->bytes > ConsoleFunction::MAX_UNZIPPED_BYTES) {
-                $params = [
-                    'size' => (int) round($console->package->bytes / 1048576),
-                    'max' => (int) round(ConsoleFunction::MAX_UNZIPPED_BYTES / 1048576),
-                ];
-                // Before any AWS change: deploy commands need the console version of this deploy.
-                if ($plan !== null && $plan->commands !== []) {
-                    throw DeployException::make('deploy.commands_package_too_large', $params);
-                }
-                $onStep('deploy.console_skipped_size', $params);
-                $console = null;
-            }
-            if ($console?->download !== null) {
-                $onStep('deploy.console_downloads_binary', $note);
-            }
+            $console = $config->consoleEnabled() ? $this->consoleArtifacts($package, $work, $plan, $onStep) : null;
 
             $since = (int) floor(microtime(true) * 1000) - 5000;
             $prepared = $deployer->prepare($config, $package, $console, $variables, $onStep);
@@ -174,10 +210,13 @@ final class DeployPipeline
                 $rolledBack = true;
             }
             // `arco command` and tinker follow the live alias: it moves only to a version whose web revision works.
+            $consoleActivated = false;
             if ($verification->ok && $result->consoleVersion !== null) {
                 try {
                     $deployer->activateConsole($config, $result->consoleVersion);
+                    $consoleActivated = true;
                 } catch (ConsoleRetriesNotDisabled $e) {
+                    $consoleActivated = true;
                     // The alias did move; only Lambda's async retries stay on.
                     $onStep('deploy.console_retries_not_disabled', [
                         'function' => $config->consoleFunctionName(),
@@ -193,6 +232,30 @@ final class DeployPipeline
                         'version' => $result->consoleVersion,
                         'error' => self::errorMessage($e),
                     ]);
+                }
+            }
+            if ($verification->ok && $config->consoleEnabled()) {
+                $this->syncScheduler($config, $deployer, $consoleActivated, $onStep);
+            }
+            // console(false): the old console goes only once the new revision serves and is verified.
+            if ($verification->ok && $removeConsole) {
+                try {
+                    $deployer->removeConsole($config, $onStep(...));
+                } catch (Throwable $e) {
+                    // The verified revision is already live: a refused delete (often a missing
+                    // lambda:DeleteFunction) is a warning, and domains, prune and the rest still run.
+                    $onStep('deploy.console_remove_failed', [
+                        'function' => $config->consoleFunctionName(),
+                        'error' => self::errorMessage($e),
+                    ]);
+                }
+            }
+            if ($verification->ok) {
+                try {
+                    $deployer->applyLogRetention($config, $onStep(...));
+                } catch (Throwable $e) {
+                    // The verified revision is already live: a refused log group call is a warning.
+                    $onStep('deploy.log_retention_failed', ['error' => self::errorMessage($e)]);
                 }
             }
             // Custom domains only once the endpoint is known to work; the origin is the endpoint domain.
@@ -214,6 +277,83 @@ final class DeployPipeline
         } finally {
             (new Filesystem())->remove($work);
         }
+    }
+
+    /**
+     * Points the scheduler rule at the live alias (or deletes it when the scheduler is off), once the
+     * deploy is verified. With a scheduler but no alias moved by this deploy (refused, or no console
+     * version), the rule is left alone: the alias may not match the live revision, or not exist yet.
+     * A failure is a warning: the verified revision is already live.
+     *
+     * @param callable(string, array<string, string|int>): void $onStep
+     */
+    private function syncScheduler(AppConfig $config, Deployer $deployer, bool $consoleActivated, callable $onStep): void
+    {
+        if ($config->scheduler !== null && ! $consoleActivated) {
+            $onStep('deploy.scheduler_skipped', ['function' => $config->consoleFunctionName(), 'every' => $config->scheduler]);
+            return;
+        }
+        try {
+            $deployer->syncScheduler($config, $onStep(...));
+        } catch (Throwable $e) {
+            $onStep('deploy.scheduler_failed', ['rule' => SchedulerRule::name($config), 'error' => self::errorMessage($e)]);
+        }
+    }
+
+    /**
+     * The console zip and its runtime binary for this deploy, or null when the console is over
+     * Lambda's size limit (a warning step; deploy commands then stop the deploy).
+     *
+     * @param callable(string, array<string, string|int>): void $onStep
+     */
+    private function consoleArtifacts(Package $package, string $work, ?CommandPlan $plan, callable $onStep): ?ConsoleArtifacts
+    {
+        // The console runs the runtime build's PHP CLI (bin/php in its zip) when the build has one;
+        // otherwise (custom binary, unknown or older build, CLI unreachable) it downloads FrankenPHP
+        // at cold start. $note holds the reason (and its params) for that fallback.
+        $buildId = $package->manifest?->runtimeBuild;
+        $build = $buildId === null ? null : $this->binaries->build($buildId);
+        $note = match (true) {
+            $buildId === null => ['reason' => 'custom_binary'],
+            $build === null => ['reason' => 'unknown_build', 'build' => $buildId],
+            default => ['reason' => 'no_php_cli'],
+        };
+        $phpCli = null;
+        if ($build !== null) {
+            try {
+                $phpCli = $this->binaries->phpCli($build, self::downloadProgress($build, $onStep));
+            } catch (BinaryException $e) {
+                // Only reachability falls back (network, proxy, GitHub outage): a size or checksum
+                // mismatch or an unwritable cache stops the deploy, still before any AWS change.
+                if ($e->key !== 'binary.download_failed') {
+                    throw $e;
+                }
+                $note = ['reason' => 'php_cli_unavailable', 'url' => (string) ($e->params['url'] ?? ''), 'message' => (string) ($e->params['message'] ?? '')];
+            }
+        }
+        $console = ConsolePackager::fromWeb($package, $work, $phpCli);
+        if ($phpCli !== null && $console->package->bytes > ConsoleFunction::MAX_UNZIPPED_BYTES) {
+            // bin/php alone can push the console over Lambda's limit: without it, the console still
+            // deploys and downloads FrankenPHP at cold start.
+            $console = ConsolePackager::fromWeb($package, $work, null);
+            $note = ['reason' => 'php_cli_too_large'];
+        }
+        if ($console->package->bytes > ConsoleFunction::MAX_UNZIPPED_BYTES) {
+            $params = [
+                'size' => (int) round($console->package->bytes / 1048576),
+                'max' => (int) round(ConsoleFunction::MAX_UNZIPPED_BYTES / 1048576),
+            ];
+            // Before any AWS change: deploy commands need the console version of this deploy.
+            if ($plan !== null && $plan->commands !== []) {
+                throw DeployException::make('deploy.commands_package_too_large', $params);
+            }
+            $onStep('deploy.console_skipped_size', $params);
+            $console = null;
+        }
+        if ($console?->download !== null) {
+            $onStep('deploy.console_downloads_binary', $note);
+        }
+        return $console;
     }
 
     /**

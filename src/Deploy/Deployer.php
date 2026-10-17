@@ -2,6 +2,7 @@
 
 namespace Multiapi\Arco\Deploy;
 
+use Closure;
 use Multiapi\Arco\Config\AppConfig;
 use Multiapi\Arco\Package\ConsoleArtifacts;
 use Multiapi\Arco\Package\Package;
@@ -56,4 +57,31 @@ interface Deployer
     public function remove(AppConfig $config, ?callable $onStep = null): void;
 
     public function describe(AppConfig $config): ?AppStatus;
+
+    /** Whether the environment's console function exists in AWS. */
+    public function consoleExists(AppConfig $config): bool;
+
+    /**
+     * Deletes the console function of an environment whose console is off (a missing one is fine).
+     *
+     * @param Closure(string, array<string, string|int>): void $onStep
+     */
+    public function removeConsole(AppConfig $config, Closure $onStep): void;
+
+    /**
+     * Once the console's live alias points at this deploy's version: with a scheduler, creates or
+     * updates the EventBridge rule invoking that alias (step deploy.scheduler_set); without one,
+     * deletes a rule left from before (step deploy.scheduler_removed, nothing when there was none).
+     *
+     * @param Closure(string, array<string, string|int>): void $onStep
+     */
+    public function syncScheduler(AppConfig $config, Closure $onStep): void;
+
+    /**
+     * Sets the retention of the web and (when the console is on) console log groups, creating them
+     * when missing. Nothing happens, no AWS call, when logRetention() is not set. Steps: deploy.log_retention, deploy.log_retention_one_day or deploy.log_retention_never (AwsDeployer::logRetentionStep()).
+     *
+     * @param Closure(string, array<string, string|int>): void $onStep
+     */
+    public function applyLogRetention(AppConfig $config, Closure $onStep): void;
 }

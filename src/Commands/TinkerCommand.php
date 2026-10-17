@@ -56,6 +56,9 @@ final class TinkerCommand extends ArcoCommand
         $io = new SymfonyStyle($input, $output);
         try {
             $config = $this->loadTarget($input, $io);
+            if (! $config->consoleEnabled()) {
+                throw new UserError($this->t('console.disabled', ['environment' => $config->environment]));
+            }
             if ($this->presets->detect($this->projectDir())->name() !== 'laravel') {
                 throw new UserError($this->t('tinker.laravel_only'));
             }

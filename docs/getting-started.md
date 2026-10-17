@@ -229,8 +229,30 @@ your SSM parameters are kept.
 
 ## Operating the app
 
-Every `arco deploy` also deploys a **console function**, `<app>-<env>-console`: a regular Lambda function
-with the same code, variables, secrets and role as the web function, used to run commands.
+By default a deploy creates only the web function. Add `->console()` to `arco.php` (or run
+`arco console:add --env=<env>`) to also deploy a **console function**, `<app>-<env>-console`: a regular Lambda
+function with the same code, variables, secrets and role as the web function, used to run commands, deploy
+commands and the scheduler. `arco command`, `arco tinker`, `deployCommands()` and `arco deploy --migrate`
+need it and fail before touching AWS when it is off. `arco console:remove` (or `->console(false)`) deletes it
+on the next deploy.
+
+**Upgrading to 0.4.** Apps deployed with Arco 0.2 or 0.3 have a console function. Without a `console()`
+setting `arco deploy` stops before changing anything: add `->console()` to keep it or `->console(false)` to
+delete it.
+
+### Scheduler and log retention
+
+`arco scheduler:set 5 --env=<env>` (or `->scheduler(5)`) runs `php artisan schedule:run` every 5 minutes on
+the console function, from an EventBridge rule aligned to the UTC clock (:00, :05, ...). Allowed intervals:
+1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60. It turns the console on. Without a number the command suggests one
+from your scheduled tasks, reading them with `php artisan arco:schedule-intervals` run with `ARCO=1` (so
+your own `env('ARCO')` branches see it); a deploy warns if a task needs a shorter interval. `arco
+scheduler:remove` turns it off and the next deploy deletes the rule.
+
+`arco logs:retention 30 --env=<env>` (or `->logRetention(30)`) keeps the web and console logs for 30 days;
+`never` stops them from expiring, `--remove` leaves retention unmanaged (the default). Each deploy also
+deletes unused `runtime/*` binaries from the code bucket (older than 24 hours, none referenced by a published
+version), best effort with a warning.
 
 ### Commands
 
@@ -245,7 +267,7 @@ and redirects do not work). Arco prints the output and exits with the command's 
 works in scripts and CI. A command can run up to `consoleTimeout()` (15 minutes by default);
 `--timeout=<s>` lowers it. Use `--async` for longer work and follow it with
 `arco logs --source=console --follow`. For a plain PHP app, name the script: `arco command "bin/console app:sync"`.
-The console function must exist: run `arco deploy` first.
+The console function must be on (`->console()`) and deployed: run `arco deploy` first.
 
 Every command line is written to the console function's log (CloudWatch), as an audit trail. Values of
 options whose name has a secret-looking word (`password`, `passwd`, `secret`, `token`, `key`, `apikey`,
@@ -392,6 +414,14 @@ The role used by the E2E workflow lives in a dedicated test account and needs:
   `lambda:ListVersionsByFunction`, `lambda:DeleteFunction`, `lambda:InvokeFunction`
 - `logs:StartLiveTail` for `arco logs --follow` (Live Tail; without
   `logs:StartLiveTail` follow polls instead). `logs:FilterLogEvents` covers `arco logs` without `--follow`
+- for the scheduler (`arn:aws:events:*:*:rule/arco-*-scheduler`): `events:PutRule`, `events:PutTargets`,
+  `events:DescribeRule`, `events:RemoveTargets`, `events:DeleteRule`, `events:TagResource`; on the console
+  function: `lambda:AddPermission`, `lambda:RemovePermission`, `lambda:GetPolicy`
+- for the version check of the runtime clean-up: `lambda:ListVersionsByFunction` on the Arco functions
+  (it reads every tagged function's versions), and `tag:GetResources` (without it the clean-up warns on every deploy)
+- for log retention: `logs:CreateLogGroup`, `logs:PutRetentionPolicy`, `logs:DeleteRetentionPolicy`
+- for the runtime clean-up: `s3:ListBucket` on the code bucket and `s3:GetObject`, `s3:PutObject`,
+  `s3:DeleteObject` on `runtime/*`
 
 For your own apps, scope the SSM resource to your parameters and add Secrets Manager read access
 if you use `arco-secret:` references. If a permission is missing, Arco reports which operation

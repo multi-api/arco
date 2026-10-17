@@ -41,8 +41,9 @@ vendor/bin/arco deploy --env=production
 - **Environments** (`production`, `staging`, …), each its own Web Function, all in one `arco.php`.
 - **Secrets** as `arco-ssm:` / `arco-secret:` references, resolved when the function starts and
   scoped in IAM to exactly what you reference.
-- **Operations.** `arco command`, `arco tinker` and `arco logs` run and inspect the deployed app from your
-  terminal; migrations can run on every deploy before traffic moves.
+- **Operations.** `arco logs` inspects the deployed app from your terminal. With the opt-in console
+  function (`->console()`), `arco command` and `arco tinker` run on it and migrations can run on every deploy
+  before traffic moves; `->scheduler(N)` runs Laravel's scheduler on a UTC clock-aligned EventBridge rule.
 - **Custom domains** in one line: certificate, CloudFront and DNS records, with the DNS zone in the
   same AWS account, another account, or outside AWS.
 
@@ -105,6 +106,9 @@ The main options:
 | `auth('public'\|'iam')` | `public` | `iam` requires signed requests |
 | `runtime(fn ...)` | | FrankenPHP/Octane: `workers()`, `threads()`, `phpIni()`, `build()` |
 | `deployCommands([...])` | — | Commands run on every deploy before traffic moves, e.g. `['migrate --force']` |
+| `console(bool = true)` | off | Deploy the console function (`arco command`, `arco tinker`, deploy commands); `console(false)` deletes it |
+| `scheduler(int\|false)` | off | Run `schedule:run` every N minutes (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60), clock-aligned in UTC; needs the console |
+| `logRetention(int\|false)` | not managed | Days CloudWatch keeps the logs; `false` = never expire |
 | `consoleTimeout(int)` | 900 | Seconds a console command may run (3–900) |
 | `protected()` | `production` | Ask before `arco tinker` on this environment |
 
@@ -117,8 +121,11 @@ Every option, the packaging rules and the Laravel preset are in the
 |---|---|
 | `arco init` | Create `arco.php` (asks name, region, environments, custom domain) |
 | `arco deploy --env=<env>` | Build, upload, deploy commands, deploy, verify, attach domains; `--migrate` runs migrations first; `--package=<zip>` deploys a prebuilt zip |
-| `arco command "<args>" --env=<env>` | Run an artisan (or PHP) command on the console function; exits with its exit code (`--async` to start it and return) |
-| `arco tinker --env=<env>` | Tinker on your machine, statements run in Lambda (`--execute="<code>"` for one statement) |
+| `arco console:add --env=<env>` / `console:remove` | Turn the console function on or off in `arco.php` (off deletes it on the next deploy) |
+| `arco command "<args>" --env=<env>` | Run an artisan (or PHP) command on the console function (needs `console()`); exits with its exit code (`--async` to start it and return) |
+| `arco tinker --env=<env>` | Tinker on your machine, statements run in Lambda (needs `console()`; `--execute="<code>"` for one statement) |
+| `arco scheduler:set [N] --env=<env>` / `scheduler:remove` | Run Laravel's scheduler every N minutes (suggests N from your tasks; turns the console on) / turn it off |
+| `arco logs:retention <days\|never> --env=<env>` | Set how long CloudWatch keeps the logs (`--remove` stops managing it) |
 | `arco logs --env=<env>` | Web and console logs merged, filtered and colored (`--follow`, `--since`, `--level`, `--request`, `--filter`) |
 | `arco package --env=<env>` | Build the zip only (for CI: build once, deploy later) |
 | `arco info --env=<env>` | Resolved settings with their source, URL, active revision (`--json` too) |
@@ -139,9 +146,15 @@ Messages are in English or Spanish (`--lang=es` or `ARCO_LANG=es`).
 
 - 2 vCPU and 2 GB per instance, 512 MB unzipped package, 512 MB `/tmp`, arm64 only
 - Regions: us-east-1, us-east-2, us-west-2, ap-northeast-1, eu-west-1
-- The console function (commands, tinker) is a classic Lambda function: 250 MB unzipped package, no
-  FrankenPHP binary inside (it is downloaded once per new instance)
-- Arco deploys HTTP functions and a console function for commands; queues and the scheduler are on the roadmap
+- The console function (commands, tinker, scheduler) is opt-in and a classic Lambda function: 250 MB
+  unzipped package, with a static PHP CLI instead of the FrankenPHP binary
+- Arco deploys HTTP functions, an optional console function for commands and the scheduler; queues are on the roadmap
+
+## Upgrading to 0.4
+
+The console function is no longer deployed by default. If an environment already has one (apps deployed
+with 0.2 or 0.3) and `arco.php` has no `console()` setting, `arco deploy` stops before changing anything:
+add `->console()` to keep it, or `->console(false)` to delete it on the next deploy.
 
 ## Packages
 

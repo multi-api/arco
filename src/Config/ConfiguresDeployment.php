@@ -66,6 +66,18 @@ trait ConfiguresDeployment
     /** Time limit of the console function (arco command, deploy commands, tinker): 3 to 900 seconds. */
     public function consoleTimeout(int $seconds): static { $this->settings['consoleTimeout'] = $seconds; return $this; }
 
+    /** Whether the console function exists (arco command, deploy commands, tinker). Off unless set; scheduler() turns it on. */
+    public function console(bool $enabled = true): static { $this->settings['console'] = $enabled; return $this; }
+
+    /**
+     * Run `schedule:run` every N minutes (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30 or 60) from an
+     * EventBridge schedule; false turns it off. Needs the console function.
+     */
+    public function scheduler(int|false $every = 1): static { $this->settings['scheduler'] = $every; return $this; }
+
+    /** Days the function's CloudWatch logs are kept (a value CloudWatch accepts); false keeps them forever. */
+    public function logRetention(int|false $days): static { $this->settings['logRetention'] = $days; return $this; }
+
     /** Ask for confirmation before `arco tinker` (on by default for an environment named production). */
     public function protected(bool $protected = true): static { $this->settings['protected'] = $protected; return $this; }
 

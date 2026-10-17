@@ -5,6 +5,7 @@ namespace Multiapi\Arco\Commands;
 use Closure;
 use Multiapi\Arco\Aws\AwsClients;
 use Multiapi\Arco\Cli\ArcoCommand;
+use Multiapi\Arco\Cli\StepPrinter;
 use Multiapi\Arco\Cli\UserError;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
 use Multiapi\Arco\Deploy\AwsDeployer;
@@ -75,7 +76,14 @@ final class RemoveCommand extends ArcoCommand
             if ($dns !== null && $domainResources) {
                 $this->checkDnsCredentials($dns);
             }
-            $deployer->remove($config, fn (string $key, array $params = []) => $io->writeln('  • ' . $this->t($key, $params)));
+            $deployer->remove($config, function (string $key, array $params = []) use ($io): void {
+                // A leftover AWS cannot be checked (e.g. the scheduler rule): a warning block, not a bullet.
+                if (in_array($key, StepPrinter::WARNINGS, true)) {
+                    $io->warning($this->t($key, $params));
+                    return;
+                }
+                $io->writeln('  • ' . $this->t($key, $params));
+            });
             $io->success($this->t('remove.done', ['function' => $config->functionName()]));
             return self::SUCCESS;
         } catch (Throwable $e) {

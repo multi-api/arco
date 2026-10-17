@@ -16,6 +16,8 @@ final readonly class PreparedDeploy
         public ?string $previousConsoleVersion,
         /** S3 key of the console zip, kept by the prune */
         public ?string $consoleKey = null,
+        /** runtime binary the console version of this deploy downloads; never pruned by this deploy */
+        public ?string $binaryKey = null,
     ) {
     }
 }

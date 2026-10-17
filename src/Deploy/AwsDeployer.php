@@ -2,6 +2,7 @@
 
 namespace Multiapi\Arco\Deploy;
 
+use Closure;
 use Multiapi\Arco\Arco;
 use Multiapi\Arco\Aws\AwsClients;
 use Aws\Exception\AwsException;
@@ -10,6 +11,7 @@ use Multiapi\Arco\Deploy\Domains\Certificates;
 use Multiapi\Arco\Deploy\Domains\CustomDomains;
 use Multiapi\Arco\Deploy\Domains\DomainStack;
 use Multiapi\Arco\Deploy\Domains\Stacks;
+use Multiapi\Arco\Logs\LogGroups;
 use Multiapi\Arco\Package\ConsoleArtifacts;
 use Multiapi\Arco\Package\Package;
 use Multiapi\Arco\Secrets\SecretResolver;
@@ -100,7 +102,7 @@ final class AwsDeployer implements Deployer
             );
         }
 
-        return new PreparedDeploy($revisionId, $previous, $bucket, $key, $consoleVersion, $previousConsole, $consoleKey);
+        return new PreparedDeploy($revisionId, $previous, $bucket, $key, $consoleVersion, $previousConsole, $consoleKey, $console?->download?->key);
     }
 
     /**
@@ -165,6 +167,16 @@ final class AwsDeployer implements Deployer
         } catch (AwsException $e) {
             $step('deploy.prune_packages_failed', ['bucket' => $prepared->bucket, 'error' => self::awsError($e)]);
         }
+        try {
+            // Shared by every Arco app of the account and region: a binary goes only when no published
+            // version of any Arco function references it (each can be rolled back to). This deploy's own
+            // binary is kept outright: the tag listing may not show a function created seconds ago.
+            $aws = $this->aws;
+            (new RuntimeBinaries($aws->taggingApi(), $aws->lambda(), $aws->s3()))
+                ->prune($prepared->bucket, (new \DateTimeImmutable())->setTimestamp((int) $this->sleeper->now()), $prepared->binaryKey === null ? [] : [$prepared->binaryKey]);
+        } catch (\Exception $e) {
+            $step('deploy.prune_runtime_failed', ['bucket' => $prepared->bucket, 'error' => $e instanceof AwsException ? self::awsError($e) : $e->getMessage()]);
+        }
     }
 
     private static function awsError(AwsException $e): string
@@ -212,6 +224,11 @@ final class AwsDeployer implements Deployer
         if ($config->domains !== [] || $this->stackExists($config)) {
             $this->customDomains($config)->remove($config, $step);
         }
+        // The rule goes first: it would otherwise keep invoking a function that no longer exists.
+        if ($this->schedulerRuleExists($config, fn (string $error) => $step('remove.scheduler_unreadable', ['rule' => SchedulerRule::name($config), 'error' => $error]))) {
+            $step('remove.step_scheduler', ['rule' => SchedulerRule::name($config)]);
+            $this->schedulerRule()->delete($config);
+        }
         $step('remove.step_console', ['function' => $config->consoleFunctionName()]);
         $this->consoleFunction()->delete($config->consoleFunctionName());
         $step('remove.step_function', ['function' => $config->functionName()]);
@@ -219,6 +236,69 @@ final class AwsDeployer implements Deployer
         if ($config->role === null) {
             (new ExecutionRole($this->aws->iam()))->delete(ExecutionRole::roleName($config));
         }
+    }
+
+    public function consoleExists(AppConfig $config): bool
+    {
+        return $this->consoleFunction()->get($config->consoleFunctionName()) !== null;
+    }
+
+    public function removeConsole(AppConfig $config, Closure $onStep): void
+    {
+        // The scheduler rule goes before the function it invokes.
+        $unreadable = fn (string $error) => $onStep('deploy.scheduler_unreadable', ['rule' => SchedulerRule::name($config), 'function' => $config->consoleFunctionName(), 'error' => $error]);
+        if ($this->schedulerRuleExists($config, $unreadable)) {
+            $this->schedulerRule()->delete($config);
+            $onStep('deploy.scheduler_removed', []);
+        }
+        $this->consoleFunction()->delete($config->consoleFunctionName());
+        $onStep('deploy.console_removed', ['function' => $config->consoleFunctionName()]);
+    }
+
+    public function syncScheduler(AppConfig $config, Closure $onStep): void
+    {
+        if ($config->scheduler === null) {
+            // Without EventBridge read access, only a rule this console's alias still lets in is worth a warning.
+            $unreadable = function (string $error) use ($config, $onStep): void {
+                if ($this->schedulerRule()->hasInvokePermission($config)) {
+                    $onStep('deploy.scheduler_unreadable', ['rule' => SchedulerRule::name($config), 'function' => $config->consoleFunctionName(), 'error' => $error]);
+                }
+            };
+            if ($this->schedulerRuleExists($config, $unreadable)) {
+                $this->schedulerRule()->delete($config);
+                $onStep('deploy.scheduler_removed', []);
+            }
+            return;
+        }
+        $function = $config->consoleFunctionName();
+        $alias = $this->consoleFunction()->aliasArn($function) ?? throw DeployException::make('deploy.console_missing', ['function' => $function]);
+        $this->schedulerRule()->put($config, $alias, self::tags($config));
+        $onStep('deploy.scheduler_set', ['every' => $config->scheduler]);
+    }
+
+    public function applyLogRetention(AppConfig $config, Closure $onStep): void
+    {
+        if ($config->logRetention === null) {
+            return;
+        }
+        $scope = $config->consoleEnabled() ? 'all' : 'web';
+        (new LogRetention($this->aws->logs()))->apply(LogGroups::for($config, $scope), $config->logRetention);
+        // {groups} is a code (web, all) the step printer translates: only the groups touched are named.
+        $onStep(...self::logRetentionStep($config->logRetention, $scope));
+    }
+
+    /**
+     * The step reporting an applied retention: its key (days, one day or never) and params.
+     *
+     * @return array{0: string, 1: array<string, string|int>}
+     */
+    public static function logRetentionStep(int|false $days, string $scope): array
+    {
+        return match (true) {
+            $days === false => ['deploy.log_retention_never', ['groups' => $scope]],
+            $days === 1 => ['deploy.log_retention_one_day', ['groups' => $scope]],
+            default => ['deploy.log_retention', ['days' => $days, 'groups' => $scope]],
+        };
     }
 
     public function describe(AppConfig $config): ?AppStatus
@@ -232,7 +312,10 @@ final class AwsDeployer implements Deployer
         $consoleVersion = null;
         $consoleVersionError = null;
         try {
-            $consoleVersion = $this->consoleFunction()->liveVersion($config->consoleFunctionName());
+            // No lookup while the console is off: the function is not expected to exist.
+            if ($config->consoleEnabled()) {
+                $consoleVersion = $this->consoleFunction()->liveVersion($config->consoleFunctionName());
+            }
         } catch (AwsException $e) {
             // Shown as unknown (e.g. without lambda:GetAlias), never as "not deployed yet".
             $consoleVersionError = $e->getAwsErrorCode() ?? 'UnknownError';
@@ -252,7 +335,7 @@ final class AwsDeployer implements Deployer
             $endpoint === null ? null : WebFunctions::activeRevision($endpoint),
             $distribution['domain'] ?? null,
             $distribution['status'] ?? null,
-            $config->consoleFunctionName(),
+            $config->consoleEnabled() ? $config->consoleFunctionName() : null,
             $consoleVersion,
             $consoleVersionError,
         );
@@ -281,6 +364,30 @@ final class AwsDeployer implements Deployer
     private function consoleFunction(): ConsoleFunction
     {
         return new ConsoleFunction($this->aws->lambda(), $this->sleeper);
+    }
+
+    private function schedulerRule(): SchedulerRule
+    {
+        return new SchedulerRule($this->aws->eventBridge(), $this->aws->lambda());
+    }
+
+    /**
+     * Whether the scheduler rule exists. When EventBridge refuses the lookup, $onDenied gets the AWS
+     * message (the caller warns: the rule may still be there) and the answer is "no rule".
+     *
+     * @param Closure(string): void $onDenied
+     */
+    private function schedulerRuleExists(AppConfig $config, Closure $onDenied): bool
+    {
+        try {
+            return $this->schedulerRule()->exists($config);
+        } catch (AwsException $e) {
+            if (! in_array($e->getAwsErrorCode(), ['AccessDenied', 'AccessDeniedException'], true)) {
+                throw $e;
+            }
+            $onDenied(self::awsError($e));
+            return false;
+        }
     }
 
     private function customDomains(AppConfig $config): CustomDomains

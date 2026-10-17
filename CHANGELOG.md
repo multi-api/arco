@@ -3,6 +3,38 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.4.0
+
+- **Changed (breaking):** the console function is opt-in. A deploy now creates only the web function; the
+  console function (`<app>-<env>-console`) exists only when `arco.php` says `->console()` (or a scheduler
+  needs it). `arco command`, `arco tinker`, `deployCommands()` and `arco deploy --migrate` need it and fail
+  before touching AWS when it is off, naming `arco console:add`.
+- **Changed (breaking):** upgrade guard. If an environment already has a console function and `arco.php`
+  has no `console()` setting, `arco deploy` stops before changing anything. Add `->console()` to keep the
+  console function, or `->console(false)` to delete it on the next deploy (`arco console:add` and
+  `arco console:remove` write those lines). Apps deployed with Arco 0.2 or 0.3 need one of them.
+- **Added:** `console()` setting and `arco console:add` / `arco console:remove`. With `console(false)` the
+  deploy deletes an existing console function (a failed delete is a warning).
+- **Added:** clock-aligned Laravel scheduler: `->scheduler(N)` / `arco scheduler:set [N]` /
+  `arco scheduler:remove`. An EventBridge rule runs `schedule:run` on the console function's `live` alias
+  at minutes aligned to the UTC clock (`cron(0/N * * * ? *)`), for N of 1, 2, 3, 4, 5, 6, 10, 12, 15, 20,
+  30 or 60. It needs the console and turns it on. `scheduler:set` without N suggests an interval from the
+  app's tasks (read with `php artisan arco:schedule-intervals`, run with `ARCO=1`, so the app's own
+  `env('ARCO')` branches see it). The deploy warns when a task needs a shorter interval, creates the rule
+  only after the console was activated successfully, and warns when EventBridge cannot be read.
+- **Added:** log retention: `->logRetention(days|false)` / `arco logs:retention <days|never>` /
+  `--remove`. Applied to the web and console log groups on deploy; not set means Arco does not manage it.
+- **Added:** `arco info` shows `console`, `scheduler` and `logRetention`; with the console off, the `console`
+  block of `--json` is `{"enabled": false, "function": "<name>"}` with no remote lookup, and with it on it
+  gains `"enabled": true`. In `--json`, `settings.console` is `true`/`false`/`null`, `settings.scheduler` the
+  minutes or `null` and `settings.logRetention` the days, `false` (never expire) or `null` (not managed).
+- **Added:** a deploy removes runtime binaries (`runtime/*` in the code bucket) older than 24 hours that no
+  published version of any Arco function in the region references, best effort (a warning when it cannot).
+- **Added:** deploy-profile permissions for the above (see Minimal IAM permissions in the getting-started
+  guide): `events:*` on `rule/arco-*-scheduler`, `lambda:AddPermission`, `lambda:RemovePermission`,
+  `lambda:GetPolicy`, `logs:CreateLogGroup`, `logs:PutRetentionPolicy`, `logs:DeleteRetentionPolicy`,
+  `tag:GetResources`, and `s3:ListBucket` / `s3:DeleteObject` for the clean-up.
+
 ## 0.3.0
 
 - **Changed:** the console function carries a static PHP CLI (`bin/php`) with the same PHP version and

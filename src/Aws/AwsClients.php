@@ -5,6 +5,7 @@ namespace Multiapi\Arco\Aws;
 use Aws\Acm\AcmClient;
 use Aws\CloudFormation\CloudFormationClient;
 use Aws\CloudWatchLogs\CloudWatchLogsClient;
+use Aws\EventBridge\EventBridgeClient;
 use Aws\Credentials\CredentialProvider;
 use Aws\Credentials\Credentials;
 use Aws\Credentials\CredentialSources;
@@ -13,6 +14,7 @@ use GuzzleHttp\Promise\Create;
 use Aws\Iam\IamClient;
 use Aws\Lambda\LambdaClient;
 use Aws\LambdaWeb\LambdaWebClient;
+use Aws\ResourceGroupsTaggingAPI\ResourceGroupsTaggingAPIClient;
 use Aws\Route53\Route53Client;
 use Aws\S3\S3Client;
 use Aws\Sdk;
@@ -203,10 +205,12 @@ final class AwsClients
     public function secretsManager(): SecretsManagerClient { return $this->sdk->createSecretsManager(); }
     /** @param array<string, mixed> $overrides extra client config (Live Tail passes an http_handler) */
     public function logs(array $overrides = []): CloudWatchLogsClient { return $this->sdk->createCloudWatchLogs($overrides); }
+    public function eventBridge(): EventBridgeClient { return $this->sdk->createEventBridge(); }
     /** CloudFront only uses certificates from us-east-1, whatever the app region. */
     public function acm(): AcmClient { return $this->sdk->createAcm(['region' => 'us-east-1']); }
     public function cloudFormation(): CloudFormationClient { return $this->sdk->createCloudFormation(); }
     public function route53(): Route53Client { return $this->sdk->createRoute53(); }
+    public function taggingApi(): ResourceGroupsTaggingAPIClient { return $this->sdk->createResourceGroupsTaggingAPI(); }
 
     /**
      * The account of these credentials, read once per process. IAM Identity Center (SSO) and AssumeRole

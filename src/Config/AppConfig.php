@@ -42,6 +42,12 @@ final readonly class AppConfig
         public int $consoleTimeout = 900,
         /** null: protected when the environment is named production */
         public ?bool $protected = null,
+        /** null: never set (the console function is off unless a scheduler needs it) */
+        public ?bool $console = null,
+        /** minutes between `schedule:run` invocations; null: no scheduler */
+        public ?int $scheduler = null,
+        /** days to keep logs; false: never expire; null: Arco does not manage retention */
+        public int|false|null $logRetention = null,
     ) {
     }
 
@@ -53,6 +59,12 @@ final readonly class AppConfig
     public function consoleFunctionName(): string
     {
         return $this->functionName() . '-console';
+    }
+
+    /** Whether the console function is deployed: asked for, or needed by the scheduler. */
+    public function consoleEnabled(): bool
+    {
+        return $this->console === true || $this->scheduler !== null;
     }
 
     /** Whether `arco tinker` asks for confirmation first. */

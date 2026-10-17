@@ -19,6 +19,9 @@ final class ConfigResolver
         'certificate' => null,
         'consoleTimeout' => 900,
         'protected' => null,
+        'console' => null,
+        'scheduler' => null,
+        'logRetention' => null,
     ];
 
     private const RUNTIME_DEFAULTS = [
@@ -126,6 +129,9 @@ final class ConfigResolver
         $sources['deployCommands'] = $envCommands !== null ? 'environment' : ($appCommands !== null ? 'app' : 'default');
         $protected = $setting('protected');
         $consoleTimeout = (int) $setting('consoleTimeout');
+        $console = $setting('console');
+        $scheduler = $setting('scheduler');
+        $logRetention = $setting('logRetention');
 
         $config = new AppConfig(
             app: self::nullableString($raw['name'] ?? null) ?? '',
@@ -154,6 +160,9 @@ final class ConfigResolver
             deployCommands: $envCommands ?? $appCommands ?? [],
             consoleTimeout: $consoleTimeout,
             protected: is_bool($protected) ? $protected : null,
+            console: is_bool($console) ? $console : null,
+            scheduler: $scheduler === false ? null : self::nullableInt($scheduler),
+            logRetention: $logRetention === false ? false : self::nullableInt($logRetention),
         );
 
         return $config;

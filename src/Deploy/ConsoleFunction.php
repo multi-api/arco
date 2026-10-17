@@ -142,6 +142,20 @@ final class ConsoleFunction
         return is_string($version) ? $version : null;
     }
 
+    /** The live alias's ARN, or null when the function or the alias does not exist. */
+    public function aliasArn(string $name): ?string
+    {
+        try {
+            $arn = $this->lambda->getAlias(['FunctionName' => $name, 'Name' => self::ALIAS])['AliasArn'] ?? null;
+        } catch (LambdaException $e) {
+            if ($e->getAwsErrorCode() === 'ResourceNotFoundException') {
+                return null;
+            }
+            throw $e;
+        }
+        return is_string($arn) && $arn !== '' ? $arn : null;
+    }
+
     /**
      * Points the live alias at $version and turns off Lambda's retries of asynchronous invocations
      * (`arco command --async`), so a command never runs twice.

@@ -20,6 +20,7 @@ use Multiapi\Arco\Deploy\AwsVerifier;
 use Multiapi\Arco\Deploy\CommandPlan;
 use Multiapi\Arco\Deploy\DeployCommandFailed;
 use Multiapi\Arco\Deploy\DeployCommands;
+use Multiapi\Arco\Deploy\DeployException;
 use Multiapi\Arco\Deploy\Deployer;
 use Multiapi\Arco\Deploy\DeployPipeline;
 use Multiapi\Arco\Deploy\Sleeper;
@@ -97,6 +98,10 @@ final class DeployCommand extends ArcoCommand
                 throw new UserError($this->t('deploy.migrate_laravel_only'));
             }
             $commands = DeployCommands::resolve($config->deployCommands, $migrate, $skipCommands);
+            // Before any AWS call: deploy commands run on the console function (the pipeline checks it too).
+            if ($commands !== [] && ! $config->consoleEnabled()) {
+                throw DeployException::make('deploy.commands_need_console', ['environment' => $config->environment]);
+            }
 
             // A prebuilt package is checked before any AWS call, so a wrong file fails fast.
             $package = null;

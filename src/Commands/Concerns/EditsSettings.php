@@ -91,13 +91,30 @@ trait EditsSettings
         return is_array($settings) ? $settings[$method] ?? null : null;
     }
 
+    /**
+     * Whether an environment the change applies to leaves the console setting unset. The scheduler commands
+     * then write `->console()` too, so turning the scheduler off later keeps the console (spec §5) and the
+     * deploy never meets an existing console with no setting.
+     *
+     * @param array<string, mixed> $raw
+     */
+    private static function consoleUnset(array $raw, ?string $environment): bool
+    {
+        foreach ($environment === null ? ConfigResolver::environments($raw) : [$environment] as $env) {
+            if (ConfigResolver::resolve($raw, $env)->console === null) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private function where(?string $environment): string
     {
         return $environment === null ? $this->t('settings.where_app') : $this->t('settings.where_environment', ['environment' => $environment]);
     }
 
     /** Writes the call (or removes it when $value is null), or explains the line to change by hand. */
-    private function writeSetting(?string $environment, string $method, int|string|null $value): void
+    private function writeSetting(?string $environment, string $method, int|string|bool|null $value): void
     {
         $byHand = $this->t('settings.edit_by_hand', ['where' => $this->where($environment)]) . "\n    "
             . ($value === null ? $this->t('settings.remove_call', ['method' => $method]) : ArcoFileEditor::settingLine($method, $value));
@@ -123,6 +140,12 @@ trait EditsSettings
             fn (string $env) => "`arco deploy --env=$env`",
             ConfigResolver::environments($raw),
         ))]));
+    }
+
+    /** The environment name, or the app level's label ("app"): how the change lines name where they apply. */
+    private function levelLabel(?string $environment): string
+    {
+        return $environment ?? $this->t('settings.level_app');
     }
 
     private function arcoPhp(): string

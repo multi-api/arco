@@ -51,6 +51,9 @@ final class ConsoleCommand extends ArcoCommand
         try {
             // Everything except the command's own output goes to stderr, so scripts can use stdout.
             $config = $this->loadTarget($input, $errors);
+            if (! $config->consoleEnabled()) {
+                throw new UserError($this->t('console.disabled', ['environment' => $config->environment]));
+            }
             $argument = $input->getArgument('args');
             $command = is_string($argument) ? $argument : '';
             if (trim($command) === '') {

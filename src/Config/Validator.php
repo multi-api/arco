@@ -28,6 +28,10 @@ final class Validator
     private const HOSTNAME = '/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/';
     private const CERTIFICATE = '/^arn:aws[a-z-]*:acm:us-east-1:\d{12}:certificate\/[A-Za-z0-9-]+$/';
     public const MAX_DOMAINS = 10;
+    /** Minutes between schedule:run invocations: the divisors of an hour that an EventBridge rate or cron expresses. */
+    public const SCHEDULER_INTERVALS = SchedulerInterval::ALLOWED;
+    /** Retention periods (days) CloudWatch Logs accepts. */
+    public const LOG_RETENTION_DAYS = [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653];
     /**
      * Artisan commands that write into the code directory (bootstrap/cache, public/storage), which is
      * read-only on Lambda (/var/task): they throw. view:cache works (views compile under /tmp).
@@ -79,6 +83,11 @@ final class Validator
             $result->error('validation.auth', ['value' => $config->auth]);
         }
         self::addSettingError($result, 'logLevel', $config->logLevel);
+        self::addSettingError($result, 'scheduler', $config->scheduler);
+        self::addSettingError($result, 'logRetention', $config->logRetention === false ? null : $config->logRetention);
+        if ($config->scheduler !== null && $config->console === false) {
+            $result->error('validation.scheduler_needs_console');
+        }
         if ($config->account !== null && ! preg_match('/^\d{12}$/', $config->account)) {
             $result->error('validation.account', ['value' => $config->account]);
         }
@@ -198,6 +207,8 @@ final class Validator
             'rateLimit' => ['validation.rate_limit', is_int($value) && $value >= 100 && $value <= 10000
                 && $value % ($value <= 1000 ? 100 : 1000) === 0],
             'consoleTimeout' => ['validation.console_timeout', is_int($value) && $value >= 3 && $value <= 900],
+            'scheduler' => ['validation.scheduler_interval', is_int($value) && in_array($value, self::SCHEDULER_INTERVALS, true)],
+            'logRetention' => ['validation.log_retention', is_int($value) && in_array($value, self::LOG_RETENTION_DAYS, true)],
             'logLevel' => ['validation.log_level', in_array($value, self::LOG_LEVELS, true)],
             default => throw new \InvalidArgumentException("Unknown setting $setting."),
         };

@@ -108,7 +108,9 @@ final class CodeBucket
     /**
      * Uploads a runtime binary (runtime/<build>/frankenphp) unless an object of the same size is
      * already there: builds are immutable, so the size check only guards against a broken upload.
-     * No version id is returned: the key is immutable and the console checks the bytes against
+     * A binary already there is copied onto itself so its LastModified restarts the 24 h grace period of
+     * RuntimeBinaries::prune(): another app's deploy may prune before this deploy publishes the version
+     * that references it. No version id is returned: the key is immutable and the console checks the bytes against
      * their SHA-256, so the bootstrap never pins an S3 version (noncurrent versions expire).
      */
     public function uploadBinary(string $bucket, string $key, string $path, int $bytes): void
@@ -116,6 +118,20 @@ final class CodeBucket
         try {
             $head = $this->s3->headObject(['Bucket' => $bucket, 'Key' => $key]);
             if (is_numeric($head['ContentLength'] ?? null) && (int) $head['ContentLength'] === $bytes) {
+                $copy = ['Bucket' => $bucket, 'Key' => $key, 'CopySource' => $bucket . '/' . str_replace('%2F', '/', rawurlencode($key)), 'MetadataDirective' => 'REPLACE'];
+                if (is_string($head['ContentType'] ?? null) && $head['ContentType'] !== '') {
+                    $copy['ContentType'] = $head['ContentType'];
+                }
+                $metadata = [];
+                foreach (is_array($head['Metadata'] ?? null) ? $head['Metadata'] : [] as $name => $value) {
+                    if (is_string($value)) {
+                        $metadata[(string) $name] = $value;
+                    }
+                }
+                if ($metadata !== []) {
+                    $copy['Metadata'] = $metadata;
+                }
+                $this->s3->copyObject($copy);
                 return;
             }
         } catch (S3Exception $e) {
