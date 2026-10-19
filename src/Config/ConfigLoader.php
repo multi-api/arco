@@ -49,6 +49,23 @@ final class ConfigLoader
 
     private static function autoloadPath(): string
     {
+        return self::autoloadPathFor(ClassLoader::getRegisteredLoaders());
+    }
+
+    /**
+     * The autoload.php of the vendor dir whose loader knows Arco's classes. Reflecting on ClassLoader is not
+     * enough: Laravel Herd's PHP prepends its own phar-bundled ClassLoader, which cannot find Arco.
+     *
+     * @param array<string, ClassLoader> $loaders vendor dir => loader
+     */
+    public static function autoloadPathFor(array $loaders): string
+    {
+        foreach ($loaders as $vendorDir => $loader) {
+            if ($loader->findFile(App::class) !== false) {
+                return $vendorDir . '/autoload.php';
+            }
+        }
+
         $file = (new ReflectionClass(ClassLoader::class))->getFileName();
         // vendor/composer/ClassLoader.php -> vendor/autoload.php
         return dirname((string) $file, 2) . '/autoload.php';

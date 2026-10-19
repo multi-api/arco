@@ -113,7 +113,13 @@ final readonly class AppConfig
 
     public function workerFunctionName(string $queue): string
     {
-        return $this->functionName() . '-queue-' . $queue;
+        return self::queueWorkerName($this->app, $this->environment, $queue);
+    }
+
+    /** The name of a queue's worker function: <app>-<environment>-queue-<queue>. */
+    public static function queueWorkerName(string $app, string $environment, string $queue): string
+    {
+        return $app . '-' . $environment . '-queue-' . $queue;
     }
 
     public function defaultQueue(): ?QueueConfig

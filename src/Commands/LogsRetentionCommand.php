@@ -41,7 +41,7 @@ final class LogsRetentionCommand extends ArcoCommand
             }
             $value = null;
             if (! $remove) {
-                $value = $given === 'never' ? false : (preg_match('/^-?\d{1,9}$/', $given) === 1 ? (int) $given : $given);
+                $value = $given === 'never' ? false : self::intOrText($given);
                 if ($value !== false) {
                     $error = Validator::settingError('logRetention', $value);
                     if ($error !== null) {

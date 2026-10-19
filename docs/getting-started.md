@@ -35,6 +35,47 @@ replaces static credentials).
 
 Supported regions: us-east-1, us-east-2, us-west-2, ap-northeast-1, eu-west-1.
 
+### What `init` detects and asks
+
+For Laravel apps `init` also reads the project (static scan of `app/`, `routes/`, `bootstrap/app.php`, `config/cache.php`,
+`composer.json` and `.env`, and the schedule from `php artisan arco:schedule-intervals`, which has a 60 second
+timeout; when artisan cannot boot, the schedule
+is read from the code) and asks, in this order:
+
+1. Console function (default yes): `arco command`, tinker, deploy commands and the scheduler.
+2. `migrate --force` on every deploy, only with the console and a server database (not SQLite).
+3. Scheduler, only when the app has a schedule, or when a schedule was found but its times could not be read
+   (then it suggests every minute): suggests the interval its tasks need.
+4. SQS queues with their worker functions, from the queues the code uses.
+5. Failed-jobs table (DynamoDB), only with queues; the default is yes when the app has no SQL database.
+6. S3 storage, when the app uses S3 (name defaults to `files`).
+7. DynamoDB cache table, when the app uses the DynamoDB cache.
+8. CloudWatch log retention (default 30 days, or never delete).
+
+Other frameworks are asked only the console and log retention questions. Whatever you answer, the written
+`arco.php` is validated for every environment first, and nothing is written when it would not validate.
+Declining the console skips the migrate and scheduler questions.
+
+Each question has a flag: `--console` / `--no-console`, `--migrate` / `--no-migrate`, `--scheduler=<minutes>`,
+`--log-retention=<days>`, `--queue=<name>` (repeatable), `--failed-jobs-table`, `--storage=<name>` and
+`--cache`. `--scheduler` and `--migrate` turn the console on; combined with `--no-console` they are an error.
+With `--no-interaction` (or no terminal) `init` writes only what the flags say, then prints
+`Not added (no terminal to ask). Add each one with:` and one `vendor/bin/arco ...` line (`console:add`,
+`scheduler:set`, `logs:retention`, `queue:add`, `storage:add`, `cache:add`) for each detected piece it left out.
+
+### Packages the features need
+
+After writing `arco.php`, `init` reads `composer.lock` and, when the chosen features need a package the lock
+does not list under `packages` (`packages-dev` is not deployed), prints one line to run, for example:
+
+```
+Install the Composer packages these features need before deploying:
+  composer require league/flysystem-aws-s3-v3:^3.0 aws/aws-sdk-php multiapi/arco-laravel:^0.6
+```
+
+Versions are not compared here; `arco deploy` checks them in the built package. Without a `composer.lock`
+nothing is checked.
+
 ### Custom domains in `init`
 
 For every environment `init` asks whether to use a custom domain (default: no), then for the
@@ -433,6 +474,11 @@ in both the history and Live Tail is printed once. Live Tail follows at most 10 
 uses two, the console one, each queue worker one): with more, `--follow` polls and says so; narrow it with
 `--source`, `--console` or `--queue`. Ctrl+C ends `--follow` cleanly; a second Ctrl+C exits at once.
 
+## Try it locally
+
+With `AWS_ENDPOINT_URL` set, Arco deploys to a local AWS emulator instead of AWS. See
+[Try your app locally with Floci](local-floci.md).
+
 ## Using Arco in CI
 
 Provide AWS credentials through the environment (for example with
@@ -445,19 +491,17 @@ vendor/bin/arco remove --env=production --force --no-interaction
 ```
 
 `--yes` confirms creating a new environment; `--force` skips the typed confirmation of `remove`.
-Arco's own end-to-end check, `.github/workflows/e2e.yml`, deploys `examples/laravel` to a real
-account this way. It authenticates with GitHub OIDC and the role in the repository secret
-`ARCO_E2E_ROLE_ARN`.
+Arco's own real-AWS end-to-end run deploys `examples/laravel` to a dedicated test account this way.
 
 ### Minimal IAM permissions
 
-The role used by the E2E workflow lives in a dedicated test account and needs:
+A deploy role (like the one of Arco's own end-to-end run, in a dedicated test account) needs:
 
 - `lambda:*WebFunction*`
 - `iam:GetRole`, `iam:CreateRole`, `iam:PutRolePolicy`, `iam:DeleteRolePolicy`, `iam:DeleteRole`,
   `iam:PassRole` on `arn:aws:iam::*:role/arco-*`
 - `s3:*` on `arn:aws:s3:::arco-*` (and its objects)
-- `ssm:PutParameter`, `ssm:GetParameters` on `parameter/arco-example/*`
+- `ssm:PutParameter`, `ssm:GetParameters` on your app's parameters (`parameter/<app>/*`)
 - `logs:FilterLogEvents`, `logs:GetLogEvents`
 - `sts:GetCallerIdentity`
 - for the console function (`arn:aws:lambda:*:*:function:*-console` and `...:*-console:*`):

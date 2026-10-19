@@ -48,7 +48,7 @@ final class PolicyBuilder
             $statements[] = [
                 'Sid' => 'ArcoStorage',
                 'Effect' => 'Allow',
-                'Action' => ['s3:GetObject', 's3:PutObject', 's3:DeleteObject', 's3:GetObjectAcl', 's3:PutObjectAcl'],
+                'Action' => ['s3:GetObject', 's3:PutObject', 's3:DeleteObject', 's3:GetObjectAcl', 's3:PutObjectAcl', 's3:AbortMultipartUpload'],
                 'Resource' => array_map(fn (string $arn) => "$arn/*", $bucketArns),
             ];
             $statements[] = [
@@ -62,7 +62,7 @@ final class PolicyBuilder
             $statements[] = [
                 'Sid' => 'ArcoTables',
                 'Effect' => 'Allow',
-                'Action' => ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:DeleteItem', 'dynamodb:Query', 'dynamodb:Scan', 'dynamodb:BatchGetItem', 'dynamodb:BatchWriteItem', 'dynamodb:DescribeTable'],
+                'Action' => ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:DeleteItem', 'dynamodb:Query', 'dynamodb:BatchGetItem', 'dynamodb:BatchWriteItem', 'dynamodb:DescribeTable'],
                 'Resource' => $tableArns,
             ];
         }

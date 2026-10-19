@@ -25,6 +25,12 @@ abstract class ArcoCommand extends Command
             : $this->t('storage.expire_rule', ['prefix' => $prefix, 'days' => $days]);
     }
 
+    /** A plain integer argument as an int; anything else stays text, for the validator to reject. */
+    protected static function intOrText(string $value): int|string
+    {
+        return preg_match('/^-?\d{1,9}$/', $value) === 1 ? (int) $value : $value;
+    }
+
     protected function projectDir(): string
     {
         $cwd = getcwd();

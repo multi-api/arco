@@ -2,6 +2,8 @@
 
 namespace Multiapi\Arco\Config;
 
+use Multiapi\Arco\Aws\Endpoint;
+
 /** One S3 bucket Arco manages (or references, when `existing` is set). */
 final readonly class StorageConfig
 {
@@ -31,7 +33,13 @@ final readonly class StorageConfig
 
     public function bucketName(AppConfig $config): string
     {
-        return $this->existing ?? $config->app . '-' . $config->environment . '-' . $this->name . '-' . ($config->account ?? '');
+        return $this->existing ?? self::managedBucketName($config->app, $config->environment, $this->name, $config->account ?? '');
+    }
+
+    /** The name of the bucket Arco creates for a storage: <app>-<environment>-<storage>-<account>. */
+    public static function managedBucketName(string $app, string $environment, string $storage, string $account): string
+    {
+        return $app . '-' . $environment . '-' . $storage . '-' . $account;
     }
 
     public function arn(AppConfig $config): string
@@ -41,6 +49,6 @@ final readonly class StorageConfig
 
     public function url(AppConfig $config): string
     {
-        return 'https://' . $this->bucketName($config) . '.s3.' . ($config->region ?? '') . '.amazonaws.com';
+        return Endpoint::bucketUrl($this->bucketName($config), $config->region ?? '');
     }
 }

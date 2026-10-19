@@ -149,7 +149,7 @@ final class CodeBucket
             throw DeployException::make('deploy.read_package_failed', ['path' => $path]);
         }
         try {
-            $result = (new ObjectUploader($this->s3, $bucket, $key, $body, 'private'))->upload();
+            $result = (new ObjectUploader($this->s3, $bucket, $key, $body, 'bucket-owner-full-control'))->upload();
         } finally {
             if (is_resource($body)) {
                 fclose($body);

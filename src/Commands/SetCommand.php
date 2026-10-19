@@ -83,6 +83,6 @@ final class SetCommand extends ArcoCommand
         if (in_array($method, self::STRING_KEYS, true)) {
             return $value;
         }
-        return preg_match('/^-?\d{1,9}$/', $value) === 1 ? (int) $value : $value;
+        return self::intOrText($value);
     }
 }

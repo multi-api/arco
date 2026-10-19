@@ -14,11 +14,13 @@ use Multiapi\Arco\Secrets\SecretReference;
 
 final class Validator
 {
-    private const NAME = '/^[a-z][a-z0-9-]*$/';
+    public const NAME = '/^[a-z][a-z0-9-]*$/';
     private const VARIABLE = '/^[A-Za-z_][A-Za-z0-9_]*$/';
     private const SECRET_LIKE = '/(_KEY|_SECRET|_PASSWORD|_TOKEN)$/';
     /** Disks Laravel's stock config/filesystems.php defines: a storage cannot take their names. */
     private const LARAVEL_DISKS = ['s3', 'public', 'local'];
+    /** Stands for the account's 12 digits in bucket names checked before the credentials resolve it. */
+    private const ACCOUNT_PLACEHOLDER = '123456789012';
     private const LOG_LEVELS = ['trace', 'debug', 'info', 'warn', 'error', 'fatal'];
     /** Environment variables Lambda sets itself and refuses in function configuration. */
     private const RESERVED = [
@@ -278,12 +280,10 @@ final class Validator
                 $result->error('validation.queue_name', ['name' => $name]);
                 continue;
             }
-            $longest = max(strlen($queue->physicalName($config)), strlen($queue->dlqName($config) ?? ''));
-            if ($queue->existing === null && $longest > 80) {
-                $result->error('validation.queue_name_length', ['queue' => $name, 'name' => $queue->dlqName($config) ?? $queue->physicalName($config)]);
-            }
-            if (strlen($config->workerFunctionName($name)) > 64) {
-                $result->error('validation.worker_name_length', ['name' => $config->workerFunctionName($name)]);
+            // The dead-letter queue's name, when there is one, is the longer of the two.
+            $sqsName = $queue->existing === null ? $queue->dlqName($config) ?? $queue->physicalName($config) : null;
+            foreach (self::queueLengthErrors($name, $sqsName, $config->workerFunctionName($name)) as $error) {
+                $result->error($error['key'], $error['params']);
             }
             if ($queue->timeout < self::MIN_QUEUE_TIMEOUT || $queue->timeout > 900) {
                 $result->error('validation.queue_timeout', ['queue' => $name, 'value' => $queue->timeout]);
@@ -332,26 +332,86 @@ final class Validator
         }
     }
 
+    /**
+     * Why a queue Arco would create with the default options cannot be named so in this app and
+     * environment (name rule, SQS and worker function name lengths); empty when it can.
+     *
+     * @return list<array{key: string, params: array<string, string>}>
+     */
+    public static function newQueueErrors(string $app, string $environment, string $name): array
+    {
+        if (preg_match(self::NAME, $name) !== 1) {
+            return [['key' => 'validation.queue_name', 'params' => ['name' => $name]]];
+        }
+        return self::queueLengthErrors($name, QueueConfig::managedName($app, $environment, $name, dlq: true), AppConfig::queueWorkerName($app, $environment, $name));
+    }
+
+    /**
+     * @param ?string $sqsName the longest SQS name Arco creates for the queue; null for an existing queue
+     * @return list<array{key: string, params: array<string, string>}>
+     */
+    private static function queueLengthErrors(string $queue, ?string $sqsName, string $worker): array
+    {
+        $errors = [];
+        if ($sqsName !== null && strlen($sqsName) > 80) {
+            $errors[] = ['key' => 'validation.queue_name_length', 'params' => ['queue' => $queue, 'name' => $sqsName]];
+        }
+        if (strlen($worker) > 64) {
+            $errors[] = ['key' => 'validation.worker_name_length', 'params' => ['name' => $worker]];
+        }
+        return $errors;
+    }
+
+    /**
+     * Why a storage cannot take this name: the name rule, or one of Laravel's own disks.
+     *
+     * @return array{key: string, params: array<string, string>}|null
+     */
+    public static function storageNameError(string $name): ?array
+    {
+        if (preg_match(self::NAME, $name) !== 1) {
+            return ['key' => 'validation.storage_name', 'params' => ['name' => $name]];
+        }
+        if (in_array($name, self::LARAVEL_DISKS, true)) {
+            // Laravel's own disks: arco-laravel never replaces an app-defined disk, so `public` would stay
+            // the local disk under /tmp on Lambda (lost on every new instance) and `s3` the default bucket.
+            return ['key' => 'validation.storage_reserved', 'params' => ['name' => $name]];
+        }
+        return null;
+    }
+
+    /**
+     * Why a storage Arco would create cannot be named so in this app and environment (name rule, bucket name length).
+     *
+     * @return array{key: string, params: array<string, string>}|null
+     */
+    public static function newStorageError(string $app, string $environment, string $name): ?array
+    {
+        return self::storageNameError($name)
+            ?? self::bucketLengthError($name, StorageConfig::managedBucketName($app, $environment, $name, self::ACCOUNT_PLACEHOLDER));
+    }
+
+    /** @return array{key: string, params: array<string, string>}|null */
+    private static function bucketLengthError(string $storage, string $bucket): ?array
+    {
+        return strlen($bucket) > 63 ? ['key' => 'validation.bucket_name_length', 'params' => ['storage' => $storage, 'name' => $bucket]] : null;
+    }
+
     private static function validateStorage(AppConfig $config, ValidationResult $result): void
     {
         $defaults = 0;
         foreach ($config->storage as $storage) {
             $name = $storage->name;
-            if (! preg_match(self::NAME, $name)) {
-                $result->error('validation.storage_name', ['name' => $name]);
-                continue;
-            }
-            if (in_array($name, self::LARAVEL_DISKS, true)) {
-                // Laravel's own disks: arco-laravel never replaces an app-defined disk, so `public` would stay
-                // the local disk under /tmp on Lambda (lost on every new instance) and `s3` the default bucket.
-                $result->error('validation.storage_reserved', ['name' => $name]);
+            $error = self::storageNameError($name);
+            if ($error !== null) {
+                $result->error($error['key'], $error['params']);
                 continue;
             }
             if ($storage->existing === null) {
                 // Before the credentials resolve the account, count its 12 digits anyway.
-                $bucket = $storage->bucketName($config) . ($config->account === null ? '123456789012' : '');
-                if (strlen($bucket) > 63) {
-                    $result->error('validation.bucket_name_length', ['storage' => $name, 'name' => $bucket]);
+                $error = self::bucketLengthError($name, $storage->bucketName($config) . ($config->account === null ? self::ACCOUNT_PLACEHOLDER : ''));
+                if ($error !== null) {
+                    $result->error($error['key'], $error['params']);
                 }
             } elseif (! StorageConfig::isBucketName($storage->existing)) {
                 $result->error('validation.storage_existing', ['storage' => $name, 'value' => $storage->existing]);

@@ -532,7 +532,8 @@ knows them): use a shorter app, environment or storage name. Storage names use l
 and hyphens and start with a letter.
 
 Every bucket Arco creates is private: all four S3 Block Public Access settings on, encrypted with SSE-S3,
-no lifecycle rule without `expire`, no CORS without `cors`, and tagged `arco:app`, `arco:environment` and
+a lifecycle rule `arco-abort-incomplete-uploads` (multipart uploads left incomplete are aborted after 7 days)
+plus one rule per `expire` prefix, no CORS without `cors`, and tagged `arco:app`, `arco:environment` and
 `arco:resource` (`storage:<name>`). Buckets live in the resources stack with the queues (see
 [Deploys](#deploys)): it is updated before any code, so a new bucket exists before code that writes to it.
 
@@ -583,6 +584,9 @@ Arco sets these variables on the web, console and worker functions:
   `multiapi/arco-laravel` writes a log line `{"arco":"disk_skipped", ...}`. The stock names `local`, `public`
   and `s3` are refused by the validation for that reason. A default storage still feeds the stock `s3` disk
   through `AWS_BUCKET`, whatever its name.
+- For an `existing:` bucket whose name contains dots, or in a `cn-*` region, the `AWS_URL` Arco builds
+  (`https://<bucket>.s3.<region>.amazonaws.com`) is wrong (certificate mismatch, different domain): set `AWS_URL`
+  yourself in `variables()`.
 - Your own `variables()` win over Arco's: setting `FILESYSTEM_DISK`, `AWS_BUCKET` or `AWS_URL` there overrides
   them, and the deploy prints a note (an `ARCO_STORAGE` of your own overrides the map without a note).
 - Laravel's S3 driver needs `league/flysystem-aws-s3-v3` and `aws/aws-sdk-php` in `require`
@@ -679,12 +683,12 @@ vendor/bin/arco storage:list --env=production
 ### Storage permissions
 
 The managed execution role gets two statements for every bucket in `arco.php`, `existing` ones included:
-`ArcoStorage` (`s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, `s3:GetObjectAcl`, `s3:PutObjectAcl` on
-the bucket's objects) and `ArcoStorageList` (`s3:ListBucket` on the bucket). With your own `role()`, give it
-the same:
+`ArcoStorage` (`s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, `s3:GetObjectAcl`, `s3:PutObjectAcl`,
+`s3:AbortMultipartUpload` on the bucket's objects) and `ArcoStorageList` (`s3:ListBucket` on the bucket).
+With your own `role()`, give it the same:
 
 ```json
-{"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:GetObjectAcl", "s3:PutObjectAcl"], "Resource": ["arn:aws:s3:::<app>-<env>-uploads-<account>/*"]},
+{"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:GetObjectAcl", "s3:PutObjectAcl", "s3:AbortMultipartUpload"], "Resource": ["arn:aws:s3:::<app>-<env>-uploads-<account>/*"]},
 {"Effect": "Allow", "Action": ["s3:ListBucket"], "Resource": ["arn:aws:s3:::<app>-<env>-uploads-<account>"]}
 ```
 
@@ -791,12 +795,12 @@ vendor/bin/arco queue:failed-table --env=staging --remove
 ### Table permissions
 
 The managed execution role gets the `ArcoTables` statement (`dynamodb:GetItem`, `dynamodb:PutItem`,
-`dynamodb:UpdateItem`, `dynamodb:DeleteItem`, `dynamodb:Query`, `dynamodb:Scan`, `dynamodb:BatchGetItem`,
+`dynamodb:UpdateItem`, `dynamodb:DeleteItem`, `dynamodb:Query`, `dynamodb:BatchGetItem`,
 `dynamodb:BatchWriteItem`, `dynamodb:DescribeTable` on both tables, `existing` ones included). With your own
 `role()`, give it the same:
 
 ```json
-{"Effect": "Allow", "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:BatchGetItem", "dynamodb:BatchWriteItem", "dynamodb:DescribeTable"], "Resource": ["arn:aws:dynamodb:<region>:<account>:table/<app>-<env>-cache", "arn:aws:dynamodb:<region>:<account>:table/<app>-<env>-failed-jobs"]}
+{"Effect": "Allow", "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:BatchGetItem", "dynamodb:BatchWriteItem", "dynamodb:DescribeTable"], "Resource": ["arn:aws:dynamodb:<region>:<account>:table/<app>-<env>-cache", "arn:aws:dynamodb:<region>:<account>:table/<app>-<env>-failed-jobs"]}
 ```
 
 The deploy profile's additions are in

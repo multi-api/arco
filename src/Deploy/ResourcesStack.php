@@ -167,9 +167,9 @@ final class ResourcesStack
     }
 
     /**
-     * A private bucket (spec §8): every Block Public Access setting on, SSE-S3, no lifecycle rule
-     * without `expire`, no CORS without `cors`. Public prefixes relax only the two policy settings
-     * their bucket policy needs; ACLs stay blocked.
+     * A private bucket (spec §8): every Block Public Access setting on, SSE-S3, a lifecycle rule that aborts
+     * incomplete multipart uploads (plus `expire` rules), no CORS without `cors`. Public prefixes relax only
+     * the two policy settings their bucket policy needs; ACLs stay blocked.
      *
      * @return array<string, mixed>
      */
@@ -186,13 +186,13 @@ final class ResourcesStack
                 'RestrictPublicBuckets' => ! $public,
             ],
         ];
-        if ($storage->expire !== []) {
-            $rules = [];
-            foreach ($storage->expire as $prefix => $days) {
-                $rules[] = ['Id' => 'arco-expire-' . (count($rules) + 1), 'Prefix' => (string) $prefix, 'ExpirationInDays' => $days, 'Status' => 'Enabled'];
-            }
-            $properties['LifecycleConfiguration'] = ['Rules' => $rules];
+        $rules = [];
+        foreach ($storage->expire as $prefix => $days) {
+            $rules[] = ['Id' => 'arco-expire-' . (count($rules) + 1), 'Prefix' => (string) $prefix, 'ExpirationInDays' => $days, 'Status' => 'Enabled'];
         }
+        // Whole bucket: an abandoned multipart upload is invisible to listings but keeps costing storage.
+        $rules[] = ['Id' => 'arco-abort-incomplete-uploads', 'AbortIncompleteMultipartUpload' => ['DaysAfterInitiation' => 7], 'Status' => 'Enabled'];
+        $properties['LifecycleConfiguration'] = ['Rules' => $rules];
         if ($storage->cors !== []) {
             $properties['CorsConfiguration'] = ['CorsRules' => [[
                 'AllowedOrigins' => $storage->cors,

@@ -9,15 +9,14 @@ use Multiapi\Arco\Cli\UserError;
 use Multiapi\Arco\Commands\Concerns\AppliesScheduler;
 use Multiapi\Arco\Commands\Concerns\EditsSettings;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
+use Multiapi\Arco\Commands\Concerns\SuggestsSchedulerInterval;
 use Multiapi\Arco\Config\ArcoFileEditor;
 use Multiapi\Arco\Config\ConfigResolver;
-use Multiapi\Arco\Config\SchedulerInterval;
 use Multiapi\Arco\Config\Validator;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
-use Symfony\Component\Console\Question\ChoiceQuestion;
 use Symfony\Component\Console\Style\SymfonyStyle;
 use Throwable;
 
@@ -27,6 +26,7 @@ final class SchedulerSetCommand extends ArcoCommand
     use ResolvesTarget;
     use EditsSettings;
     use AppliesScheduler;
+    use SuggestsSchedulerInterval;
 
     /** @var Closure(string): (list<array{task: string, minutes: list<int>}>|null) the app's scheduled tasks, read in the project dir */
     private readonly Closure $scheduleInspector;
@@ -56,8 +56,8 @@ final class SchedulerSetCommand extends ArcoCommand
         try {
             $given = $input->getArgument('minutes');
             $minutes = is_string($given) && $given !== ''
-                ? (preg_match('/^-?\d{1,9}$/', $given) === 1 ? (int) $given : $given)
-                : $this->askInterval($input, $io, $input->isInteractive() ? $this->suggestedInterval($io) : 1);
+                ? self::intOrText($given)
+                : $this->askMinutes($input, $io);
             $error = Validator::settingError('scheduler', $minutes);
             if ($error !== null) {
                 throw new UserError($this->t($error['key'], $error['params']));
@@ -110,40 +110,17 @@ final class SchedulerSetCommand extends ArcoCommand
         }
     }
 
-    /**
-     * The interval the app's schedule needs (1 when it cannot be read), naming the tasks that the next
-     * longer interval would skip.
-     */
-    private function suggestedInterval(SymfonyStyle $io): int
+    /** Asks for the interval, suggesting the one the app's schedule needs (1 when it cannot be read). */
+    private function askMinutes(InputInterface $input, SymfonyStyle $io): int
     {
+        if (! $input->isInteractive()) {
+            throw new UserError($this->t('scheduler.minutes_required', ['intervals' => implode(', ', Validator::SCHEDULER_INTERVALS)]));
+        }
         try {
             $tasks = ($this->scheduleInspector)($this->projectDir());
         } catch (Throwable) {
             $tasks = null;
         }
-        if ($tasks === null || $tasks === []) {
-            return 1;
-        }
-        $required = SchedulerInterval::required(array_merge([], ...array_map(static fn (array $task): array => $task['minutes'], $tasks)));
-        // The tasks the next longer interval would skip; at 60 (the longest) none would, so all are named.
-        $longer = array_values(array_filter(SchedulerInterval::ALLOWED, static fn (int $every): bool => $every > $required));
-        $names = $longer === [] ? array_column($tasks, 'task') : SchedulerInterval::missed($longer[0], $tasks);
-        $io->note($this->t('scheduler.suggested', ['minutes' => $required, 'tasks' => implode(', ', $names)]));
-        return $required;
-    }
-
-    /** Asks for one of the allowed intervals; $default is the one taken on a plain Enter. */
-    private function askInterval(InputInterface $input, SymfonyStyle $io, int $default): int
-    {
-        if (! $input->isInteractive()) {
-            throw new UserError($this->t('scheduler.minutes_required', ['intervals' => implode(', ', Validator::SCHEDULER_INTERVALS)]));
-        }
-        $choices = [];
-        foreach (Validator::SCHEDULER_INTERVALS as $interval) {
-            $choices[$interval] = (string) $interval;
-        }
-        $question = new ChoiceQuestion($this->t('scheduler.ask'), $choices, (string) $default);
-        $answer = $io->askQuestion($question);
-        return is_numeric($answer) ? (int) $answer : $default;
+        return $this->askInterval($io, $this->suggestInterval($io, $tasks ?? []));
     }
 }

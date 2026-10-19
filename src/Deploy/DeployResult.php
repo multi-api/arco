@@ -2,6 +2,8 @@
 
 namespace Multiapi\Arco\Deploy;
 
+use Multiapi\Arco\Aws\Endpoint;
+
 final readonly class DeployResult
 {
     /** @param list<string> $domains custom domains now serving the endpoint */
@@ -29,6 +31,6 @@ final readonly class DeployResult
 
     public function url(): string
     {
-        return 'https://' . $this->domainName;
+        return Endpoint::scheme() . '://' . $this->domainName;
     }
 }

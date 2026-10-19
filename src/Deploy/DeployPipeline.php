@@ -4,6 +4,7 @@ namespace Multiapi\Arco\Deploy;
 
 use Aws\Exception\AwsException;
 use Closure;
+use Multiapi\Arco\Aws\Endpoint;
 use Multiapi\Arco\Binary\BinaryException;
 use Multiapi\Arco\Binary\BinaryProvider;
 use Multiapi\Arco\Binary\RuntimeBuild;
@@ -68,7 +69,17 @@ final class DeployPipeline
      */
     public static function injectedVariables(AppConfig $config): array
     {
-        return [...self::queueVariables($config), ...self::storageVariables($config), ...self::tableVariables($config)];
+        return [...self::queueVariables($config), ...self::storageVariables($config), ...self::tableVariables($config), ...self::endpointVariables()];
+    }
+
+    /**
+     * With an AWS endpoint override (an emulator such as Floci) S3 needs path-style requests.
+     *
+     * @return array<string, string>
+     */
+    public static function endpointVariables(): array
+    {
+        return Endpoint::override() === null ? [] : ['AWS_USE_PATH_STYLE_ENDPOINT' => 'true'];
     }
 
     /**
@@ -235,45 +246,6 @@ final class DeployPipeline
         }
     }
 
-    /** WorkCommand (`arco:work`) first shipped in multiapi/arco-laravel 0.5. */
-    private const ARCO_LARAVEL_05 = 'multiapi/arco-laravel:^0.5';
-
-    /** The storage disks and the table wiring first shipped in multiapi/arco-laravel 0.6. */
-    private const ARCO_LARAVEL_06 = 'multiapi/arco-laravel:^0.6';
-
-    private const PROVIDER = 'app/vendor/multiapi/arco-laravel/src/ArcoServiceProvider.php';
-
-    private const AWS_SDK = ['aws/aws-sdk-php', 'app/vendor/aws/aws-sdk-php/src/Sdk.php', null];
-
-    /**
-     * What each arco.php feature needs in the package: [requirement for `composer require`, file in the
-     * zip, string that file must contain or null]. A dev version of arco-laravel is recognised by what
-     * its provider reads (ARCO_STORAGE, ARCO_FAILED_JOBS_TABLE), not by its version string.
-     *
-     * @return array<string, list<array{0: string, 1: string, 2: string|null}>> feature (its arco.php call) => requirements
-     */
-    private static function requiredPackages(AppConfig $config): array
-    {
-        $features = [];
-        if ($config->queues !== []) {
-            $features['queue()'] = [[self::ARCO_LARAVEL_05, 'app/vendor/multiapi/arco-laravel/src/Console/WorkCommand.php', null], self::AWS_SDK];
-        }
-        if ($config->storage !== []) {
-            $features['storage()'] = [
-                ['league/flysystem-aws-s3-v3:^3.0', 'app/vendor/league/flysystem-aws-s3-v3/AwsS3V3Adapter.php', null],
-                self::AWS_SDK,
-                [self::ARCO_LARAVEL_06, self::PROVIDER, 'ARCO_STORAGE'],
-            ];
-        }
-        if ($config->cacheTable !== null) {
-            $features['cache()'] = [self::AWS_SDK];
-        }
-        if ($config->failedJobsTable !== null) {
-            $features['failedJobsTable()'] = [self::AWS_SDK, [self::ARCO_LARAVEL_06, self::PROVIDER, 'ARCO_FAILED_JOBS_TABLE']];
-        }
-        return $features;
-    }
-
     /**
      * Stops the deploy when the package lacks a package the app's features need: without
      * multiapi/arco-laravel or aws/aws-sdk-php every job would land in the dead-letter queue; without
@@ -285,7 +257,7 @@ final class DeployPipeline
      */
     private static function checkPackages(AppConfig $config, Package $package): void
     {
-        $features = self::requiredPackages($config);
+        $features = PackageRequirements::forConfig($config);
         if ($features === []) {
             return;
         }
@@ -297,6 +269,7 @@ final class DeployPipeline
         $missing = [];
         foreach ($features as $feature => $requirements) {
             foreach ($requirements as [$requirement, $file, $needle]) {
+                $file = "app/$file";
                 $found = $needle === null ? $zip->locateName($file) !== false : str_contains((string) $zip->getFromName($file), $needle);
                 if (! $found) {
                     $missing[$requirement][] = $feature;
@@ -304,10 +277,10 @@ final class DeployPipeline
             }
         }
         $zip->close();
-        if (isset($missing[self::ARCO_LARAVEL_05], $missing[self::ARCO_LARAVEL_06])) {
+        if (isset($missing[PackageRequirements::ARCO_LARAVEL_05], $missing[PackageRequirements::ARCO_LARAVEL_06])) {
             // 0.6 brings what 0.5 did: one requirement for both.
-            $missing[self::ARCO_LARAVEL_06] = [...$missing[self::ARCO_LARAVEL_05], ...$missing[self::ARCO_LARAVEL_06]];
-            unset($missing[self::ARCO_LARAVEL_05]);
+            $missing[PackageRequirements::ARCO_LARAVEL_06] = [...$missing[PackageRequirements::ARCO_LARAVEL_05], ...$missing[PackageRequirements::ARCO_LARAVEL_06]];
+            unset($missing[PackageRequirements::ARCO_LARAVEL_05]);
         }
         if ($missing === []) {
             return;

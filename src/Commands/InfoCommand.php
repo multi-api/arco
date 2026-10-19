@@ -4,6 +4,7 @@ namespace Multiapi\Arco\Commands;
 
 use Closure;
 use Multiapi\Arco\Aws\AwsClients;
+use Multiapi\Arco\Aws\Endpoint;
 use Multiapi\Arco\Binary\BinaryException;
 use Multiapi\Arco\Binary\RuntimeManifest;
 use Multiapi\Arco\Aws\LocalState;
@@ -64,7 +65,7 @@ final class InfoCommand extends ArcoCommand
         if ($input->getOption('json')) {
             $output->writeln((string) json_encode([
                 'function' => $config->functionName(),
-                'url' => $status?->domainName !== null ? 'https://' . $status->domainName : null,
+                'url' => $status?->domainName !== null ? Endpoint::scheme() . '://' . $status->domainName : null,
                 'revision' => $status?->activeRevisionId,
                 'domains' => $config->domains,
                 'distribution' => $status?->distributionDomain !== null ? ['domain' => $status->distributionDomain, 'status' => $status->distributionStatus] : null,
@@ -104,7 +105,7 @@ final class InfoCommand extends ArcoCommand
             $io->note($this->t('info.no_remote'));
         } else {
             $io->definitionList(
-                ['URL' => $status->domainName !== null ? 'https://' . $status->domainName : '-'],
+                ['URL' => $status->domainName !== null ? Endpoint::scheme() . '://' . $status->domainName : '-'],
                 [$this->t('info.state') => $status->state],
                 [$this->t('info.revision') => $status->activeRevisionId ?? '-'],
                 [$this->t('info.console') => $config->consoleEnabled() ? $this->consoleStatus($status) : $this->t('info.console_off')],

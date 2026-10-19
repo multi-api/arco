@@ -47,7 +47,13 @@ final readonly class QueueConfig
         if ($this->existing !== null) {
             return self::parseExisting($this->existing)['name'] ?? $this->existing;
         }
-        return $config->app . '-' . $config->environment . '-' . $this->name . ($this->fifo ? '.fifo' : '');
+        return self::managedName($config->app, $config->environment, $this->name, false, $this->fifo);
+    }
+
+    /** The name of an SQS queue Arco creates: <app>-<environment>-<queue>[-dlq][.fifo]. */
+    public static function managedName(string $app, string $environment, string $queue, bool $dlq = false, bool $fifo = false): string
+    {
+        return $app . '-' . $environment . '-' . $queue . ($dlq ? '-dlq' : '') . ($fifo ? '.fifo' : '');
     }
 
     public function dlqName(AppConfig $config): ?string
@@ -55,7 +61,7 @@ final readonly class QueueConfig
         if ($this->existing !== null || ! $this->dlq) {
             return null;
         }
-        return $config->app . '-' . $config->environment . '-' . $this->name . '-dlq' . ($this->fifo ? '.fifo' : '');
+        return self::managedName($config->app, $config->environment, $this->name, true, $this->fifo);
     }
 
     public function url(AppConfig $config): string
