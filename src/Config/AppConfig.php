@@ -42,6 +42,7 @@ final readonly class AppConfig
         public ?string $certificate = null,
         public array $deployCommands = [],
         public int $consoleTimeout = 900,
+        public int $consoleMemory = 2048,
         /** null: protected when the environment is named production */
         public ?bool $protected = null,
         /** null: never set (the console function is off unless a scheduler needs it) */
@@ -58,6 +59,8 @@ final readonly class AppConfig
         public ?TableConfig $cacheTable = null,
         /** null: no failed-jobs table */
         public ?TableConfig $failedJobsTable = null,
+        /** cache(driver:) when it is not 'dynamodb' (the validator refuses it); null: dynamodb */
+        public ?string $cacheDriver = null,
     ) {
     }
 
@@ -90,6 +93,7 @@ final readonly class AppConfig
             certificate: $this->certificate,
             deployCommands: $this->deployCommands,
             consoleTimeout: $this->consoleTimeout,
+            consoleMemory: $this->consoleMemory,
             protected: $this->protected,
             console: $this->console,
             scheduler: $this->scheduler,
@@ -98,6 +102,7 @@ final readonly class AppConfig
             storage: $this->storage,
             cacheTable: $this->cacheTable,
             failedJobsTable: $this->failedJobsTable,
+            cacheDriver: $this->cacheDriver,
         );
     }
 

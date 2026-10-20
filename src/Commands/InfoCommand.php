@@ -2,6 +2,7 @@
 
 namespace Multiapi\Arco\Commands;
 
+use Aws\Exception\AwsException;
 use Closure;
 use Multiapi\Arco\Aws\AwsClients;
 use Multiapi\Arco\Aws\Endpoint;
@@ -10,6 +11,7 @@ use Multiapi\Arco\Binary\RuntimeManifest;
 use Multiapi\Arco\Aws\LocalState;
 use Multiapi\Arco\Aws\ProfileResolver;
 use Multiapi\Arco\Cli\ArcoCommand;
+use Multiapi\Arco\Cli\UserError;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
 use Multiapi\Arco\Config\AppConfig;
 use Multiapi\Arco\Config\StorageConfig;
@@ -18,6 +20,7 @@ use Multiapi\Arco\Deploy\AppStatus;
 use Multiapi\Arco\Deploy\AwsDeployer;
 use Multiapi\Arco\Deploy\Deployer;
 use Multiapi\Arco\Deploy\DeployPipeline;
+use Multiapi\Arco\Deploy\EnvironmentGroup;
 use Multiapi\Arco\Secrets\SecretReference;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Input\InputInterface;
@@ -45,7 +48,9 @@ final class InfoCommand extends ArcoCommand
     protected function configure(): void
     {
         $this->addOption('env', 'e', InputOption::VALUE_REQUIRED, 'Environment')
-            ->addOption('json', null, InputOption::VALUE_NONE, 'Print JSON');
+            ->addOption('profile', 'p', InputOption::VALUE_REQUIRED, 'AWS profile to use')
+            ->addOption('json', null, InputOption::VALUE_NONE, 'Print JSON')
+            ->addOption('resources', null, InputOption::VALUE_NONE, 'List every AWS resource tagged for the environment');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -55,15 +60,26 @@ final class InfoCommand extends ArcoCommand
             // Config warnings would corrupt machine-readable output, so --json suppresses them.
             $config = $this->loadTarget($input, $input->getOption('json') ? new SymfonyStyle($input, new NullOutput()) : $io);
         } catch (Throwable $e) {
-            $io->error($this->describeError($e) ?? throw $e);
+            $message = $this->describeError($e) ?? throw $e;
+            if ($input->getOption('json')) {
+                // Scripts reading --json get the error as JSON too (like queue:list and storage:list).
+                $output->writeln((string) json_encode(['schema' => 1, 'error' => $message], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+            } else {
+                $io->error($message);
+            }
             return self::FAILURE;
         }
 
-        [$status, $remoteError] = $this->remoteStatus($config);
+        if ($input->getOption('resources')) {
+            return $this->showResources($config, $this->profileFlag($input), (bool) $input->getOption('json'), $output, $io);
+        }
+
+        [$status, $remoteError] = $this->remoteStatus($config, $this->profileFlag($input));
         $settings = $this->settings($config);
 
         if ($input->getOption('json')) {
             $output->writeln((string) json_encode([
+                'schema' => 1,
                 'function' => $config->functionName(),
                 'url' => $status?->domainName !== null ? Endpoint::scheme() . '://' . $status->domainName : null,
                 'revision' => $status?->activeRevisionId,
@@ -120,6 +136,66 @@ final class InfoCommand extends ArcoCommand
             );
         }
         return self::SUCCESS;
+    }
+
+    /**
+     * `--resources`: what the `arco:app`/`arco:environment` tags say belongs to the environment, and
+     * whether `arco remove` keeps each (also as `--json`, schema 1).
+     */
+    private function showResources(AppConfig $config, ?string $profile, bool $json, OutputInterface $output, SymfonyStyle $io): int
+    {
+        $group = EnvironmentGroup::name($config);
+        [$resources, $error] = $this->taggedResources($config, $profile);
+        if ($json) {
+            $output->writeln((string) json_encode([
+                'schema' => 1,
+                'app' => $config->app,
+                'environment' => $config->environment,
+                'group' => $group,
+                'resources' => $resources,
+            ] + ($error !== null ? ['error' => $error] : []), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+            return $error === null ? self::SUCCESS : self::FAILURE;
+        }
+        if ($error !== null) {
+            $io->error($error);
+            return self::FAILURE;
+        }
+        $io->title($this->t('info.resources_title', ['app' => $config->app, 'environment' => $config->environment]));
+        if ($resources === []) {
+            $io->note($this->t('info.resources_none'));
+        } else {
+            $io->table(
+                [$this->t('info.resource_type'), $this->t('info.resource_name'), $this->t('info.resource_on_remove')],
+                array_map(fn (array $resource) => [$resource['type'], $resource['name'], $this->t($resource['retained'] ? 'info.resource_kept' : 'info.resource_deleted')], $resources),
+            );
+        }
+        $io->writeln($this->t('info.resources_group', ['group' => $group]));
+        return self::SUCCESS;
+    }
+
+    /**
+     * The tagged resources, or the error to show: no profile resolves without prompting, the
+     * credentials are missing or expired, or AWS refused the lookup (tag:GetResources).
+     *
+     * @return array{0: list<array{type: string, name: string, arn: string, retained: bool}>, 1: ?string}
+     */
+    private function taggedResources(AppConfig $config, ?string $profileFlag): array
+    {
+        /** @var array<string, string> $env */
+        $env = getenv();
+        $choice = ProfileResolver::resolve($profileFlag, $env, $config, new LocalState($this->projectDir()));
+        if ($choice === null) {
+            return [[], $this->t('info.resources_no_profile', ['environment' => $config->environment])];
+        }
+        try {
+            return [($this->deployerFactory)($this->guardedClients($config, $choice->profile))->resources($config), null];
+        } catch (UserError $e) {
+            return [[], $e->getMessage()];
+        } catch (Throwable $e) {
+            $message = $e instanceof AwsException ? $e->getAwsErrorMessage() : null;
+            return [[], $this->credentialProblem($e, $choice->profile)
+                ?? $this->t('info.resources_failed', ['error' => is_string($message) && $message !== '' ? $message : $e->getMessage()])];
+        }
     }
 
     /** @param array{url: ?string, version: ?string, error: ?string}|null $queue */
@@ -229,19 +305,42 @@ final class InfoCommand extends ArcoCommand
      *
      * @return array{0: ?AppStatus, 1: ?string}
      */
-    private function remoteStatus(AppConfig $config): array
+    private function remoteStatus(AppConfig $config, ?string $profileFlag): array
     {
         /** @var array<string, string> $env */
         $env = getenv();
-        $choice = ProfileResolver::resolve(null, $env, $config, new LocalState($this->projectDir()));
+        $choice = ProfileResolver::resolve($profileFlag, $env, $config, new LocalState($this->projectDir()));
         if ($choice === null) {
             return [null, null];
         }
         try {
-            return [($this->deployerFactory)(($this->awsFactory)($choice->profile, (string) $config->region))->describe($config), null];
+            return [($this->deployerFactory)($this->guardedClients($config, $choice->profile))->describe($config), null];
+        } catch (UserError $e) {
+            return [null, $e->getMessage()];
         } catch (Throwable $e) {
             return [null, $this->credentialProblem($e, $choice->profile)];
         }
+    }
+
+    private function profileFlag(InputInterface $input): ?string
+    {
+        $flag = $input->getOption('profile');
+        return is_string($flag) && $flag !== '' ? $flag : null;
+    }
+
+    /**
+     * Clients for the profile, after the same account guard as deploy: an environment locked with
+     * account() is never read through a profile of another account. Without account() no STS call is made.
+     *
+     * @throws UserError account_mismatch
+     */
+    private function guardedClients(AppConfig $config, ?string $profile): AwsClients
+    {
+        $clients = ($this->awsFactory)($profile, (string) $config->region);
+        if ($config->account !== null) {
+            $this->guardAccount($config, $clients->accountId(), $profile);
+        }
+        return $clients;
     }
 
     private function runtimeBuildLabel(AppConfig $config): ?string
@@ -250,7 +349,7 @@ final class InfoCommand extends ArcoCommand
             return null;
         }
         try {
-            $build = RuntimeManifest::load()->resolve($config->runtime->build, $config->runtime->frankenphp);
+            $build = RuntimeManifest::load()->resolve($config->runtime->build, $config->runtime->frankenphp, $config->runtime->php);
         } catch (BinaryException) {
             return null;
         }
@@ -263,6 +362,7 @@ final class InfoCommand extends ArcoCommand
         return match (true) {
             $s['runtime.build'] !== 'default' => $s['runtime.build'],
             $s['runtime.frankenphp'] !== 'default' => $s['runtime.frankenphp'],
+            $s['runtime.php'] !== 'default' => $s['runtime.php'],
             default => 'default',
         };
     }
@@ -294,7 +394,8 @@ final class InfoCommand extends ArcoCommand
             'certificate' => [$config->certificate, $s['certificate']],
             'runtime.build' => [$this->runtimeBuildLabel($config), $this->runtimeBuildSource($config)],
             'runtime.binary' => [$config->runtime->binary, $s['runtime.binary']],
-            'runtime.workers' => ["{$config->runtime->workersMin}-{$config->runtime->workersMax}", $s['runtime.workers']],
+            'runtime.workers' => [$config->runtime->workers, $s['runtime.workers']],
+            'runtime.maxThreads' => [$config->runtime->maxThreads, $s['runtime.maxThreads']],
             'runtime.threads' => [$config->runtime->threads, $s['runtime.threads']],
             'runtime.mode' => [$config->runtime->mode, $s['runtime.mode']],
         ];
@@ -339,7 +440,7 @@ final class InfoCommand extends ArcoCommand
             }),
             $key === 'scheduler' => is_int($value) ? $this->t('scheduler.every', ['minutes' => $value]) : $this->t('scheduler.off'),
             $key === 'logRetention' => match (true) {
-                $value === null => $this->t('info.retention_not_managed'),
+                $value === null => $this->t('info.retention_default'),
                 $value === false => $this->t('logs.retention_never'),
                 $value === 1 => $this->t('logs.retention_one_day'),
                 default => $this->t('logs.retention_days', ['days' => is_int($value) ? $value : 0]),

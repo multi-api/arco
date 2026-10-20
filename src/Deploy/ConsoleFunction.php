@@ -17,6 +17,7 @@ final class ConsoleFunction
 {
     public const ALIAS = LambdaFunction::ALIAS;
     public const RUNTIME = LambdaFunction::RUNTIME;
+    /** Default memory of the console function; console(memory:) overrides it. */
     public const MEMORY_MB = 2048;
     /** /tmp holds the downloaded FrankenPHP binary (~170 MB) plus the app's storage. */
     public const EPHEMERAL_STORAGE_MB = 1024;
@@ -61,7 +62,7 @@ final class ConsoleFunction
         $settings = [
             'Role' => $roleArn,
             'Description' => 'Arco console function (Arco ' . Arco::version() . ')',
-            'MemorySize' => self::MEMORY_MB,
+            'MemorySize' => $config->consoleMemory,
             'EphemeralStorage' => ['Size' => self::EPHEMERAL_STORAGE_MB],
             'Timeout' => $config->consoleTimeout,
             // Lambda rejects empty values; an unset variable reads the same way in PHP.

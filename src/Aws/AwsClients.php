@@ -15,6 +15,7 @@ use GuzzleHttp\Promise\Create;
 use Aws\Iam\IamClient;
 use Aws\Lambda\LambdaClient;
 use Aws\LambdaWeb\LambdaWebClient;
+use Aws\ResourceGroups\ResourceGroupsClient;
 use Aws\ResourceGroupsTaggingAPI\ResourceGroupsTaggingAPIClient;
 use Aws\Route53\Route53Client;
 use Aws\S3\S3Client;
@@ -215,6 +216,7 @@ final class AwsClients
     public function dynamoDb(): DynamoDbClient { return $this->sdk->createDynamoDb(); }
     public function route53(): Route53Client { return $this->sdk->createRoute53(); }
     public function taggingApi(): ResourceGroupsTaggingAPIClient { return $this->sdk->createResourceGroupsTaggingAPI(); }
+    public function resourceGroups(): ResourceGroupsClient { return $this->sdk->createResourceGroups(); }
 
     /**
      * The account of these credentials, read once per process. IAM Identity Center (SSO) and AssumeRole

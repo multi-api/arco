@@ -97,6 +97,13 @@ trait ResolvesTarget
                 ?? $this->t('aws.credentials_failed', ['profile' => $profile ?? 'environment', 'message' => $e->getMessage()]));
         }
 
+        $this->guardAccount($config, $account, $profile);
+        return $clients;
+    }
+
+    /** @throws UserError when the environment is locked to another account than the profile's */
+    protected function guardAccount(AppConfig $config, string $account, ?string $profile): void
+    {
         try {
             AccountGuard::check($config->account, $account, $profile);
         } catch (AccountMismatch $e) {
@@ -107,7 +114,6 @@ trait ResolvesTarget
                 'profile' => $profile ?? 'environment',
             ]));
         }
-        return $clients;
     }
 
     /**

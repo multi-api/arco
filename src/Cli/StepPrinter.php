@@ -16,7 +16,7 @@ final class StepPrinter
 {
     public const PROGRESS = 'package.progress';
     /** Steps that report something the user should act on, not progress. */
-    public const WARNINGS = ['deploy.console_downloads_binary', 'deploy.console_skipped_size', 'deploy.console_not_activated', 'deploy.console_retries_not_disabled', 'deploy.console_remove_failed', 'deploy.prune_versions_failed', 'deploy.prune_packages_failed', 'deploy.prune_runtime_failed', 'deploy.scheduler_too_slow', 'deploy.scheduler_skipped', 'deploy.scheduler_failed', 'deploy.scheduler_unreadable', 'deploy.log_retention_failed', 'deploy.queue_kept', 'deploy.worker_failed', 'deploy.workers_sync_failed', 'deploy.worker_scan_failed', 'remove.worker_scan_failed', 'deploy.queue_other_consumer', 'remove.queue_kept', 'remove.scheduler_unreadable', 'deploy.storage_kept', 'deploy.table_kept', 'deploy.table_kept_unknown', 'remove.storage_kept', 'remove.table_kept', 'remove.table_kept_unknown'];
+    public const WARNINGS = ['deploy.console_downloads_binary', 'deploy.console_skipped_size', 'deploy.console_not_activated', 'deploy.console_retries_not_disabled', 'deploy.console_remove_failed', 'deploy.prune_versions_failed', 'deploy.prune_packages_failed', 'deploy.prune_runtime_failed', 'deploy.scheduler_too_slow', 'deploy.scheduler_skipped', 'deploy.scheduler_failed', 'deploy.scheduler_unreadable', 'deploy.log_retention_failed', 'deploy.queue_kept', 'deploy.worker_failed', 'deploy.workers_sync_failed', 'deploy.worker_scan_failed', 'remove.worker_scan_failed', 'deploy.queue_other_consumer', 'remove.queue_kept', 'remove.scheduler_unreadable', 'deploy.storage_kept', 'deploy.table_kept', 'deploy.table_kept_unknown', 'remove.storage_kept', 'remove.table_kept', 'remove.table_kept_unknown', 'deploy.ownership_forced', 'deploy.tags_not_added'];
     /** Codes of a WARNINGS step's `reason` that are a deliberate choice with nothing to act on: printed as bullets. */
     private const BULLET_REASONS = ['deploy.console_downloads_binary' => ['custom_binary']];
     private const MARKS = [25, 50, 75, 100];
@@ -29,10 +29,12 @@ final class StepPrinter
         'deploy.log_retention' => ['groups' => 'deploy.log_groups.'],
         'deploy.log_retention_one_day' => ['groups' => 'deploy.log_groups.'],
         'deploy.log_retention_never' => ['groups' => 'deploy.log_groups.'],
+        'deploy.log_retention_default' => ['groups' => 'deploy.log_groups.'],
         'deploy.storage_kept' => ['objects' => 'deploy.storage_objects.'],
         'remove.storage_kept' => ['objects' => 'deploy.storage_objects.'],
         'deploy.table_created' => ['kind' => 'deploy.table_kind.'],
         'deploy.table_updated' => ['kind' => 'deploy.table_kind.'],
+        'deploy.table_changed' => ['kind' => 'deploy.table_kind.'],
         'deploy.table_now_existing' => ['as' => 'deploy.table_kind.'],
     ];
 

@@ -10,6 +10,18 @@ use Multiapi\Arco\Package\Package;
 interface Deployer
 {
     /**
+     * Before any AWS change of a deploy: reads the `arco:app`/`arco:environment` tags of every resource
+     * Arco addresses by name (execution role, web function, console function, workers, scheduler rule)
+     * and refuses one that carries another app's or environment's tags, or no tags and no sign that
+     * Arco made it, unless the deployer was built with --force. Resources this environment owns that
+     * lack the tags get them (step deploy.tags_added).
+     *
+     * @param Closure(string, array<string, string|int>): void $onStep
+     * @throws DeployException deploy.not_owned, deploy.untagged_resource, deploy.tags_unreadable
+     */
+    public function checkOwnership(AppConfig $config, Closure $onStep): void;
+
+    /**
      * Uploads the package and puts the code in place without moving traffic: execution role, a new
      * web revision, and (with $console) the console zip and runtime binary uploaded, the console
      * function (when the console is on) and one worker per queue updated with a published version.
@@ -107,7 +119,8 @@ interface Deployer
 
     /**
      * Sets the retention of the web and (when the console is on) console log groups, creating them
-     * when missing. Nothing happens, no AWS call, when logRetention() is not set. Steps: deploy.log_retention, deploy.log_retention_one_day or deploy.log_retention_never (AwsDeployer::logRetentionStep()).
+     * when missing, and tags each for the environment (a refused tag is the note
+     * deploy.log_tags_not_added, the retention is still set). Without a logRetention() setting the default (AwsDeployer::DEFAULT_LOG_RETENTION days) is applied and announced by deploy.log_retention_default, only when it changes a group (new, or with another or no retention; always when the retention cannot be read). Steps: deploy.log_retention, deploy.log_retention_one_day, deploy.log_retention_never (AwsDeployer::logRetentionStep()) or deploy.log_retention_default.
      *
      * @param Closure(string, array<string, string|int>): void $onStep
      */
@@ -132,4 +145,24 @@ interface Deployer
      *         deploy.public_blocked or deploy.public_policy_denied for a refused public bucket policy
      */
     public function deployResources(AppConfig $config, Closure $onStep): void;
+
+    /**
+     * Once the deploy is verified: creates the environment's Resource Group `arco-<app>-<env>` (a tag
+     * query on arco:app and arco:environment), or updates its query when it differs (step
+     * deploy.group_ready, only then: an unchanged group prints nothing). A convenience view: a refused call (deploy.group_denied), a group with the
+     * name someone else made (deploy.group_not_ours) or another failure (deploy.group_failed) is a note,
+     * never thrown. `remove()` deletes the group last, only when its query is this environment's.
+     *
+     * @param Closure(string, array<string, string|int>): void $onStep
+     */
+    public function syncGroup(AppConfig $config, Closure $onStep): void;
+
+    /**
+     * Every resource of the region tagged for this app and environment (tag:GetResources), sorted by
+     * type and name; `retained` says whether `remove()` keeps it.
+     *
+     * @return list<array{type: string, name: string, arn: string, retained: bool}>
+     * @throws \Aws\Exception\AwsException a refused or failed lookup
+     */
+    public function resources(AppConfig $config): array;
 }

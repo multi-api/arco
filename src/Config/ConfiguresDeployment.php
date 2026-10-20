@@ -24,8 +24,6 @@ trait ConfiguresDeployment
     public function timeout(int $seconds): static { $this->settings['timeout'] = $seconds; return $this; }
     /** Upper bound on running instances (Lambda execution environments) of the function. */
     public function maxInstances(int $count): static { $this->settings['maxInstances'] = $count; return $this; }
-    /** @deprecated Alias of maxInstances(); "environment" means an arco.php environment in Arco. */
-    public function maxEnvironments(int $count): static { return $this->maxInstances($count); }
     public function rateLimit(int $requestsPerSecond): static { $this->settings['rateLimit'] = $requestsPerSecond; return $this; }
     /** @param 'public'|'iam' $auth */
     public function auth(string $auth): static { $this->settings['auth'] = $auth; return $this; }
@@ -47,10 +45,10 @@ trait ConfiguresDeployment
     }
 
     /**
-     * Where the DNS records go: an AWS profile whose Route 53 holds the zones, or false when DNS is
+     * Where the DNS records go: the name of an AWS profile whose Route 53 holds the zones, or false when DNS is
      * not in Route 53 (Arco prints the records to create). Default: Route 53 in the deploy account.
      */
-    public function dns(string|false $profile): static { $this->settings['dns'] = $profile; return $this; }
+    public function dns(string|false $dns): static { $this->settings['dns'] = $dns; return $this; }
 
     /** An ACM certificate in us-east-1 to use instead of looking one up or requesting one. */
     public function certificate(string $certificateArn): static { $this->settings['certificate'] = $certificateArn; return $this; }
@@ -67,11 +65,24 @@ trait ConfiguresDeployment
         return $this;
     }
 
-    /** Time limit of the console function (arco command, deploy commands, tinker): 3 to 900 seconds. */
-    public function consoleTimeout(int $seconds): static { $this->settings['consoleTimeout'] = $seconds; return $this; }
-
-    /** Whether the console function exists (arco command, deploy commands, tinker). Off unless set; scheduler() turns it on. */
-    public function console(bool $enabled = true): static { $this->settings['console'] = $enabled; return $this; }
+    /**
+     * The console function (arco command, deploy commands, tinker, the scheduler). Off unless set;
+     * scheduler() turns it on. Calling console() with any option also turns it on.
+     *
+     * @param int|null $timeout seconds a command may run, 3 to 900 (default 900)
+     * @param int|null $memory MB of memory, 128 to 10240 (default 2048)
+     */
+    public function console(bool $enabled = true, ?int $timeout = null, ?int $memory = null): static
+    {
+        $this->settings['console'] = $enabled;
+        if ($timeout !== null) {
+            $this->settings['consoleTimeout'] = $timeout;
+        }
+        if ($memory !== null) {
+            $this->settings['consoleMemory'] = $memory;
+        }
+        return $this;
+    }
 
     /**
      * Run `schedule:run` every N minutes (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30 or 60) from an
@@ -90,27 +101,30 @@ trait ConfiguresDeployment
      * (timeout 60, memory 1024, batchSize 1, tries 3, dlq on); repeated calls for a name accumulate.
      * An environment's entry merges over the app's; `queue('name', false)` drops the queue there.
      *
+     * @param int|null $maxInstances most concurrent worker invocations (the event source mapping's MaximumConcurrency, at least 2)
      * @param string|null $existing name, URL or ARN of a queue Arco does not manage
+     * @param int|null $concurrency deprecated: the old name of $maxInstances; removed in 1.0
      */
     public function queue(
         string $name,
         false|null $remove = null,
         ?int $timeout = null,
         ?int $memory = null,
-        ?int $concurrency = null,
+        ?int $maxInstances = null,
         ?int $batchSize = null,
         ?int $tries = null,
         ?bool $dlq = null,
         ?bool $fifo = null,
         ?string $existing = null,
         ?bool $default = null,
+        ?int $concurrency = null,
     ): static {
         if ($remove === false) {
             $this->queues[$name] = false;
             return $this;
         }
         $options = array_filter(
-            ['timeout' => $timeout, 'memory' => $memory, 'concurrency' => $concurrency, 'batchSize' => $batchSize,
+            ['timeout' => $timeout, 'memory' => $memory, 'maxInstances' => $maxInstances, 'concurrency' => $concurrency, 'batchSize' => $batchSize,
                 'tries' => $tries, 'dlq' => $dlq, 'fifo' => $fifo, 'existing' => $existing, 'default' => $default],
             fn (mixed $value): bool => $value !== null,
         );
@@ -154,10 +168,15 @@ trait ConfiguresDeployment
     /**
      * A DynamoDB table for Laravel's cache (<app>-<env>-cache); `existing` names a table Arco does not
      * manage; false turns it off.
+     *
+     * @param string $driver where the cache lives; only 'dynamodb' exists today (the parameter keeps room for others)
      */
-    public function cache(bool|null $enabled = true, ?string $existing = null): static
+    public function cache(bool $enabled = true, ?string $existing = null, string $driver = 'dynamodb'): static
     {
         $this->settings['cache'] = self::tableSetting($enabled, $existing);
+        if ($driver !== 'dynamodb') {
+            $this->settings['cacheDriver'] = $driver;
+        }
         return $this;
     }
 
@@ -165,19 +184,19 @@ trait ConfiguresDeployment
      * A DynamoDB table for Laravel's failed jobs (<app>-<env>-failed-jobs); `existing` names a table
      * Arco does not manage; false turns it off.
      */
-    public function failedJobsTable(bool|null $enabled = true, ?string $existing = null): static
+    public function failedJobsTable(bool $enabled = true, ?string $existing = null): static
     {
         $this->settings['failedJobsTable'] = self::tableSetting($enabled, $existing);
         return $this;
     }
 
     /** @return bool|array{existing: string} */
-    private static function tableSetting(?bool $enabled, ?string $existing): bool|array
+    private static function tableSetting(bool $enabled, ?string $existing): bool|array
     {
-        if ($existing !== null && $enabled !== false) {
+        if ($existing !== null && $enabled) {
             return ['existing' => $existing];
         }
-        return $enabled ?? true;
+        return $enabled;
     }
 
     /** @param array<string, string> $variables */

@@ -36,6 +36,33 @@ final class Stacks
     }
 
     /**
+     * The template the stack runs now (as it was submitted), or null when it cannot be read: any refused
+     * or failed cloudformation:GetTemplate call, or a template that is not JSON.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function template(string $name): ?array
+    {
+        try {
+            $body = Aws::call($this->cloudFormation, 'GetTemplate', ['StackName' => $name, 'TemplateStage' => 'Original'])['TemplateBody'] ?? null;
+        } catch (AwsException) {
+            // Only used to say what an update changes: any failure means "unknown", reported as updated.
+            return null;
+        }
+        if (is_string($body)) {
+            $body = json_decode($body, true);
+        }
+        if (! is_array($body)) {
+            return null;
+        }
+        $template = [];
+        foreach ($body as $key => $value) {
+            $template[(string) $key] = $value;
+        }
+        return $template;
+    }
+
+    /**
      * Creates or updates the stack and waits for it.
      *
      * @param array<string, string> $tags

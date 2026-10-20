@@ -3,9 +3,11 @@
 namespace Multiapi\Arco\Commands;
 
 use Closure;
+use Multiapi\Arco\Deploy\OwnershipGuard;
 use Multiapi\Arco\Aws\AwsClients;
 use Multiapi\Arco\Cli\ArcoCommand;
 use Multiapi\Arco\Cli\UserError;
+use Multiapi\Arco\Commands\Concerns\ConfirmsProtected;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
 use Multiapi\Arco\Config\AppConfig;
 use Multiapi\Arco\Console\Console;
@@ -23,15 +25,19 @@ use Throwable;
 #[AsCommand(name: 'command', description: 'Run an artisan (or PHP) command on the console function')]
 final class ConsoleCommand extends ArcoCommand
 {
+    use ConfirmsProtected;
     use ResolvesTarget;
 
     /** @var Closure(AwsClients, AppConfig): Console */
     private Closure $consoleFactory;
+    /** @var Closure(AwsClients, AppConfig): void refuses a console function this environment does not own */
+    private Closure $ownershipCheck;
 
-    public function __construct(?Closure $awsFactory = null, ?Closure $consoleFactory = null)
+    public function __construct(?Closure $awsFactory = null, ?Closure $consoleFactory = null, ?Closure $ownershipCheck = null)
     {
         $this->awsFactory = $awsFactory ?? fn (?string $profile, string $region) => new AwsClients($profile, $region);
         $this->consoleFactory = $consoleFactory ?? fn (AwsClients $aws, AppConfig $config) => new LambdaConsole($aws->lambda(LambdaConsole::clientOptions($config)));
+        $this->ownershipCheck = $ownershipCheck ?? OwnershipGuard::checkConsoleUse(...);
         parent::__construct();
     }
 
@@ -41,7 +47,8 @@ final class ConsoleCommand extends ArcoCommand
             ->addOption('env', 'e', InputOption::VALUE_REQUIRED, 'Environment')
             ->addOption('profile', 'p', InputOption::VALUE_REQUIRED, 'AWS profile to use')
             ->addOption('async', null, InputOption::VALUE_NONE, 'Start the command and return at once; follow it with arco logs')
-            ->addOption('timeout', null, InputOption::VALUE_REQUIRED, 'Time limit in seconds (up to the consoleTimeout)');
+            ->addOption('yes', 'y', InputOption::VALUE_NONE, 'Answer yes to the confirmation of a protected environment')
+            ->addOption('timeout', null, InputOption::VALUE_REQUIRED, 'Time limit in seconds (up to console(timeout:), 900 by default)');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -66,7 +73,13 @@ final class ConsoleCommand extends ArcoCommand
             }
             $timeout = $this->timeout($input->getOption('timeout'), $config);
 
-            $console = ($this->consoleFactory)($this->awsClients($config, $input, $errors, checkCredentials: false), $config);
+            $aws = $this->awsClients($config, $input, $errors, checkCredentials: false);
+            // Before anything runs: a console function another app or environment owns is never invoked.
+            ($this->ownershipCheck)($aws, $config);
+            if (! $this->confirmProtected($input, $errors, $config, 'command', $aws, ['command' => $command])) {
+                return self::FAILURE;
+            }
+            $console = ($this->consoleFactory)($aws, $config);
             if ($input->getOption('async')) {
                 $console->start($config, $command, $timeout);
                 // stderr: stdout carries only the command's own output, for scripts.

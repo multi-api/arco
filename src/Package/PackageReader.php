@@ -50,10 +50,11 @@ final class PackageReader
      * Refuses a package built for another app, environment or preset; reports softer differences.
      *
      * @param string|null $runtimeBuild the build the current config resolves to, null for a custom binary
+     * @param (\Closure(string): string)|null $canonical the build id a package's build id names (ids of an earlier Arco are aliases)
      * @return list<array{0: string, 1: array<string, string>}> warnings as [translation key, params]
      * @throws BuildException
      */
-    public static function check(Package $package, AppConfig $config, FrameworkPreset $preset, ?string $runtimeBuild): array
+    public static function check(Package $package, AppConfig $config, FrameworkPreset $preset, ?string $runtimeBuild, ?\Closure $canonical = null): array
     {
         $manifest = $package->manifest ?? throw BuildException::make('package.not_arco', ['path' => $package->path]);
         if ($manifest->app !== $config->app || $manifest->environment !== $config->environment) {
@@ -77,7 +78,8 @@ final class PackageReader
         if ($manifest->arcoVersion !== Arco::version()) {
             $warnings[] = ['package.version_differs', ['path' => $package->path, 'package_version' => $manifest->arcoVersion, 'version' => Arco::version()]];
         }
-        if ($manifest->runtimeBuild !== $runtimeBuild) {
+        $packageBuild = $manifest->runtimeBuild === null || $canonical === null ? $manifest->runtimeBuild : $canonical($manifest->runtimeBuild);
+        if ($packageBuild !== $runtimeBuild) {
             $warnings[] = ['package.runtime_build_differs', [
                 'path' => $package->path,
                 'package_build' => $manifest->runtimeBuild ?? 'custom binary',

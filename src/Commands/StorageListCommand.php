@@ -14,6 +14,7 @@ use Multiapi\Arco\Deploy\Domains\Aws;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
+use Symfony\Component\Console\Output\NullOutput;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Style\SymfonyStyle;
 use Throwable;
@@ -33,17 +34,28 @@ final class StorageListCommand extends ArcoCommand
     protected function configure(): void
     {
         $this->addOption('env', 'e', InputOption::VALUE_REQUIRED, 'Environment')
-            ->addOption('profile', 'p', InputOption::VALUE_REQUIRED, 'AWS profile to use');
+            ->addOption('profile', 'p', InputOption::VALUE_REQUIRED, 'AWS profile to use')
+            ->addOption('json', null, InputOption::VALUE_NONE, 'Print JSON');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $io = new SymfonyStyle($input, $output);
+        $json = (bool) $input->getOption('json');
+        if ($json) {
+            // No profile prompt or "profile saved" text in the JSON stream: it needs a profile that resolves.
+            $input->setInteractive(false);
+        }
         try {
-            $config = $this->loadTarget($input, $io);
+            // Notes and warnings would corrupt machine-readable output, so --json sends them nowhere.
+            $config = $this->loadTarget($input, $json ? new SymfonyStyle($input, new NullOutput()) : $io);
             // Retained buckets may exist without any storage in arco.php, so AWS is read either way.
             $aws = $this->awsClients($config, $input, $io);
             $located = $config->account === null ? $config->withAccount($aws->accountId()) : $config;
+            if ($json) {
+                $this->printJson($output, $aws, $config, $located);
+                return self::SUCCESS;
+            }
             if ($config->storage === []) {
                 $io->note($this->t('storage.none_configured', ['environment' => $config->environment]));
             }
@@ -54,9 +66,49 @@ final class StorageListCommand extends ArcoCommand
             $this->retained($aws, $located, $io);
             return self::SUCCESS;
         } catch (Throwable $e) {
-            $io->error($this->describeError($e) ?? throw $e);
+            $message = $this->describeError($e) ?? throw $e;
+            if ($json) {
+                $output->writeln((string) json_encode(['schema' => 1, 'error' => $message], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+            } else {
+                $io->error($message);
+            }
             return self::FAILURE;
         }
+    }
+
+    /**
+     * `retained` lists the buckets of removed storage; `retainedError` (the AWS error code) replaces
+     * it when AWS refused the lookup, so unknown is never shown as none.
+     */
+    private function printJson(OutputInterface $output, AwsClients $aws, AppConfig $config, AppConfig $located): void
+    {
+        $storage = [];
+        foreach ($config->storage as $disk) {
+            $overrides = $disk->default ? DeployPipeline::storageOverrides($config, $located) : [];
+            $storage[] = [
+                'name' => $disk->name,
+                'bucket' => $disk->bucketName($located),
+                'url' => $disk->url($located),
+                'existing' => $disk->existing !== null,
+                'default' => $disk->default,
+                'defaultOverriddenBy' => $overrides === [] ? null : array_keys($overrides),
+                'public' => $disk->public,
+                'expire' => (object) $disk->expire,
+                'cors' => $disk->cors,
+            ];
+        }
+        $result = ['schema' => 1, 'environment' => $config->environment, 'storage' => $storage];
+        try {
+            $retained = [];
+            foreach ($this->retainedBuckets($aws, $located) as $name => $bucket) {
+                $retained[] = ['name' => $name, 'bucket' => $bucket];
+            }
+            $result['retained'] = $retained;
+        } catch (AwsException $e) {
+            $result['retained'] = null;
+            $result['retainedError'] = (string) ($e->getAwsErrorCode() ?? 'UnknownError');
+        }
+        $output->writeln((string) json_encode($result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
     }
 
     /** @return list<array<string, string>> */

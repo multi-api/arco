@@ -3,6 +3,7 @@
 namespace Multiapi\Arco\Commands\Concerns;
 
 use Multiapi\Arco\Config\AppConfig;
+use Multiapi\Arco\Config\ConfigException;
 use Multiapi\Arco\Config\QueueConfig;
 use Symfony\Component\Console\Input\InputInterface;
 
@@ -31,10 +32,24 @@ trait EditsQueues
      */
     private static function levelQueues(array $raw, ?string $environment): array
     {
-        return array_map(
-            static fn (array|false $options): array|false => $options === false ? false : array_filter($options, static fn (mixed $v): bool => ! is_array($v)),
-            self::levelNamed($raw, $environment),
-        );
+        $levels = [];
+        foreach (self::levelNamed($raw, $environment) as $name => $options) {
+            if ($options === false) {
+                $levels[$name] = false;
+                continue;
+            }
+            $options = array_filter($options, static fn (mixed $v): bool => ! is_array($v));
+            // The deprecated concurrency is rewritten as maxInstances when a queue is edited.
+            if (array_key_exists('concurrency', $options)) {
+                if (array_key_exists('maxInstances', $options)) {
+                    throw ConfigException::make('validation.queue_both_concurrency', ['queue' => (string) $name]);
+                }
+                $options['maxInstances'] = $options['concurrency'];
+                unset($options['concurrency']);
+            }
+            $levels[$name] = $options;
+        }
+        return $levels;
     }
 
     /**

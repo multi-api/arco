@@ -13,8 +13,8 @@ final readonly class QueueConfig
         public string $name,
         public int $timeout = 60,
         public int $memory = 1024,
-        /** null: no maximum concurrency on the event source mapping */
-        public ?int $concurrency = null,
+        /** null: no maximum concurrency on the event source mapping (concurrent worker invocations) */
+        public ?int $maxInstances = null,
         public int $batchSize = 1,
         public int $tries = 3,
         /** a dead-letter queue is created next to a queue Arco owns; never for an existing one */
@@ -23,6 +23,10 @@ final readonly class QueueConfig
         /** name, URL or ARN of a queue Arco does not manage */
         public ?string $existing = null,
         public bool $default = false,
+        /** the queue still spells maxInstances as the deprecated concurrency */
+        public bool $deprecatedConcurrency = false,
+        /** both concurrency and maxInstances are set (the validator refuses it) */
+        public bool $conflictingConcurrency = false,
     ) {
     }
 

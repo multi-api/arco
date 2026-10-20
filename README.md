@@ -8,9 +8,10 @@ Arco is an open-source PHP CLI by [Multiapi](https://multiapi.cl). It builds you
 deploys it to Lambda Web Functions with [FrankenPHP](https://frankenphp.dev), with environments,
 secrets, custom domains and rollback built in.
 
-> **Status: early preview (0.x).** Lambda Web Functions launched in October 2026 and Arco is new.
-> It already runs a production Laravel app, but expect changes between minor versions. Read the
-> [changelog](CHANGELOG.md) before upgrading.
+> **Status: 0.9, the API freeze before 1.0.** Lambda Web Functions launched in October 2026 and Arco is new.
+> It already runs a production Laravel app. 0.9 is the last release allowed to break `arco.php`, the CLI or the
+> `--json` output; from 1.0 they stay compatible until 2.0 ([what is covered](docs/upgrading.md#the-1x-promise)).
+> Upgrading from an earlier version: read [Upgrading](docs/upgrading.md).
 
 ## Requirements
 
@@ -29,7 +30,7 @@ vendor/bin/arco deploy --env=production
 ```
 
 `init` asks for the app name, region, environments and (optionally) a custom domain, and writes
-`arco.php`. The first deploy asks which AWS profile to use and remembers it.
+`arco.php`. The first deploy asks which AWS profile to use and remembers it in `.arco/local.php`.
 
 ## What you get
 
@@ -48,7 +49,7 @@ vendor/bin/arco deploy --env=production
   runs the jobs with Laravel's own worker (retries, `failed()` and `failed_jobs` as usual);
   `->onQueue('emails')` works without app changes.
 - **Storage, cache and failed jobs.** `->storage('uploads')` creates a private S3 bucket that is a Laravel
-  disk (the first one is the default disk), with optional public prefixes, expiry rules and CORS;
+  disk (the first one is the default disk, unless every one says `default: false`), with optional public prefixes, expiry rules and CORS;
   `->cache()` and `->failedJobsTable()` create DynamoDB tables for Laravel's cache and failed jobs. Each can
   point at one you already have (`existing:`), and removed ones stay in AWS with their data.
 - **Custom domains** in one line: certificate, CloudFront and DNS records, with the DNS zone in the
@@ -68,6 +69,7 @@ use Multiapi\Arco\Config\Runtime;
 
 return App::make('shop')                       // function name: shop-<environment>
     ->region('us-east-1')
+    ->runtime(fn (Runtime $r) => $r->php('8.5'))   // PHP minor; an Arco upgrade never changes it
 
     // App level: defaults for every environment
     ->timeout(28)
@@ -101,7 +103,7 @@ The main options:
 
 | Option | Default | What it does |
 |---|---|---|
-| `region()` | — (required) | AWS region of the function |
+| `region()` | — (required) | AWS region of the app (one region per app) |
 | `concurrency(int)` | AWS default (64) | Cap on requests per instance (2 vCPU / 2 GB); Lambda adds instances as traffic grows |
 | `maxInstances(int)` | no cap | Maximum running instances |
 | `rateLimit(int)` | no limit | Requests per second; extra requests get 429 |
@@ -109,18 +111,18 @@ The main options:
 | `variables([...])` | preset defaults | Environment variables; values may be secret references |
 | `permissions([...])` | — | Extra IAM statements for the function's role |
 | `domain(...)` / `dns(...)` | — | Custom domains and where their DNS zone is |
-| `profile()` / `account()` | asked on first deploy | AWS profile, and an account lock so a wrong profile can't deploy |
+| `profile()` / `account()` | — | AWS profile for the environment (without it, the first deploy asks and remembers the answer in `.arco/local.php`), and an account lock so a wrong profile can't deploy (offered after the first deploy) |
 | `auth('public'\|'iam')` | `public` | `iam` requires signed requests |
-| `runtime(fn ...)` | | FrankenPHP/Octane: `workers()`, `threads()`, `phpIni()`, `build()` |
+| `runtime(fn ...)` | PHP 8.5 | PHP version and FrankenPHP/Octane: `php()`, `frankenphp()`, `build()`, `binary()`, `workers()`, `maxThreads()`, `threads()`, `phpIni()` |
 | `deployCommands([...])` | — | Commands run on every deploy before traffic moves, e.g. `['migrate --force']` |
 | `console(bool = true)` | off | Deploy the console function (`arco command`, `arco tinker`, deploy commands); `console(false)` deletes it |
 | `scheduler(int\|false)` | off | Run `schedule:run` every N minutes (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60), clock-aligned in UTC; needs the console |
-| `logRetention(int\|false)` | not managed | Days CloudWatch keeps the logs; `false` = never expire |
-| `queue(name, ...)` | none | An SQS queue and its worker function; named options `timeout`, `memory`, `concurrency`, `batchSize`, `tries`, `dlq`, `fifo`, `existing`, `default` |
+| `logRetention(int\|false)` | 30 | Days CloudWatch keeps the logs; `false` = never expire |
+| `queue(name, ...)` | none | An SQS queue and its worker function; named options `timeout`, `memory`, `maxInstances`, `batchSize`, `tries`, `dlq`, `fifo`, `existing`, `default` |
 | `storage(name, ...)` | none | An S3 bucket used as a Laravel disk; named options `public`, `expire`, `cors`, `existing`, `default` |
 | `cache()` / `failedJobsTable()` | off | DynamoDB tables for Laravel's cache and failed jobs; `existing:` names your own table |
-| `consoleTimeout(int)` | 900 | Seconds a console command may run (3–900) |
-| `protected()` | `production` | Ask before `arco tinker` on this environment |
+| `console(timeout:, memory:)` | 900 s, 2048 MB | Console function timeout in seconds (3–900) and memory in MB (128–10240) |
+| `protected()` | `production` | Ask before `arco tinker`, `arco command`, `arco remove` and `arco queue:dlq --redrive` on this environment (`--yes` answers; required without a terminal) |
 
 Every option, the packaging rules and the Laravel preset are in the
 [configuration reference](docs/configuration.md).
@@ -132,27 +134,27 @@ Every option, the packaging rules and the Laravel preset are in the
 | `arco init` | Create `arco.php` (asks name, region, environments, custom domain) |
 | `arco deploy --env=<env>` | Build, upload, deploy commands, deploy, verify, attach domains; `--migrate` runs migrations first; `--package=<zip>` deploys a prebuilt zip |
 | `arco console:add --env=<env>` / `console:remove` | Turn the console function on or off in `arco.php` (off deletes it on the next deploy) |
-| `arco command "<args>" --env=<env>` | Run an artisan (or PHP) command on the console function (needs `console()`); exits with its exit code (`--async` to start it and return) |
+| `arco command "<args>" --env=<env>` | Run an artisan (or PHP) command, given as one quoted string, on the console function (needs `console()`); exits with its exit code (`--async` to start it and return; `--yes` on a protected environment without a terminal) |
 | `arco tinker --env=<env>` | Tinker on your machine, statements run in Lambda (needs `console()`; `--execute="<code>"` for one statement) |
 | `arco scheduler:set [N] --env=<env>` / `scheduler:remove` | Run Laravel's scheduler every N minutes (suggests N from your tasks; turns the console on) / turn it off; `--apply` (or answer yes) applies it in AWS without a deploy |
 | `arco scheduler:pause --env=<env>` / `scheduler:resume` | Pause or resume the scheduler in AWS at once, without editing `arco.php` (deploys keep it paused) |
 | `arco logs:retention <days\|never> --env=<env>` | Set how long CloudWatch keeps the logs (`--remove` stops managing it) |
 | `arco queue:add <name> --env=<env>` / `queue:set` / `queue:remove` | Add, change or remove a queue in `arco.php` (removed queues stay in AWS with their messages) |
-| `arco queue:list --env=<env>` | Each queue's messages, dead-letter queue and worker version |
+| `arco queue:list --env=<env>` | Each queue's messages, dead-letter queue and worker version (`--json` too) |
 | `arco queue:dlq <name> --env=<env>` | Show the messages in a queue's dead-letter queue; `--redrive` moves them back |
-| `arco queue:failed-table --env=<env>` | Turn the DynamoDB failed-jobs table on (`--existing=<table>`) or off (`--remove`) in `arco.php` |
+| `arco failed-jobs:add --env=<env>` / `failed-jobs:remove` | Turn the DynamoDB failed-jobs table on (`--existing=<table>`) or off in `arco.php` |
 | `arco storage:add <name> --env=<env>` / `storage:remove` | Add or remove a storage in `arco.php` (`--existing=<bucket>`, `--default`; removed buckets stay in AWS with their files) |
 | `arco storage:public` / `storage:expire` / `storage:cors` | Public prefixes, expiry rules and CORS origins of a storage (`--remove` takes one out) |
-| `arco storage:list --env=<env>` | Each storage's bucket, URL and options, and the retained buckets no longer in `arco.php` |
+| `arco storage:list --env=<env>` | Each storage's bucket, URL and options, and the retained buckets no longer in `arco.php` (`--json` too) |
 | `arco cache:add --env=<env>` / `cache:remove` | Turn the DynamoDB cache table on (`--existing=<table>`) or off in `arco.php` |
 | `arco logs --env=<env>` | Web, console and queue worker logs merged, filtered and colored (`--follow`, `--since`, `--level`, `--request`, `--filter`, `--queue`) |
 | `arco package --env=<env>` | Build the zip only (for CI: build once, deploy later) |
-| `arco info --env=<env>` | Resolved settings with their source, URL, active revision (`--json` too) |
+| `arco info --env=<env>` | Resolved settings with their source, URL, active revision (`--json` too); `--resources` lists every AWS resource tagged for the environment |
 | `arco secret:set <name> --env=<env>` | Store a secret in SSM and print the reference to use |
-| `arco set <key> <value> --env=<env>` / `arco unset <key>` | Change `concurrency`, `max-instances`, `rate-limit`, `timeout`, `log-level` in `arco.php` |
+| `arco set <key> <value> --env=<env>` / `arco unset <key>` | Change `concurrency`, `max-instances`, `rate-limit`, `timeout`, `log-level`, `console-timeout`, `console-memory` in `arco.php` |
 | `arco domain:add <host> --env=<env>` / `domain:remove` | Change an environment's domains in `arco.php` |
-| `arco profile --env=<env>` | Show or change the AWS profile remembered for an environment |
-| `arco remove --env=<env>` | Delete the function, its endpoint, role, workers and domain resources (queues, buckets and tables are kept) |
+| `arco profile --env=<env>` | Show or change the AWS profile remembered for an environment (`--json` too) |
+| `arco remove --env=<env>` | Delete the function, its endpoint, role, workers and domain resources (queues, buckets, tables and log groups are kept); without a terminal it needs `--yes` |
 
 Messages are in English or Spanish (`--lang=es` or `ARCO_LANG=es`).
 
@@ -160,6 +162,8 @@ Messages are in English or Spanish (`--lang=es` or `ARCO_LANG=es`).
 
 - [Getting started](docs/getting-started.md)
 - [Configuration reference](docs/configuration.md)
+- [Upgrading](docs/upgrading.md): every breaking change per version, and what 1.x keeps stable
+- [Try it locally with Floci](docs/local-floci.md)
 
 ## Limits (of Lambda Web Functions)
 
@@ -170,14 +174,7 @@ Messages are in English or Spanish (`--lang=es` or `ARCO_LANG=es`).
 - The queue workers are classic Lambda functions running the console package (250 MB unzipped), one per
   queue; a batch of jobs runs for at most the worker's `timeout` (up to 900 s)
 - Arco deploys HTTP functions, an optional console function for commands and the scheduler, SQS queue
-  workers, S3 buckets and DynamoDB tables for the cache and failed jobs; next on the roadmap is
-  `arco init` detecting what the app uses and offering each piece
-
-## Upgrading to 0.4
-
-The console function is no longer deployed by default. If an environment already has one (apps deployed
-with 0.2 or 0.3) and `arco.php` has no `console()` setting, `arco deploy` stops before changing anything:
-add `->console()` to keep it, or `->console(false)` to delete it on the next deploy.
+  workers, S3 buckets and DynamoDB tables for the cache and failed jobs, in one region per app
 
 ## Packages
 

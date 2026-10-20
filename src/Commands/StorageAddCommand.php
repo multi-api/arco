@@ -23,7 +23,7 @@ final class StorageAddCommand extends ArcoCommand
     {
         $this->addArgument('name', InputArgument::REQUIRED, 'Storage name (lowercase letters, digits and hyphens)')
             ->addOption('existing', null, InputOption::VALUE_REQUIRED, 'Name of an S3 bucket Arco does not manage')
-            ->addOption('default', null, InputOption::VALUE_NONE, 'Make this the default disk (FILESYSTEM_DISK)');
+            ->addOption('default', null, InputOption::VALUE_NONE, 'Make this the default storage (its bucket backs the s3 disk: AWS_BUCKET, AWS_URL)');
         $this->addTargetOptions();
     }
 

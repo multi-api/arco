@@ -5,6 +5,9 @@ namespace Multiapi\Arco\Build;
 use Composer\Autoload\ClassLoader;
 use ReflectionClass;
 
+/**
+ * @internal Not covered by the 1.x compatibility promise.
+ */
 final class PresetRegistry
 {
     /** First-party presets known even when installed from the monorepo (replaced packages). */

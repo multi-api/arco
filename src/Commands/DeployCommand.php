@@ -42,7 +42,7 @@ final class DeployCommand extends ArcoCommand
     use ResolvesTarget;
 
     private DeployPipeline $pipeline;
-    /** @var Closure(AwsClients, ?AwsClients, bool): Deployer */
+    /** @var Closure(AwsClients, ?AwsClients, bool, bool): Deployer */
     private Closure $deployerFactory;
     /** @var Closure(AwsClients): Verifier */
     private Closure $verifierFactory;
@@ -60,7 +60,7 @@ final class DeployCommand extends ArcoCommand
     ) {
         $this->awsFactory = $awsFactory ?? fn (?string $profile, string $region) => new AwsClients($profile, $region);
         $this->pipeline = $pipeline ?? DeployPipeline::default();
-        $this->deployerFactory = $deployerFactory ?? fn (AwsClients $aws, ?AwsClients $dns = null, bool $forceDns = false) => new AwsDeployer($aws, new Sleeper(), $dns, $forceDns);
+        $this->deployerFactory = $deployerFactory ?? fn (AwsClients $aws, ?AwsClients $dns = null, bool $forceDns = false, bool $force = false) => new AwsDeployer($aws, new Sleeper(), $dns, $forceDns, $force);
         $this->verifierFactory = $verifierFactory ?? fn (AwsClients $aws) => new AwsVerifier($aws->logs(), new Client(), new Sleeper());
         $this->presets = $presets ?? PresetRegistry::default();
         $this->consoleFactory = $consoleFactory ?? fn (AwsClients $aws, AppConfig $config) => new LambdaConsole($aws->lambda(LambdaConsole::clientOptions($config)));
@@ -71,9 +71,10 @@ final class DeployCommand extends ArcoCommand
     {
         $this->addOption('env', 'e', InputOption::VALUE_REQUIRED, 'Environment to deploy')
             ->addOption('profile', 'p', InputOption::VALUE_REQUIRED, 'AWS profile to use')
-            ->addOption('yes', 'y', InputOption::VALUE_NONE, 'Do not ask for confirmation')
+            ->addOption('yes', 'y', InputOption::VALUE_NONE, 'Answer yes to every confirmation')
             ->addOption('dns-profile', null, InputOption::VALUE_REQUIRED, 'AWS profile whose Route 53 holds the DNS zones of the custom domains')
             ->addOption('force-dns', null, InputOption::VALUE_NONE, 'Replace existing DNS records of the custom domains that point elsewhere')
+            ->addOption('force', null, InputOption::VALUE_NONE, 'Dangerous: deploy over a function, role or scheduler rule tagged for another app or environment, or carrying no Arco tags, and tag it for this one. Only when you are sure it is yours')
             ->addOption('package', null, InputOption::VALUE_REQUIRED, 'Deploy a zip written by "arco package" instead of building')
             ->addOption('migrate', null, InputOption::VALUE_NONE, 'Run "migrate --force" before traffic moves (added to the deploy commands)')
             ->addOption('no-deploy-commands', null, InputOption::VALUE_NONE, 'Skip the deploy commands of arco.php');
@@ -109,7 +110,7 @@ final class DeployCommand extends ArcoCommand
             $packagePath = $input->getOption('package');
             if (is_string($packagePath)) {
                 $package = PackageReader::open($packagePath);
-                foreach (PackageReader::check($package, $config, $preset, $this->pipeline->runtimeBuild($config)) as [$key, $params]) {
+                foreach (PackageReader::check($package, $config, $preset, $this->pipeline->runtimeBuild($config), $this->pipeline->canonicalBuild(...)) as [$key, $params]) {
                     $io->warning($this->t($key, $params));
                 }
             }
@@ -136,7 +137,7 @@ final class DeployCommand extends ArcoCommand
                 $io->writeln($this->t('deploy.dns_target', ['account' => $this->checkDnsCredentials($dns), 'profile' => (string) $dns->profile]));
             }
 
-            $deployer = ($this->deployerFactory)($aws, $dns, (bool) $input->getOption('force-dns'));
+            $deployer = ($this->deployerFactory)($aws, $dns, (bool) $input->getOption('force-dns'), (bool) $input->getOption('force'));
             if ($deployer->describe($config) === null && ! $input->getOption('yes')) {
                 if (! $input->isInteractive()) {
                     throw new UserError($this->t('deploy.confirm_required'));
@@ -170,7 +171,7 @@ final class DeployCommand extends ArcoCommand
                     'created' => $package->manifest->createdAt,
                     'hash' => substr($package->hash, 0, 12),
                 ]);
-                $outcome = $this->pipeline->deployPackage($target, $preset, $package, $deployer, $verifier, $steps, $plan);
+                $outcome = $this->pipeline->deployPackage($target, $preset, $package, $deployer, $verifier, $steps, $plan, $this->projectDir());
             } else {
                 $outcome = $this->pipeline->deploy($target, $preset, $this->projectDir(), $deployer, $verifier, $steps, $plan);
             }
@@ -190,7 +191,7 @@ final class DeployCommand extends ArcoCommand
                 $io->writeln($outcome->rolledBack
                     ? $this->t('deploy.rolled_back', ['revision' => (string) $outcome->result->previousRevisionId])
                     : $this->t('deploy.not_rolled_back'));
-                $this->commandsNotUndone($io, $outcome->commandsRan, $config->environment);
+                $this->commandsNotUndone($io, $outcome->commandsRan, $config);
                 return self::FAILURE;
             }
 
@@ -226,7 +227,7 @@ final class DeployCommand extends ArcoCommand
                     'error' => $previous === null ? '' : ($this->describeError($previous) ?? $previous->getMessage()),
                 ]));
                 $io->writeln($this->t('deploy.command_traffic_unchanged'));
-                $this->commandsNotUndone($io, $e->ran, $config->environment, 'deploy.commands_may_have_run');
+                $this->commandsNotUndone($io, $e->ran, $config, 'deploy.commands_may_have_run');
                 return self::FAILURE;
             }
             $io->error($result->crashed()
@@ -237,7 +238,7 @@ final class DeployCommand extends ArcoCommand
             }
             $io->writeln($this->t('deploy.command_traffic_unchanged'));
             // The failing command is reported above; a migrate that failed may have rolled itself back.
-            $this->commandsNotUndone($io, array_slice($e->ran, 0, -1), $config->environment);
+            $this->commandsNotUndone($io, array_slice($e->ran, 0, -1), $config);
             // R12: the command's own exit code; 1 when it has none (a Lambda error, or 0 on a crash).
             return ! $result->crashed() && $result->exitCode > 0 ? min($result->exitCode, 255) : self::FAILURE;
         } catch (Throwable $e) {
@@ -247,7 +248,7 @@ final class DeployCommand extends ArcoCommand
                 $io->error($message);
             }
             if ($config !== null) {
-                $this->commandsNotUndone($io, $ran, $config->environment);
+                $this->commandsNotUndone($io, $ran, $config);
             }
             return $message === null ? throw $e : self::FAILURE;
         }
@@ -258,14 +259,14 @@ final class DeployCommand extends ArcoCommand
      *
      * @param list<string> $ran
      */
-    private function commandsNotUndone(SymfonyStyle $io, array $ran, string $environment, string $key = 'deploy.commands_not_undone'): void
+    private function commandsNotUndone(SymfonyStyle $io, array $ran, AppConfig $config, string $key = 'deploy.commands_not_undone'): void
     {
         if ($ran === []) {
             return;
         }
         $io->writeln($this->t($key, ['commands' => implode(', ', $ran)]));
         if (DeployCommands::hasMigrate($ran)) {
-            $io->writeln($this->t('deploy.migrate_rollback_hint', ['environment' => $environment]));
+            $io->writeln($this->t('deploy.migrate_rollback_hint', ['environment' => $config->environment, 'yes' => $config->isProtected() ? ' --yes' : '']));
         }
     }
 }

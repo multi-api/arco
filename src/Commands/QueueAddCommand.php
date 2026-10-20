@@ -21,7 +21,7 @@ final class QueueAddCommand extends ArcoCommand
     use EditsQueues;
 
     /** CLI option => queue() argument, for the options that take a whole number. */
-    private const NUMBERS = ['timeout' => 'timeout', 'memory' => 'memory', 'concurrency' => 'concurrency', 'batch-size' => 'batchSize', 'tries' => 'tries'];
+    private const NUMBERS = ['timeout' => 'timeout', 'memory' => 'memory', 'max-instances' => 'maxInstances', 'batch-size' => 'batchSize', 'tries' => 'tries'];
 
     protected function configure(): void
     {
@@ -29,7 +29,8 @@ final class QueueAddCommand extends ArcoCommand
             ->addOption('existing', null, InputOption::VALUE_REQUIRED, 'Name, URL or ARN of an SQS queue Arco does not manage')
             ->addOption('timeout', null, InputOption::VALUE_REQUIRED, 'Worker timeout in seconds')
             ->addOption('memory', null, InputOption::VALUE_REQUIRED, 'Worker memory in MB')
-            ->addOption('concurrency', null, InputOption::VALUE_REQUIRED, 'Maximum concurrent worker invocations')
+            ->addOption('max-instances', null, InputOption::VALUE_REQUIRED, 'Maximum concurrent worker invocations')
+            ->addOption('concurrency', null, InputOption::VALUE_REQUIRED, 'Deprecated: use --max-instances')
             ->addOption('batch-size', null, InputOption::VALUE_REQUIRED, 'Messages per worker invocation')
             ->addOption('tries', null, InputOption::VALUE_REQUIRED, 'Attempts of a job without its own $tries (the dead-letter queue receives it after tries + 2 deliveries)')
             ->addOption('no-dlq', null, InputOption::VALUE_NONE, 'Do not create a dead-letter queue')
@@ -42,7 +43,7 @@ final class QueueAddCommand extends ArcoCommand
     {
         $io = new SymfonyStyle($input, $output);
         try {
-            return $this->addNamed($input, $io, function () use ($input): array {
+            return $this->addNamed($input, $io, function () use ($input, $io): array {
                 $options = [];
                 $existing = $input->getOption('existing');
                 if (is_string($existing) && $existing !== '') {
@@ -50,6 +51,14 @@ final class QueueAddCommand extends ArcoCommand
                 }
                 if ($input->getOption('default')) {
                     $options['default'] = true;
+                }
+                $deprecated = $input->getOption('concurrency');
+                if ($deprecated !== null) {
+                    if ($input->getOption('max-instances') !== null) {
+                        throw new UserError($this->t('deprecated.queue_both_option'));
+                    }
+                    $io->warning($this->t('deprecated.queue_concurrency_option'));
+                    $input->setOption('max-instances', $deprecated);
                 }
                 foreach (self::NUMBERS as $cli => $key) {
                     $value = $input->getOption($cli);

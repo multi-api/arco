@@ -13,7 +13,9 @@ return App::make('myapp')
     ->region('us-east-1')
     ->concurrency(48)
     ->runtime(fn (Runtime $r) => $r
-        ->workers(min: 4, max: 64)
+        ->php('8.5')
+        ->workers(4)
+        ->maxThreads(64)
         ->phpIni(['memory_limit' => '512M']))
     ->exclude(['docs/**'])
     ->environment('staging', fn (Environment $env) => $env
@@ -26,6 +28,46 @@ return App::make('myapp')
 ```
 
 The file is loaded in a separate PHP process. Validation runs before any build or AWS call.
+
+Upgrading from an earlier Arco? [Upgrading](upgrading.md) lists every change to `arco.php` per version, and what
+1.x keeps stable.
+
+## Names and ownership
+
+Arco names every resource after `<app>-<env>`: the web function `<app>-<env>`, the console function
+`<app>-<env>-console`, one worker `<app>-<env>-queue-<queue>` per queue, the execution role
+`arco-<app>-<env>`, the scheduler rule `arco-<app>-<env>-scheduler`, the stacks `arco-<app>-<env>` and
+`arco-<app>-<env>-resources`. So that these names never collide across apps and environments:
+
+- app and environment names must not end in `-console`, `-resources`, `-scheduler` or `-host`, and must
+  not contain `-queue-`. The same holds for `<app>-<env>` as a whole when it would name another app's
+  resource: app `shop-prod` with environment `queue-emails` (a worker of `shop`/`prod`), app `shop-eu` with
+  environment `console` (the console function of `shop`/`eu`). Validation names the rule that a name breaks.
+- hyphens are otherwise allowed, so app `shop-eu` with environment `prod` and app `shop` with environment
+  `eu-prod` share every name. Arco tells them apart by the `arco:app` and `arco:environment` tags it puts
+  on everything it creates: before a deploy changes, or `arco remove` deletes, a function, role or
+  scheduler rule, Arco reads its tags and refuses (before changing anything) when they belong to another
+  app or environment. A resource with Arco's name but no tags is refused too, unless Arco's own
+  description is on it (every Arco version wrote one): then it is this environment's, and the deploy adds
+  the tags. `arco deploy --force` overrides a refusal and tags the resource for this environment; it is
+  dangerous, so use it only for a resource you know is yours. `arco remove` has no override: it never
+  deletes another environment's resources. `arco command`, `arco tinker` and `scheduler:pause`/`scheduler:resume`
+  check the console function or scheduler rule the same way, with no override, before they run or change
+  anything. An untagged web function counts as Arco's only when its live revision carries Arco's description
+  and its zip sits under this environment's `<app>/<env>/` prefix in the code bucket.
+- every environment also gets an AWS Resource Group `arco-<app>-<env>` (a tag query on `arco:app` and
+  `arco:environment`), so the AWS console shows its resources together; `arco info --resources` lists them in
+  the terminal (also `--json`), and `arco remove` prints the same list before it asks. The group is a
+  convenience: without `resource-groups:*` permissions the deploy and the remove print a note.
+
+### One region per app
+
+An app and its environments live in the region of `region()` (app level only). The execution role, the
+CloudFront function and the bucket names are account-wide, so moving a deployed environment to another
+region would leave the old function running with a role rewritten for the new one. Arco tags each new
+execution role with `arco:region`, and `arco deploy` refuses, before any change and even with `--force`, when
+an existing role carries another region than `region()`. For a second region, use another environment name. A role
+created by an Arco before 0.9 has no `arco:region` tag: the next deploy adds it.
 
 ## Inheritance
 
@@ -44,33 +86,32 @@ like the others (an environment's call replaces the app's, and `cache(false)` tu
 
 | Method | Default | Maps to |
 |---|---|---|
-| `App::make(name)` | required | App name. Function name is `<app>-<env>` (max 64 chars, lowercase letters, digits, hyphens, starting with a letter) |
-| `region(string)` | required | AWS region; must be one of us-east-1, us-east-2, us-west-2, ap-northeast-1, eu-west-1 |
+| `App::make(name)` | required | App name. Function name is `<app>-<env>` (max 56 chars, so that the console function `<app>-<env>-console` fits Lambda's 64; lowercase letters, digits, hyphens, starting with a letter; see [Names and ownership](#names-and-ownership)) |
+| `region(string)` | required | AWS region; must be one of us-east-1, us-east-2, us-west-2, ap-northeast-1, eu-west-1; app level only (see [One region per app](#one-region-per-app)) |
 | `concurrency(int)` | AWS default (64) | Upper bound of requests each instance handles at once: revision `maxConcurrencyPerEnvironment` (1 to 128). Lambda applies its own dynamic limit below it |
 | `timeout(int)` | 30 | Revision `timeoutSeconds` (3 to 900) |
-| `maxInstances(int)` | unset | Maximum running instances of the function: endpoint `scalingConfig.maxEnvironments` (2 to 10000). `maxEnvironments(int)` is accepted as an alias |
+| `maxInstances(int)` | unset | Maximum running instances of the function: endpoint `scalingConfig.maxEnvironments` (2 to 10000). |
 | `rateLimit(int)` | unset | Endpoint `throttleConfig.rateLimit` (requests per second: 100 to 1000 in steps of 100, or 2000 to 10000 in steps of 1000) |
 | `auth('public'\|'iam')` | `public` | Endpoint `authType`: `public` is `ApplicationManaged`, `iam` is `IamAuth` |
 | `logLevel(string)` | `info` | Revision log level: trace, debug, info, warn, error, fatal |
 | `role(arn)` | managed | Your own execution role ARN instead of the managed `arco-<app>-<env>` role |
 | `kmsKey(arn)` | unset | Revision `kmsKeyArn` |
-| `profile(string)` | unset | AWS profile for the environment (see getting started) |
+| `profile(string)` | unset | AWS profile for the environment. Without it, the first deploy asks and remembers the answer in `.arco/local.php`, not in `arco.php` (see [Choosing the AWS profile](getting-started.md#choosing-the-aws-profile)) |
 | `account(string)` | written on first deploy | 12-digit account lock; environment level only |
-| `variables(array)` | preset defaults | Revision environment variables |
+| `variables(array)` | preset defaults | Revision environment variables. Names starting with `ARCO` are reserved for Arco and refused; Lambda's own (`AWS_REGION`, `AWS_LAMBDA_*`, ...) too |
 | `permissions(array)` | `[]` | Extra IAM statements for the managed execution role (below) |
 | `exclude(array)` / `include(array)` | preset rules | Packaging globs (below) |
 | `domain(string\|array)` | none | Custom domains served through CloudFront (below); lowercase hostnames, no wildcards, at most 10 |
-| `dns(string\|false)` | Route 53 in the deploy account | `dns('profile')`: Route 53 in the account of that AWS profile; `dns(false)`: DNS is elsewhere, Arco prints the records |
+| `dns(string\|false $dns)` | Route 53 in the deploy account | `dns('profile')`: Route 53 in the account of that AWS profile; `dns(false)`: DNS is elsewhere, Arco prints the records |
 | `deployCommands(array)` | `[]` | Commands run on the console function during every deploy, before traffic moves; an environment's list replaces the app's |
-| `console(bool = true)` | off | Deploy the console function (`arco command`, `arco tinker`, `deployCommands()`); `console(false)` deletes an existing one on the next deploy; a scheduler implies it |
+| `console(bool = true, ?int timeout, ?int memory)` | off | Deploy the console function (`arco command`, `arco tinker`, `deployCommands()`); `console(false)` deletes an existing one on the next deploy; a scheduler implies it. `timeout:` is in seconds (3 to 900, default 900), `memory:` in MB (128 to 10240, default 2048); giving either also turns the console on |
 | `scheduler(int\|false)` | off | Run Laravel's `schedule:run` every N minutes (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30 or 60), aligned to the UTC clock; needs the console, which it turns on |
-| `logRetention(int\|false)` | not managed | Days CloudWatch keeps the web, console and queue worker logs (1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288 or 3653); `false` = never expire; not set = Arco leaves the groups as they are |
-| `consoleTimeout(int)` | 900 | Timeout of the console function in seconds (3 to 900) |
-| `protected(bool = true)` | on for `production` | Ask for confirmation before `arco tinker`; `protected(false)` turns it off |
+| `logRetention(int\|false)` | 30 | Days CloudWatch keeps the web, console and queue worker logs (1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288 or 3653); `false` = never expire; not set = 30 days |
+| `protected(bool = true)` | on for `production` | Ask for confirmation before `arco tinker`, `arco command`, `arco remove` and `arco queue:dlq --redrive`; `--yes` answers it, and without a terminal it is required (CI: `arco command "migrate --force" --env=production --no-interaction --yes`). Deploy commands (`deployCommands()`, `arco deploy --migrate`) are not asked. `protected(false)` turns it off |
 | `certificate(arn)` | looked up or requested | ACM certificate ARN in `us-east-1` to use for the domains |
 | `queue(name, ...)` | none | An SQS queue and the worker function that runs its jobs (see [Queues](#queues)); `queue(name, false)` drops an app-level queue from an environment |
 | `storage(name, ...)` | none | An S3 bucket, used as a Laravel disk (see [Storage](#storage)); `storage(name, false)` drops an app-level storage from an environment |
-| `cache(bool = true, existing: ?string)` | off | A DynamoDB table for Laravel's cache (see [Cache and failed-jobs tables](#cache-and-failed-jobs-tables)) |
+| `cache(bool = true, existing: ?string, driver: 'dynamodb')` | off | A DynamoDB table for Laravel's cache (see [Cache and failed-jobs tables](#cache-and-failed-jobs-tables)) |
 | `failedJobsTable(bool = true, existing: ?string)` | off | A DynamoDB table for Laravel's failed jobs (same section) |
 
 An *environment* in Arco is an `environment()` in `arco.php` (staging, production), each deployed as
@@ -78,8 +119,35 @@ its own Web Function. AWS calls one running copy of a function an *execution env
 that an **instance**, so `maxInstances()` caps how many instances one Arco environment runs.
 
 Variable names must be letters, digits and underscores (not starting with a digit); names
-reserved by Lambda are rejected: `_HANDLER`, `_X_AMZN_TRACE_ID`, `AWS_REGION`, `AWS_DEFAULT_REGION`, `AWS_EXECUTION_ENV`, `AWS_ACCESS_KEY`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SECRET_KEY`, `AWS_SESSION_TOKEN`, `LAMBDA_TASK_ROOT`, `LAMBDA_RUNTIME_DIR` and anything starting with `AWS_LAMBDA_` or `AWS_XRAY_`. Values may be references
-(`arco-ssm:...`, `arco-secret:...`).
+reserved by Lambda are rejected: `_HANDLER`, `_X_AMZN_TRACE_ID`, `AWS_REGION`, `AWS_DEFAULT_REGION`, `AWS_EXECUTION_ENV`, `AWS_ACCESS_KEY`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SECRET_KEY`, `AWS_SESSION_TOKEN`, `LAMBDA_TASK_ROOT`, `LAMBDA_RUNTIME_DIR` and anything starting with `AWS_LAMBDA_` or `AWS_XRAY_`. Every name
+starting with `ARCO` is reserved for Arco and rejected too, so a variable Arco adds later never collides with
+one of yours. Values may be references (`arco-ssm:...`, `arco-secret:...`).
+
+### Variables Arco sets
+
+| Variable | Where | Value | Status in 1.x |
+|---|---|---|---|
+| `ARCO` | web, console and worker functions; `arco init` and `arco scheduler:set` reading the schedule | `1` | stable: test it in your app (`env('ARCO')`) |
+| `ARCO_APP` | web, console and worker functions | the app name | stable |
+| `ARCO_ENV` | web, console and worker functions | the environment name | stable |
+| `ARCO_BUILD` | the preset's build commands (`php artisan event:cache`) on your machine | `1` | stable: test it in code that runs during the build |
+| `ARCO_QUEUES`, `ARCO_STORAGE` | web, console and worker functions, with queues / storage | JSON maps, see [Queues](#several-queues-and-onqueue) and [Laravel disks](#laravel-disks) | stable for `multiapi/arco-laravel`; their JSON shape may gain keys |
+| `ARCO_CACHE_TABLE`, `ARCO_FAILED_JOBS_TABLE` | web, console and worker functions, with the tables | the table name, see [Cache and failed-jobs tables](#cache-and-failed-jobs-tables) | stable for `multiapi/arco-laravel` |
+| `ARCO_WORKER_QUEUE`, `ARCO_QUEUE_TRIES`, `ARCO_QUEUE_MAX_RECEIVES`, `ARCO_BINARY_BUCKET`, `ARCO_BINARY_KEY`, `ARCO_BINARY_SHA256`, `ARCO_PHP_BINARY`, `ARCO_TMP`, `ARCO_S3_ENDPOINT` | the runtime of the console and worker functions | | internal: may change in any release, do not read them |
+
+Arco also sets the Laravel variables of the features you use (`QUEUE_CONNECTION`, `SQS_*`, `FILESYSTEM_DISK`,
+`AWS_BUCKET`, `AWS_URL`, `CACHE_STORE`, `DYNAMODB_CACHE_TABLE`, `QUEUE_FAILED_DRIVER`; see each section) and the
+preset's defaults ([Laravel preset](#laravel-preset)); your own `variables()` win over those. `ARCO_LANG` is
+not set by Arco: it is read on your machine to pick the CLI's language.
+
+### Named arguments
+
+`queue()`, `storage()`, `cache()`, `failedJobsTable()`, `console()` and the `Runtime` methods documented with
+named arguments (`workers()`, `binary()` with `php:`) are covered by the 1.x promise with those names: write
+`->queue('emails', timeout: 120)` or `->console(timeout: 300)`. For every other method only the positional form
+is covered (`->maxInstances(10)`, not `->maxInstances(count: 10)`), and the order of the options after a queue's or
+a storage's name is not: name them. `toArray()` on `App`, `Environment` and `Runtime` and `Runtime::mode()` are
+internal. See [The 1.x promise](upgrading.md#the-1x-promise).
 
 ### Deploy commands
 
@@ -144,13 +212,15 @@ vendor/bin/arco set timeout 60 --app          # app level (all environments)
 | `rate-limit` | `rateLimit(int)` | 100–1000 (steps of 100) or 2000–10000 (steps of 1000) |
 | `timeout` | `timeout(int)` | 3 to 900 |
 | `log-level` | `logLevel(string)` | trace, debug, info, warn, error, fatal |
+| `console-timeout` | `console(timeout:)` | 3 to 900 |
+| `console-memory` | `console(memory:)` | 128 to 10240 |
 
 - Pass exactly one of `--env=<name>` or `--app`. With a single environment and neither flag, that
   environment is used (and Arco says so).
 - The value is checked with the same rules as validation before anything is written.
 - `set` adds or replaces the `->method(value)` call in the environment's `fn (Environment $env) => $env ...`
   closure (a bare `->environment('x')` becomes one), or on the `App::make(...)` chain with `--app`.
-  An existing `maxEnvironments(...)` is replaced by `maxInstances(...)`. With `--app`, Arco warns
+  `console-timeout` and `console-memory` write the `timeout:` and `memory:` options of `->console(...)`. With `--app`, Arco warns
   about environments that set their own value, since the app-level value does not apply there.
 - `unset` removes the call so the app-level or default value applies. If the setting is not set at
   that level, it says so and changes nothing.
@@ -159,8 +229,8 @@ vendor/bin/arco set timeout 60 --app          # app level (all environments)
   When the call has a shape Arco does not edit safely (a value built from variables or functions,
   named arguments, the call written twice, an app built in several statements), nothing is written and the
   command prints the line to change by hand, exiting non-zero.
-- Only `arco.php` changes: run `arco deploy --env=<env>` to apply. (Applying a setting without a
-  redeploy, e.g. `--apply`, may come later.)
+- Only `arco.php` changes: run `arco deploy --env=<env>` to apply. (`scheduler:set` and `scheduler:remove`
+  can also apply their change at once with `--apply`, see [Scheduler](#scheduler).)
 
 ## Permissions
 
@@ -198,15 +268,14 @@ on the next deploy, and a failed delete is a warning. `arco command`, `arco tink
 `arco deploy --migrate` need it and fail before touching AWS when it is off, naming `arco console:add`.
 `arco info` shows it as `on`, `off` or `not set` (in your language); in `--json`, `settings.console` is `true`,
 `false` or `null`, `settings.scheduler` the minutes or `null` (with `settings.schedulerPaused`, see
-Scheduler), and `settings.logRetention` the days, `false`
-(never expire) or `null` (not managed), as `arco.php` writes them.
+Scheduler), `settings.consoleTimeout` the seconds, and `settings.logRetention` the days, `false`
+(never expire) or `null` (not set: the 30-day default applies), as `arco.php` writes them.
 
-**Upgrading to 0.4.** An environment deployed with Arco 0.2 or 0.3 already has a console function. If
-`arco.php` has no `console()` setting for it, `arco deploy` stops before changing anything: add `->console()`
-to keep it, or `->console(false)` to delete it.
+An environment deployed with Arco 0.2 or 0.3 already has a console function and needs a `console()` setting:
+see [Upgrading to 0.4](upgrading.md#04).
 
-When on, `arco deploy` creates or updates `<app>-<env>-console` (runtime `provided.al2023`, arm64, 2048 MB,
-1024 MB of `/tmp`, timeout `consoleTimeout()`; the name must fit Lambda's 64 characters), with the web
+When on, `arco deploy` creates or updates `<app>-<env>-console` (runtime `provided.al2023`, arm64, 2048 MB by default (`console(memory:)`),
+1024 MB of `/tmp`, timeout `console(timeout:)` (900 s by default); the name must fit Lambda's 64 characters), with the web
 revision's variables, secrets and execution role. It publishes a version and points the `live` alias at it
 once traffic has moved and the health check passed. If AWS refuses that alias move (for example a profile
 without `lambda:UpdateAlias`), the deploy still succeeds with a warning: the web revision is live, but
@@ -222,7 +291,7 @@ the build's static PHP CLI instead (`bin/php`, about 91 MB, same PHP version and
 are left for your app, in the units `arco package` prints) and runs it directly, with no download at cold start. The CLI is fetched from GitHub releases
 once per runtime build and machine and cached in `~/.arco/cache/runtime/<build>/php`.
 
-The console downloads FrankenPHP instead for a custom `binary()` (the deploy output notes it), and with a
+The console downloads FrankenPHP instead for a custom `binary()` without `php:` (the deploy output notes it), and with a
 warning in the deploy output for a runtime
 build without a PHP CLI (`1.13.0-r1`) or unknown to this Arco version, when `bin/php` alone would take the
 console over 250 MB (then `->exclude([...])` leaves room), or when the PHP CLI cannot be downloaded from
@@ -273,8 +342,9 @@ alias's invoke permission. `--apply` needs `--env` (the app level spans every en
 
 `->logRetention(30)` (or `arco logs:retention 30`) sets the CloudWatch retention of the web function's log
 group and, when the console is on, the console's, and each queue worker's; creating the groups first when they do not exist yet.
-`->logRetention(false)` (`arco logs:retention never`) makes them never expire. With no setting Arco does not
-touch retention; `arco logs:retention --remove` goes back to that. Allowed days are the ones CloudWatch
+`->logRetention(false)` (`arco logs:retention never`) makes them never expire. With no setting the groups
+keep 30 days (before 0.9 Arco left them alone, so logs never expired: set `->logRetention(false)` to keep that);
+`arco logs:retention --remove` goes back to the default. Allowed days are the ones CloudWatch
 accepts (1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922,
 3288, 3653).
 
@@ -296,7 +366,7 @@ App::make('shop')
     ->queue('default')                                  // the default queue (the first one)
     ->queue('emails', timeout: 120, memory: 512, tries: 5)
     ->environment('staging', fn (Environment $env) => $env
-        ->queue('emails', concurrency: 2))              // merged over the app's options
+        ->queue('emails', maxInstances: 2))              // merged over the app's options
     ->environment('production', fn (Environment $env) => $env
         ->queue('reports', timeout: 900, batchSize: 1)
         ->queue('legacy', existing: 'arn:aws:sqs:us-east-1:123456789012:legacy-jobs'));
@@ -356,7 +426,7 @@ name add to each other.
 |---|---|---|
 | `timeout` | 60 | Worker function timeout in seconds (10 to 900; the worker keeps 3 of them to answer for the batch): the longest a batch may run. The queue's visibility timeout is 6 times this |
 | `memory` | 1024 | Worker memory in MB (128 to 10240) |
-| `concurrency` | unset | Maximum concurrent worker invocations (event source mapping `MaximumConcurrency`, at least 2); unset means no limit beyond the account's |
+| `maxInstances` | unset | Maximum concurrent worker invocations (event source mapping `MaximumConcurrency`, at least 2); unset means no limit beyond the account's |
 | `batchSize` | 1 | Messages per invocation: 1 to 10000 on a standard queue, 1 to 10 on FIFO. Above 10 the event source mapping waits up to 1 second to gather a batch (AWS requires a batching window there) |
 | `tries` | 3 | Attempts of a job without its own `$tries`; the dead-letter queue's `maxReceiveCount` is `tries` + 2 |
 | `dlq` | `true` | Create a dead-letter queue (never for an `existing` queue) |
@@ -395,9 +465,9 @@ Arco sets these variables on the web, console and worker functions:
 `multiapi/arco-laravel` replaces the `sqs` connector so that the names in `ARCO_QUEUES` (`emails`) reach
 their queues (`.../shop-production-emails`); a queue URL passes through, and any other name keeps Laravel's
 prefix behaviour. Your own `variables()` win over Arco's: setting `QUEUE_CONNECTION`, `SQS_PREFIX` or
-`SQS_QUEUE` there overrides them, and the deploy prints a note (an `ARCO_QUEUES` of your own overrides the
-map without a note; the same holds for every variable Arco sets, see [Storage](#storage) and
-[Cache and failed-jobs tables](#cache-and-failed-jobs-tables)).
+`SQS_QUEUE` there overrides them, and the deploy prints a note (the same holds for the variables of
+[Storage](#storage) and [Cache and failed-jobs tables](#cache-and-failed-jobs-tables)). `ARCO_QUEUES` cannot be
+set: names starting with `ARCO` are reserved.
 
 ### FIFO queues
 
@@ -462,17 +532,17 @@ version plus the 4 newest, like the console.
 ```bash
 vendor/bin/arco queue:add emails --env=production --timeout=120 --tries=5
 vendor/bin/arco queue:add legacy --app --existing=arn:aws:sqs:us-east-1:123456789012:legacy-jobs
-vendor/bin/arco queue:set emails concurrency 10 --env=production
-vendor/bin/arco queue:set emails concurrency none --env=production   # no limit
+vendor/bin/arco queue:set emails max-instances 10 --env=production
+vendor/bin/arco queue:set emails max-instances none --env=production   # no limit
 vendor/bin/arco queue:remove emails --env=production
 vendor/bin/arco queue:list --env=production
 vendor/bin/arco queue:dlq emails --env=production
 vendor/bin/arco queue:dlq emails --env=production --redrive
 ```
 
-- `queue:add <name>` takes `--timeout`, `--memory`, `--concurrency`, `--batch-size`, `--tries`, `--no-dlq`,
+- `queue:add <name>` takes `--timeout`, `--memory`, `--max-instances`, `--batch-size`, `--tries`, `--no-dlq`,
   `--fifo`, `--existing=<name, URL or ARN>` and `--default`; `queue:set <name> <option> <value>` changes
-  `timeout`, `memory`, `concurrency` (`none` clears it), `batch-size`, `tries`, `dlq` or `default` (`on` or
+  `timeout`, `memory`, `max-instances` (`none` clears it), `batch-size`, `tries`, `dlq` or `default` (`on` or
   `off`). `fifo` and `existing` cannot change once the queue exists: add a new queue instead.
   `queue:remove <name>` takes the queue out (on an environment, a queue defined at app level is dropped with
   `->queue('<name>', false)`). All three take `--env=<env>` or `--app`, edit `arco.php` only (checked like
@@ -553,7 +623,7 @@ name add to each other.
 - App and environment storage merge by name: the environment's options go over the app's for that storage
   (an environment's `public` list replaces the app's list as a whole), new names are added, and
   `->storage('uploads', false)` on an environment drops an app-level storage there.
-- The **default storage** is the first one (app-level storage comes first) unless one says `default: true`.
+- The **default storage** is the first one (app-level storage comes first) unless one says `default: true`. If every storage says `default: false`, there is no default storage: Arco injects only `ARCO_STORAGE` and Laravel keeps its own default disk.
 - `public`, `expire` and `cors` apply only to buckets Arco creates. On an `existing` bucket they are
   ignored, with a validation warning (also from `storage:public`, `storage:expire` and `storage:cors`):
   configure that bucket yourself.
@@ -588,7 +658,9 @@ Arco sets these variables on the web, console and worker functions:
   (`https://<bucket>.s3.<region>.amazonaws.com`) is wrong (certificate mismatch, different domain): set `AWS_URL`
   yourself in `variables()`.
 - Your own `variables()` win over Arco's: setting `FILESYSTEM_DISK`, `AWS_BUCKET` or `AWS_URL` there overrides
-  them, and the deploy prints a note (an `ARCO_STORAGE` of your own overrides the map without a note).
+  them, and the deploy prints a note (`ARCO_STORAGE` cannot be set: names starting with `ARCO` are reserved).
+- Without a default storage (every storage says `default: false`), Arco sets none of `FILESYSTEM_DISK`,
+  `AWS_BUCKET` and `AWS_URL`: only `ARCO_STORAGE`, so the named disks exist and Laravel's own default disk stays.
 - Laravel's S3 driver needs `league/flysystem-aws-s3-v3` and `aws/aws-sdk-php` in `require`
   (`composer require league/flysystem-aws-s3-v3 "^3.0"`), and the named disks need `multiapi/arco-laravel`
   0.6 or later. With storage in `arco.php`, the deploy checks the package for all three before any change
@@ -778,15 +850,19 @@ Setting `QUEUE_FAILED_DRIVER` in your own `variables()` overrides Arco's, with a
 vendor/bin/arco cache:add --env=production
 vendor/bin/arco cache:add --env=production --existing=shop-cache
 vendor/bin/arco cache:remove --env=staging
-vendor/bin/arco queue:failed-table --app
-vendor/bin/arco queue:failed-table --env=production --existing=shop-failed-jobs
-vendor/bin/arco queue:failed-table --env=staging --remove
+vendor/bin/arco failed-jobs:add --app
+vendor/bin/arco failed-jobs:add --env=production --existing=shop-failed-jobs
+vendor/bin/arco failed-jobs:remove --env=staging
 ```
 
-- `cache:add` and `queue:failed-table` turn the table on (Arco's, or `--existing=<table>`); `cache:remove`
-  and `queue:failed-table --remove` turn it off. On an environment that inherits the table from the app
-  level, turning it off writes `->cache(false)` (or `->failedJobsTable(false)`); otherwise the call is
-  removed. The table stays in AWS.
+- `cache:add` and `failed-jobs:add` turn the table on (Arco's, or `--existing=<table>`); `cache:remove`
+  and `failed-jobs:remove` turn it off. On an environment that inherits the table from the app level,
+  turning it off writes `->cache(false)` (or `->failedJobsTable(false)`); otherwise the call is removed. The
+  table stays in AWS.
+- `queue:failed-table [--existing=<table>] [--remove]` is the deprecated spelling of `failed-jobs:add` /
+  `failed-jobs:remove`: hidden from the command list, it prints a warning and is removed in 1.0.
+- `cache(driver:)` takes only `'dynamodb'`, the default, so the editor never writes it (an existing
+  `driver: 'dynamodb'` is dropped when it rewrites the call).
 - They take `--env=<env>` or `--app`, edit `arco.php` only and need `arco deploy` to apply.
 - `arco info` shows `Cache table` and `Failed jobs table` rows with the table's name (or
   `<table> (existing, not managed by Arco)`); `--json` adds `cache` and `failedJobsTable`, each
@@ -877,20 +953,35 @@ Set with `->runtime(fn (Runtime $r) => ...)`.
 
 | Method | Default | Meaning |
 |---|---|---|
-| `build(string)` | the default build of your Arco version (`1.13.0-r1`) | Exact runtime build to deploy; builds are immutable releases of `multi-api/arco-runtime` |
-| `frankenphp(string)` | unset | Shortcut: the highest revision of that FrankenPHP version known to your Arco version. Cannot be combined with `build()` |
-| `binary(path)` | unset | Your own Linux arm64 FrankenPHP binary; must exist and be an arm64 ELF |
-| `workers(min, max)` | min 4, max 64 | Octane worker count / FrankenPHP `max_threads` (`min >= 1`, `max >= min`) |
+| `php(string)` | `8.5` | PHP minor (`'8.5'`): the newest runtime build of that PHP version known to your Arco version. An unknown minor is a validation error that lists the known ones. `arco init` writes `->php('8.5')` |
+| `frankenphp(string)` | unset | Only builds whose FrankenPHP version starts with this one (`'1.13'` or `'1.13.0'`); combines with `php()` |
+| `build(string)` | unset | Exact runtime build id, such as `php8.5.11-fp1.13.0-r2`; cannot be combined with `php()` or `frankenphp()` |
+| `binary(string $frankenphp, ?string $php = null)` | unset | Your own Linux arm64 FrankenPHP binary instead of a runtime build; with `php:`, a static PHP CLI (same PHP version and extensions) that the console function and the workers run as `bin/php` instead of downloading FrankenPHP at cold start. Both must exist and be arm64 ELF files |
+| `workers(int)` | 4 | Octane worker count (>= 1) |
+| `maxThreads(int)` | 64 | FrankenPHP `max_threads`, the ceiling the thread pool grows to (>= `workers`) |
 | `threads(int)` | 8 | FrankenPHP `num_threads` for non-worker requests (>= 1) |
-| `mode('direct'\|'proxy')` | `direct` | How the runtime hands requests to FrankenPHP |
 | `phpIni(array)` | `[]` | `php.ini` overrides, merged by key; applied to web requests and to commands on the console function (`arco command`, deploy commands, tinker) |
+
+The selectors resolve per level: an environment's `build()` or `binary()` replaces the app's `php()` and
+`frankenphp()`, and an environment's `php()` or `frankenphp()` replaces the app's `build()`. Mixing
+`build()` with `php()` or `frankenphp()` at one level is a validation error.
 
 ### Runtime builds
 
-A given Arco release always deploys the same bytes: each runtime build is immutable and listed
-in the manifest shipped with Arco. Upgrading Arco (or pinning `->build()`) is how you take a
-newer build. Downloads are verified by size and SHA-256 and cached in
-`~/.arco/cache/runtime/<build>/`.
+A runtime build is an immutable release of `multi-api/arco-runtime`: a FrankenPHP binary and, since
+`php8.5.11-fp1.13.0-r2`, the static PHP CLI of the console function. Its id is `php<php>-fp<frankenphp>-r<n>`
+(for example `php8.5.11-fp1.13.0-r2`: PHP 8.5.11, FrankenPHP 1.13.0, revision 2). The ids of Arco 0.8 and
+earlier, `1.13.0-r1` and `1.13.0-r2`, stay valid as aliases of `php8.5.11-fp1.13.0-r1` and
+`php8.5.11-fp1.13.0-r2`: `build('1.13.0-r2')` and packages built with it deploy the same binaries.
+
+Each Arco release lists the builds it knows in a manifest, so a given Arco version and `arco.php` always
+deploy the same bytes. Without `php()`, `build()` or `binary()` Arco deploys the newest build of its default
+PHP minor (8.5 in this release). **Default-build policy:** a 1.x release may move that default to a newer PHP
+**patch** or a newer build of the same minor (security fixes, a newer FrankenPHP), never to another PHP minor:
+a new minor is opt-in with `php()`. Pin `build()` to take no change at all on an Arco upgrade. `arco info`
+shows the build that will deploy (`runtime.build`) and where the choice came from.
+
+Downloads are verified by size and SHA-256 and cached in `~/.arco/cache/runtime/<build>/`.
 
 ## Packaging globs
 

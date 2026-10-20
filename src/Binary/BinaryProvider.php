@@ -22,7 +22,29 @@ final class BinaryProvider
     /** The runtime build a config selects, or null when it uses a custom binary. */
     public function describe(RuntimeConfig $runtime): ?RuntimeBuild
     {
-        return $runtime->binary === null ? $this->manifest->resolve($runtime->build, $runtime->frankenphp) : null;
+        return $runtime->binary === null ? $this->manifest->resolve($runtime->build, $runtime->frankenphp, $runtime->php) : null;
+    }
+
+    /**
+     * The PHP CLI given with a custom binary (binary(php: ...)), checked to be Linux arm64, or null when
+     * the config uses a runtime build or gives no PHP CLI.
+     */
+    public function customPhpCli(RuntimeConfig $runtime, string $projectDir): ?string
+    {
+        if ($runtime->binary === null || $runtime->phpBinary === null) {
+            return null;
+        }
+        $path = str_starts_with($runtime->phpBinary, '/') ? $runtime->phpBinary : $projectDir . '/' . $runtime->phpBinary;
+        if (! ElfInspector::isLinuxArm64($path)) {
+            throw BinaryException::make('binary.not_arm64', ['path' => $runtime->phpBinary]);
+        }
+        return $path;
+    }
+
+    /** The build id an id names (an id of an earlier Arco is an alias); unknown ids and null are returned as they are. */
+    public function canonical(?string $id): ?string
+    {
+        return $id === null ? null : $this->manifest->canonical($id);
     }
 
     /** @param (callable(int, int): void)|null $onProgress */
@@ -55,7 +77,7 @@ final class BinaryProvider
         return $this->fetch($cli->url, $cli->sha256, $cli->size, "{$this->cacheDir}/{$build->id}/php", $build->id, $onProgress);
     }
 
-    /** A build of the manifest by id, or null when the id is unknown. */
+    /** A build of the manifest by id (or an id of an earlier Arco), or null when the id is unknown. */
     public function build(string $id): ?RuntimeBuild
     {
         try {

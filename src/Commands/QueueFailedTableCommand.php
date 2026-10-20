@@ -13,7 +13,8 @@ use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Style\SymfonyStyle;
 use Throwable;
 
-#[AsCommand(name: 'queue:failed-table', description: 'Turn the DynamoDB table for failed jobs on or off in arco.php')]
+/** @deprecated use failed-jobs:add and failed-jobs:remove; removed in 1.0 */
+#[AsCommand(name: 'queue:failed-table', description: 'Deprecated: use failed-jobs:add and failed-jobs:remove', hidden: true)]
 final class QueueFailedTableCommand extends ArcoCommand
 {
     use ResolvesTarget;
@@ -30,6 +31,7 @@ final class QueueFailedTableCommand extends ArcoCommand
     {
         $io = new SymfonyStyle($input, $output);
         try {
+            $io->warning($this->t('deprecated.queue_failed_table'));
             if (! $input->getOption('remove')) {
                 return $this->addTable($input, $io, 'failedJobsTable');
             }

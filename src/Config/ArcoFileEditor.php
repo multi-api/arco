@@ -11,10 +11,13 @@ use Symfony\Component\Process\Process;
  */
 final class ArcoFileEditor
 {
-    /** Older method names that write the same setting; an edit replaces them with the current name. */
-    private const ALIASES = ['maxInstances' => ['maxEnvironments']];
+    /**
+     * Settings that live in the arguments of one ->console(enabled, timeout:, memory:) call: an edit of
+     * any of them rewrites that call, keeping the others.
+     */
+    private const CONSOLE_KEYS = ['console', 'consoleTimeout', 'consoleMemory'];
     /** The order queue() options are written in. */
-    private const QUEUE_OPTIONS = ['existing', 'default', 'timeout', 'memory', 'concurrency', 'batchSize', 'tries', 'dlq', 'fifo'];
+    private const QUEUE_OPTIONS = ['existing', 'default', 'timeout', 'memory', 'maxInstances', 'batchSize', 'tries', 'dlq', 'fifo'];
     /**
      * Calls keyed by a name in their first argument, such as ->queue('jobs', ...): the raw config key
      * they load into and the order their named options are written in.
@@ -221,21 +224,58 @@ final class ArcoFileEditor
         return '[' . implode(', ', $items) . ']';
     }
 
-    /** Whether arco.php calls an older name of $method (such as maxEnvironments for maxInstances). */
-    public static function usesAlias(string $arcoPhpPath, string $method): bool
+    /**
+     * The changes with the ->console() call's three values spelled out (the call carries all of them), and
+     * the line that writes them (null: none of them is set, so the call goes).
+     *
+     * @param array<string, mixed> $raw
+     * @param Changes $changes
+     * @return array{0: Changes, 1: string|null}
+     */
+    private static function withConsole(array $raw, ?string $environment, array $changes): array
     {
-        $source = (string) @file_get_contents($arcoPhpPath);
-        foreach (self::ALIASES[$method] ?? [] as $alias) {
-            if (preg_match('/->\s*' . preg_quote($alias, '/') . '\s*\(/', $source) === 1) {
-                return true;
-            }
+        $level = $raw;
+        if ($environment !== null) {
+            $environments = $raw['environments'] ?? null;
+            $level = is_array($environments) && is_array($environments[$environment] ?? null) ? $environments[$environment] : [];
         }
-        return false;
+        $current = is_array($level['settings'] ?? null) ? $level['settings'] : [];
+        $settings = $changes['settings'] ?? [];
+        /** @var array<string, int|bool|null> $values */
+        $values = [];
+        foreach (self::CONSOLE_KEYS as $key) {
+            $value = array_key_exists($key, $settings) ? $settings[$key] : ($current[$key] ?? null);
+            if ($value !== null && ! is_int($value) && ! is_bool($value)) {
+                throw ConfigException::make('editor.verify_failed', ['path' => '', 'environment' => (string) $environment]);
+            }
+            $values[$key] = $value;
+        }
+        if (array_key_exists('console', $settings) && $settings['console'] === null) {
+            $values = ['console' => null, 'consoleTimeout' => null, 'consoleMemory' => null];
+        } elseif ($values['console'] === null && ($values['consoleTimeout'] !== null || $values['consoleMemory'] !== null)) {
+            $values['console'] = true; // console(timeout: 60) turns the console on
+        }
+        $changes['settings'] = [...$settings, ...$values];
+
+        $args = [];
+        if ($values['console'] === false) {
+            $args[] = 'false';
+        }
+        if ($values['consoleTimeout'] !== null) {
+            $args[] = 'timeout: ' . (string) $values['consoleTimeout'];
+        }
+        if ($values['consoleMemory'] !== null) {
+            $args[] = 'memory: ' . (string) $values['consoleMemory'];
+        }
+        return [$changes, $values['console'] === null ? null : '->console(' . implode(', ', $args) . ')'];
     }
 
     /** true renders a no-argument call such as ->console(); false renders ->console(false). */
     public static function settingLine(string $method, int|string|bool $value): string
     {
+        if ($method === 'consoleTimeout' || $method === 'consoleMemory') {
+            return '->console(' . ($method === 'consoleTimeout' ? 'timeout' : 'memory') . ': ' . $value . ')';
+        }
         if ($value === true) {
             return '->' . $method . '()';
         }
@@ -254,11 +294,35 @@ final class ArcoFileEditor
         if ($environment === null && (array_key_exists('domains', $changes) || array_key_exists('dns', $changes))) {
             return false;
         }
+        foreach ($changes['queues'] ?? [] as $queue => $options) {
+            if (is_array($options) && array_key_exists('concurrency', $options)) {
+                // The deprecated spelling is rewritten when a queue is edited.
+                if (array_key_exists('maxInstances', $options)) {
+                    throw ConfigException::make('validation.queue_both_concurrency', ['queue' => (string) $queue]);
+                }
+                $options['maxInstances'] = $options['concurrency'];
+                unset($options['concurrency']);
+                $changes['queues'][$queue] = $options;
+            }
+        }
         $source = (string) file_get_contents($arcoPhpPath);
         $updated = $source;
+        $consoleLine = false;
+        if (array_intersect(self::CONSOLE_KEYS, array_keys($changes['settings'] ?? [])) !== []) {
+            try {
+                [$changes, $consoleLine] = self::withConsole(self::load($arcoPhpPath), $environment, $changes);
+            } catch (ConfigException) {
+                return false;
+            }
+        }
         foreach ($changes['settings'] ?? [] as $method => $value) {
+            if ($method === 'consoleTimeout' || $method === 'consoleMemory') {
+                continue; // written with ->console()
+            }
             if ($updated !== null) {
-                if ($value === null) {
+                if ($method === 'console' && $consoleLine !== false) {
+                    $line = $consoleLine;
+                } elseif ($value === null) {
                     $line = null;
                 } elseif (in_array($method, self::SINGLETONS, true)) {
                     if (! (is_bool($value) || (is_array($value) && self::writable($value)))) {
@@ -470,7 +534,7 @@ final class ArcoFileEditor
         $nl = str_contains($source, "\r\n") ? "\r\n" : "\n";
         $t = array_values(array_filter(PhpToken::tokenize($source), fn (PhpToken $token) => ! $token->isIgnorable()));
         $depths = self::depths($t);
-        $methods = [$method, ...(self::ALIASES[$method] ?? [])];
+        $methods = [$method];
 
         $scope = $environment === null
             ? self::appScope($t, $depths, $source, $methods, $nl)
@@ -936,7 +1000,7 @@ final class ArcoFileEditor
     /** @param list<PhpToken> $args */
     private static function isLiteral(array $args, string $method): bool
     {
-        if (isset(self::NAMED[$method]) || in_array($method, self::SINGLETONS, true)) {
+        if (isset(self::NAMED[$method]) || in_array($method, [...self::SINGLETONS, 'console'], true)) {
             return self::isArgsLiteral($args, isset(self::NAMED[$method]));
         }
         if ($method !== 'domain' && $method !== 'dns') {

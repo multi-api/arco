@@ -42,6 +42,8 @@ final class Application extends SymfonyApplication
             new \Multiapi\Arco\Commands\QueueRemoveCommand(),
             new \Multiapi\Arco\Commands\QueueListCommand(),
             new \Multiapi\Arco\Commands\QueueDlqCommand(),
+            new \Multiapi\Arco\Commands\FailedJobsAddCommand(),
+            new \Multiapi\Arco\Commands\FailedJobsRemoveCommand(),
             new \Multiapi\Arco\Commands\QueueFailedTableCommand(),
             new \Multiapi\Arco\Commands\StorageAddCommand(),
             new \Multiapi\Arco\Commands\StorageRemoveCommand(),

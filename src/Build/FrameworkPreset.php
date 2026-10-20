@@ -2,6 +2,9 @@
 
 namespace Multiapi\Arco\Build;
 
+/**
+ * @internal Not covered by the 1.x compatibility promise: the preset API may change in a minor release.
+ */
 interface FrameworkPreset
 {
     public function name(): string;

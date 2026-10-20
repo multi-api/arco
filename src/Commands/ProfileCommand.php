@@ -5,6 +5,7 @@ namespace Multiapi\Arco\Commands;
 use Multiapi\Arco\Aws\AwsClients;
 use Multiapi\Arco\Aws\LocalState;
 use Multiapi\Arco\Cli\ArcoCommand;
+use Multiapi\Arco\Cli\UserError;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
 use Multiapi\Arco\Config\ConfigLoader;
 use Multiapi\Arco\Config\ConfigResolver;
@@ -29,15 +30,37 @@ final class ProfileCommand extends ArcoCommand
     protected function configure(): void
     {
         $this->addOption('env', 'e', InputOption::VALUE_REQUIRED, 'Environment')
+            ->addOption('json', null, InputOption::VALUE_NONE, 'Print the remembered profiles as JSON')
             ->addOption('set', null, InputOption::VALUE_REQUIRED, 'Profile to remember for the environment');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $io = new SymfonyStyle($input, $output);
+        $json = (bool) $input->getOption('json');
         try {
             $state = new LocalState($this->projectDir());
-            if (! is_string($input->getOption('env'))) {
+            $only = $input->getOption('env');
+            if ($json) {
+                if ($input->getOption('set') !== null) {
+                    throw new UserError($this->t('profile.json_with_set'));
+                }
+                $environments = ConfigResolver::environments((new ConfigLoader())->load($this->projectDir() . '/arco.php'));
+                if (is_string($only) && $only !== '' && ! in_array($only, $environments, true)) {
+                    throw new UserError($this->t('profile.unknown_environment', ['environment' => $only, 'available' => implode(', ', $environments)]));
+                }
+                $profiles = [];
+                foreach ($environments as $env) {
+                    if (is_string($only) && $only !== '' && $env !== $only) {
+                        continue;
+                    }
+                    $profiles[] = ['environment' => $env, 'profile' => $state->profile($env)];
+                }
+                $output->writeln((string) json_encode(['schema' => 1, 'profiles' => $profiles], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+                return self::SUCCESS;
+            }
+
+            if (! is_string($only)) {
                 $raw = (new ConfigLoader())->load($this->projectDir() . '/arco.php');
                 $io->table(
                     [$this->t('profile.environment'), $this->t('profile.profile')],
@@ -55,7 +78,12 @@ final class ProfileCommand extends ArcoCommand
             $io->success($this->t('profile.saved', ['environment' => $config->environment, 'profile' => $profile]));
             return self::SUCCESS;
         } catch (Throwable $e) {
-            $io->error($this->describeError($e) ?? throw $e);
+            $message = $this->describeError($e) ?? throw $e;
+            if ($json) {
+                $output->writeln((string) json_encode(['schema' => 1, 'error' => $message], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+            } else {
+                $io->error($message);
+            }
             return self::FAILURE;
         }
     }

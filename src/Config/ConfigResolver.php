@@ -18,6 +18,8 @@ final class ConfigResolver
         'dns' => null,
         'certificate' => null,
         'consoleTimeout' => 900,
+        'consoleMemory' => 2048,
+        'cacheDriver' => null,
         'protected' => null,
         'console' => null,
         'scheduler' => null,
@@ -29,8 +31,11 @@ final class ConfigResolver
     private const RUNTIME_DEFAULTS = [
         'build' => null,
         'frankenphp' => null,
+        'php' => null,
         'binary' => null,
-        'workers' => ['min' => 4, 'max' => 64],
+        'phpBinary' => null,
+        'workers' => 4,
+        'maxThreads' => 64,
         'threads' => 8,
         'mode' => 'direct',
     ];
@@ -60,8 +65,9 @@ final class ConfigResolver
 
         /** @var array<string, mixed> $appSettings */
         $appSettings = $raw['settings'] ?? [];
-        /** @var array<string, mixed> $appRuntime */
-        $appRuntime = $raw['runtime'] ?? [];
+        /** @var array<string, mixed> $declaredRuntime */
+        $declaredRuntime = $raw['runtime'] ?? [];
+        $appRuntime = self::inheritedRuntime($declaredRuntime, $env['runtime']);
         /** @var array<string, string> $appVariables */
         $appVariables = $raw['variables'] ?? [];
         /** @var list<array<string, mixed>> $appPermissions */
@@ -95,8 +101,6 @@ final class ConfigResolver
             return self::RUNTIME_DEFAULTS[$key];
         };
 
-        /** @var array{min: int, max: int} $workers */
-        $workers = $runtimeValue('workers');
         /** @var array<string, string|int|bool> $appIni */
         $appIni = $appRuntime['phpIni'] ?? [];
         /** @var array<string, string|int|bool> $envIni */
@@ -106,11 +110,15 @@ final class ConfigResolver
             build: self::nullableString($runtimeValue('build')),
             frankenphp: self::nullableString($runtimeValue('frankenphp')),
             binary: self::nullableString($runtimeValue('binary')),
-            workersMin: $workers['min'],
-            workersMax: $workers['max'],
+            workers: (int) $runtimeValue('workers'),
+            maxThreads: (int) $runtimeValue('maxThreads'),
             threads: (int) $runtimeValue('threads'),
             mode: (string) $runtimeValue('mode'),
             phpIni: [...$appIni, ...$envIni],
+            php: self::nullableString($runtimeValue('php')),
+            phpBinary: self::nullableString($runtimeValue('phpBinary')),
+            deprecatedWorkers: ($env['runtime']['deprecatedWorkers'] ?? false) === true
+                || (! array_key_exists('workers', $env['runtime']) && ($appRuntime['deprecatedWorkers'] ?? false) === true),
         );
 
         /** @var list<string> $exclude */
@@ -141,6 +149,7 @@ final class ConfigResolver
         $failedJobsTable = self::table('failed-jobs', $setting('failedJobsTable'));
         $protected = $setting('protected');
         $consoleTimeout = self::nullableInt($setting('consoleTimeout')) ?? 0;
+        $consoleMemory = self::nullableInt($setting('consoleMemory')) ?? 0;
         $console = $setting('console');
         $scheduler = $setting('scheduler');
         $logRetention = $setting('logRetention');
@@ -171,6 +180,7 @@ final class ConfigResolver
             certificate: $certificate,
             deployCommands: $envCommands ?? $appCommands ?? [],
             consoleTimeout: $consoleTimeout,
+            consoleMemory: $consoleMemory,
             protected: is_bool($protected) ? $protected : null,
             console: is_bool($console) ? $console : null,
             scheduler: $scheduler === false ? null : self::nullableInt($scheduler),
@@ -179,6 +189,7 @@ final class ConfigResolver
             storage: $storage,
             cacheTable: $cacheTable,
             failedJobsTable: $failedJobsTable,
+            cacheDriver: self::nullableString($setting('cacheDriver')),
         );
 
         return $config;
@@ -206,6 +217,32 @@ final class ConfigResolver
     }
 
     /**
+     * One level's queue options with the deprecated `concurrency` renamed to `maxInstances`, so a value at
+     * the environment level overrides the app's whichever spelling each uses. `_deprecated` and `_conflict`
+     * mark the entries that used the old name, or both names, at this level.
+     *
+     * @param array<string, array<string, mixed>|false> $level
+     * @return array<string, array<string, mixed>|false>
+     */
+    private static function normalizedQueues(array $level): array
+    {
+        foreach ($level as $name => $options) {
+            if (! is_array($options) || ! array_key_exists('concurrency', $options)) {
+                continue;
+            }
+            $options['_deprecated'] = true;
+            if (array_key_exists('maxInstances', $options)) {
+                $options['_conflict'] = true;
+            } else {
+                $options['maxInstances'] = $options['concurrency'];
+            }
+            unset($options['concurrency']);
+            $level[$name] = $options;
+        }
+        return $level;
+    }
+
+    /**
      * Whether no entry asks to be the default, in which case the first one is.
      *
      * @param array<string, array<string, mixed>> $merged
@@ -213,6 +250,17 @@ final class ConfigResolver
     private static function firstIsDefault(array $merged): bool
     {
         return array_filter($merged, fn (array $o): bool => ($o['default'] ?? false) === true) === [];
+    }
+
+    /**
+     * Whether every entry says `default: false` explicitly: then none is the default (storage only; an
+     * entry that does not say, or says true, keeps the usual rule).
+     *
+     * @param array<string, array<string, mixed>> $merged
+     */
+    private static function allOptOutOfDefault(array $merged): bool
+    {
+        return $merged !== [] && array_filter($merged, fn (array $o): bool => ($o['default'] ?? null) !== false) === [];
     }
 
     /**
@@ -224,7 +272,7 @@ final class ConfigResolver
      */
     private static function queues(array $app, array $env): array
     {
-        $merged = self::mergeNamed($app, $env);
+        $merged = self::mergeNamed(self::normalizedQueues($app), self::normalizedQueues($env));
         $firstIsDefault = self::firstIsDefault($merged);
         $queues = [];
         foreach ($merged as $name => $o) {
@@ -233,20 +281,23 @@ final class ConfigResolver
                 name: (string) $name,
                 timeout: self::nullableInt($o['timeout'] ?? null) ?? 60,
                 memory: self::nullableInt($o['memory'] ?? null) ?? 1024,
-                concurrency: self::nullableInt($o['concurrency'] ?? null),
+                maxInstances: self::nullableInt($o['maxInstances'] ?? null),
                 batchSize: self::nullableInt($o['batchSize'] ?? null) ?? 1,
                 tries: self::nullableInt($o['tries'] ?? null) ?? 3,
                 dlq: (bool) ($o['dlq'] ?? $existing === null),
                 fifo: (bool) ($o['fifo'] ?? false),
                 existing: $existing,
                 default: $firstIsDefault ? $queues === [] : ($o['default'] ?? false) === true,
+                deprecatedConcurrency: isset($o['_deprecated']),
+                conflictingConcurrency: isset($o['_conflict']),
             );
         }
         return $queues;
     }
 
     /**
-     * App buckets with the environment's merged over them by name. The first bucket is the default unless one asks for it.
+     * App buckets with the environment's merged over them by name. The first bucket is the default unless one asks for it
+     * or every bucket sets `default: false`, which leaves the app without a default disk.
      *
      * @param array<string, array<string, mixed>|false> $app
      * @param array<string, array<string, mixed>|false> $env
@@ -255,7 +306,7 @@ final class ConfigResolver
     private static function storage(array $app, array $env): array
     {
         $merged = self::mergeNamed($app, $env);
-        $firstIsDefault = self::firstIsDefault($merged);
+        $firstIsDefault = self::firstIsDefault($merged) && ! self::allOptOutOfDefault($merged);
         $storage = [];
         foreach ($merged as $name => $o) {
             $expire = [];
@@ -294,6 +345,28 @@ final class ConfigResolver
     private static function stringList(mixed $value): array
     {
         return is_array($value) ? array_values(array_map(fn (mixed $v): string => is_scalar($v) ? (string) $v : '', $value)) : [];
+    }
+
+    /**
+     * The app-level runtime values an environment inherits. The build selectors resolve per level, as
+     * groups: an environment build() drops the app's php()/frankenphp(); an environment php() or
+     * frankenphp() drops the app's build(); an environment binary() drops all three (binary() ignores
+     * them). Within one level a mix stays, so validation rejects it.
+     *
+     * @param array<string, mixed> $app
+     * @param array<string, mixed> $env
+     * @return array<string, mixed>
+     */
+    private static function inheritedRuntime(array $app, array $env): array
+    {
+        $set = static fn (string $key): bool => ($env[$key] ?? null) !== null;
+        if ($set('build') || $set('binary')) {
+            unset($app['php'], $app['frankenphp']);
+        }
+        if ($set('php') || $set('frankenphp') || $set('binary')) {
+            unset($app['build']);
+        }
+        return $app;
     }
 
     private static function nullableString(mixed $value): ?string

@@ -8,14 +8,14 @@ staging deploy.
 ## Start Floci
 
 Lambda Web Functions exist only in Floci's `nightly-*` images so far (release 2.3.0 does not have them). Arco's own
-end-to-end suite is tested with `floci/floci:nightly-10172026`; use that tag, or a newer one, until a Floci release
+end-to-end suite is tested with `floci/floci:nightly-10192026`; use that tag, or a newer one, until a Floci release
 ships Web Functions.
 
 ```bash
 docker run --rm -d --name floci -p 4566:4566 \
   -e FLOCI_BASE_URL=http://localhost:4566 \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  floci/floci:nightly-10172026
+  floci/floci:nightly-10192026
 ```
 
 - `FLOCI_BASE_URL` is the URL you reach Floci at from your machine. Floci puts that host and port in the function
@@ -87,7 +87,7 @@ aws --endpoint-url http://localhost:4566 route53 create-hosted-zone \
   --name example.test --caller-reference arco-local
 ```
 
-Serving the app through CloudFront to a Web Function does not work in Floci yet (see below): use the function URL.
+Serving the app through CloudFront to a Web Function works in Floci, as long as the hosted zone exists first.
 
 ## Reach the app
 
@@ -108,16 +108,11 @@ available yet": Floci does not report the Lambda init metric to CloudWatch Logs.
 - **IAM is not enforced like AWS.** A deploy that works here can still fail on AWS because of a missing
   permission. Check [Minimal IAM permissions](getting-started.md#minimal-iam-permissions) before the real deploy.
 - **No real DNS or TLS.** Custom domains do not resolve outside the emulator, and nothing is served over HTTPS.
-- **Storage writes from Laravel's S3 disk fail.** Flysystem sends `x-amz-acl: private` on every write and Floci
-  rejects it (`AccessControlListNotSupported`), while AWS accepts it. Reads and Arco's own upload (which uses
-  `bucket-owner-full-control`) work. The check passes on its own once Floci accepts the ACL.
-- **CloudFront cannot reach a Web Function origin (known gap).** Floci's origin client does not resolve names
-  under `localhost`, so a custom domain answers 502 locally. Use the function URL.
 
 ## Clean up
 
 ```bash
-vendor/bin/arco remove --env=local --force
+vendor/bin/arco remove --env=local --yes
 docker stop floci
 ```
 

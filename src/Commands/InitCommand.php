@@ -5,6 +5,7 @@ namespace Multiapi\Arco\Commands;
 use Multiapi\Arco\Arco;
 use Multiapi\Arco\Aws\DnsZoneFinder;
 use Multiapi\Arco\Aws\LocalState;
+use Multiapi\Arco\Binary\RuntimeManifest;
 use Multiapi\Arco\Build\AppInspector;
 use Multiapi\Arco\Build\Detection;
 use Multiapi\Arco\Build\PresetRegistry;
@@ -114,7 +115,7 @@ final class InitCommand extends ArcoCommand
         $deployCommands = $migrate ? [DeployCommands::MIGRATE] : [];
 
         $secretKeys = self::secretKeys("$dir/.env");
-        $php = self::render($app, $region, $environments, $secretKeys, $domains, $dns, $deployCommands, $choices);
+        $php = self::render($app, $region, $environments, $secretKeys, $domains, $dns, $deployCommands, $choices, RuntimeManifest::load()->defaultPhp());
         [$errors, $warnings, $raw] = $this->check($dir, $php, $environments);
         if ($errors !== []) {
             foreach ($errors as $error) {
@@ -428,10 +429,6 @@ final class InitCommand extends ArcoCommand
                 }
             }
         }
-        // 0.6 brings what 0.5 did: one requirement for both.
-        if (isset($missing[PackageRequirements::ARCO_LARAVEL_05], $missing[PackageRequirements::ARCO_LARAVEL_06])) {
-            unset($missing[PackageRequirements::ARCO_LARAVEL_05]);
-        }
         return array_map('strval', array_keys($missing));
     }
 
@@ -506,11 +503,17 @@ final class InitCommand extends ArcoCommand
      * @param array<string, string|false> $dns per environment; absent means Route 53 in the deploy account
      * @param list<string> $deployCommands app-level deploy commands
      * @param InitChoices|null $choices resources written on the App chain, after the deploy commands
+     * @param string|null $phpMinor the PHP minor the app pins with runtime php(); null: none written
      */
-    public static function render(string $name, string $region, array $environments, array $secretKeys, array $domains = [], array $dns = [], array $deployCommands = [], ?InitChoices $choices = null): string
+    public static function render(string $name, string $region, array $environments, array $secretKeys, array $domains = [], array $dns = [], array $deployCommands = [], ?InitChoices $choices = null, ?string $phpMinor = null): string
     {
-        $php = "<?php\n\nuse Multiapi\\Arco\\Config\\App;\nuse Multiapi\\Arco\\Config\\Environment;\n\n";
+        $php = "<?php\n\nuse Multiapi\\Arco\\Config\\App;\nuse Multiapi\\Arco\\Config\\Environment;\n";
+        $php .= ($phpMinor === null ? '' : "use Multiapi\\Arco\\Config\\Runtime;\n") . "\n";
         $php .= 'return App::make(' . var_export($name, true) . ")\n    ->region(" . var_export($region, true) . ')';
+        if ($phpMinor !== null) {
+            // A new PHP minor is opt-in: the app stays on this one until arco.php says otherwise.
+            $php .= "\n    ->runtime(fn (Runtime \$r) => \$r->php(" . var_export($phpMinor, true) . '))';
+        }
         if ($deployCommands !== []) {
             $php .= "\n    ->deployCommands([" . implode(', ', array_map(fn (string $c) => var_export($c, true), $deployCommands)) . '])';
         }
@@ -543,8 +546,9 @@ final class InitCommand extends ArcoCommand
         }
         $keys = [];
         foreach (AppInspector::envEntries($envFile) as [$key, $value]) {
-            // AWS_* keys are either reserved by Lambda or replaced by the execution role.
-            if (! preg_match(self::SECRET_LIKE, $key) || str_starts_with($key, 'AWS_') || Validator::isReserved($key)) {
+            // AWS_* keys are either reserved by Lambda or replaced by the execution role; ARCO* names are
+            // reserved for Arco and variables() refuses them.
+            if (! preg_match(self::SECRET_LIKE, $key) || str_starts_with($key, 'AWS_') || str_starts_with($key, 'ARCO') || Validator::isReserved($key)) {
                 continue;
             }
             // Placeholders such as `REDIS_PASSWORD=null` or `APP_KEY=` hold no secret to store.

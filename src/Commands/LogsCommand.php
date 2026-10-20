@@ -116,7 +116,7 @@ final class LogsCommand extends ArcoCommand
                 }
                 if ($json) {
                     $output->writeln((string) json_encode(
-                        ['timestamp' => $event->timestamp, 'logGroup' => $event->group, 'logStream' => $event->stream, 'message' => $event->message],
+                        ['schema' => 1, 'timestamp' => $event->timestamp, 'logGroup' => $event->group, 'logStream' => $event->stream, 'message' => $event->message],
                         JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE,
                     ), OutputInterface::OUTPUT_RAW);
                     return;

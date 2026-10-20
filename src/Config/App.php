@@ -41,7 +41,11 @@ final class App
         return $this;
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * @internal Read by Arco's config loader; its shape is not part of the API.
+     *
+     * @return array<string, mixed>
+     */
     public function toArray(): array
     {
         $deployment = $this->deploymentArray();

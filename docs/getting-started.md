@@ -16,6 +16,9 @@ Arco needs PHP >= 8.3 and Composer locally. Laravel apps need Laravel >= 11 and 
 Laravel preset tells you to install it if it is missing). Arco builds for Linux arm64 and
 downloads a checksum-verified FrankenPHP binary on first use (cached under `~/.arco/cache`).
 
+Keep `multiapi/arco` and `multiapi/arco-laravel` on the same release line (0.9 with 0.9; any 1.x with any 1.x).
+Upgrading an app deployed with an earlier Arco: read [Upgrading](upgrading.md) first.
+
 ## `arco init`
 
 ```bash
@@ -26,7 +29,9 @@ vendor/bin/arco init
 `--name`, `--region`), and writes `arco.php` with one environment (`production` by default; pass
 `--env` several times for more, for example `--env=staging --env=production`). It also adds
 `.arco/` to `.gitignore`. Use `--force` to overwrite an existing `arco.php`. When it finishes it
-prints the `arco secret:set` commands to run and the deploy command.
+prints the `arco secret:set` commands to run and the deploy command. The app it writes pins the PHP minor of
+the default runtime build, `->runtime(fn (Runtime $r) => $r->php('8.5'))`, so an Arco upgrade never moves it to
+another PHP minor (see [Runtime builds](configuration.md#runtime-builds)).
 
 For every secret-like key in `.env` (`APP_KEY`, `*_KEY`, `*_SECRET`, `*_PASSWORD`, `*_TOKEN`),
 `init` writes an `arco-ssm:` reference into `arco.php`. It skips keys whose value is empty, `null`
@@ -70,7 +75,7 @@ does not list under `packages` (`packages-dev` is not deployed), prints one line
 
 ```
 Install the Composer packages these features need before deploying:
-  composer require league/flysystem-aws-s3-v3:^3.0 aws/aws-sdk-php multiapi/arco-laravel:^0.6
+  composer require league/flysystem-aws-s3-v3:^3.0 aws/aws-sdk-php multiapi/arco-laravel:^0.9
 ```
 
 Versions are not compared here; `arco deploy` checks them in the built package. Without a `composer.lock`
@@ -220,6 +225,11 @@ report for the new revision instead.
 If the new revision fails verification, traffic returns to the previous revision and the
 recent logs are printed.
 
+Before changing anything, the deploy checks that the function, role and scheduler rule it would update
+belong to this app and environment (their `arco:app` and `arco:environment` tags), and stops otherwise:
+see [Names and ownership](configuration.md#names-and-ownership). `--force` overrides that check
+(dangerous: only for a resource you know is yours).
+
 ### Build once, deploy later
 
 `arco package --env=production` builds the zip without deploying. It is written to
@@ -237,10 +247,12 @@ verification with rollback and custom domains. The zip carries an `arco-package.
 (app, environment, preset, runtime build, content hash, Arco version, creation time). Arco
 refuses a zip without it, a damaged zip, or one built for another app, environment or preset. It
 warns when the zip was built by another Arco version, with another runtime build, or when the
-runtime settings in arco.php (mode, threads, workers, `phpIni`) changed since.
+runtime settings in arco.php (`workers`, `maxThreads`, `threads`, `phpIni`) changed since.
 
 Environment variables are not in the zip: they belong to the revision and are read from the
-current `arco.php` at deploy time, so changing a variable does not require rebuilding.
+current `arco.php` at deploy time, so changing a variable does not require rebuilding. The same holds for
+the PHP CLI of a custom `binary(..., php: ...)`: the console package of `deploy --package` takes it from the
+current `arco.php`, not from the zip.
 
 ## Changing settings
 
@@ -254,17 +266,22 @@ vendor/bin/arco set timeout 60 --app          # app level (all environments)
 
 `set` and `unset` edit `arco.php` (the same way `domain:add` does) and make no AWS calls; run
 `arco deploy --env=<env>` to apply. Keys: `concurrency`, `max-instances`, `rate-limit`, `timeout`,
-`log-level`. See [Changing settings from the CLI](configuration.md#changing-settings-from-the-cli).
+`log-level`, `console-timeout`, `console-memory`. See [Changing settings from the CLI](configuration.md#changing-settings-from-the-cli).
 
 ## Inspect and remove
 
 ```bash
 vendor/bin/arco info --env=production          # resolved settings and their source, URL, active revision
 vendor/bin/arco info --env=production --json   # machine-readable output
+vendor/bin/arco info --env=production --resources  # every AWS resource tagged for the environment
 vendor/bin/arco remove --env=production        # asks you to type the environment name
 ```
 
-`remove` deletes the function, the console function, the queue workers and the endpoint and the execution role, and with custom domains the
+`info` takes `--profile` like the other commands and, on an environment with an `account()` lock, refuses a
+profile of another account.
+
+`remove` first checks the tags of the functions, role and scheduler rule it deletes and stops, deleting
+nothing, when one belongs to another app or environment. It then deletes the function, the console function, the queue workers and the endpoint and the execution role, and with custom domains the
 CloudFront stack, its DNS aliases and a certificate Arco requested. The shared code bucket,
 your SSM parameters, the SQS queues (with their messages), the storage buckets (with their files) and the
 cache and failed-jobs tables (with their items) are kept; `remove` lists each one it kept.
@@ -278,9 +295,8 @@ commands and the scheduler. `arco command`, `arco tinker`, `deployCommands()` an
 need it and fail before touching AWS when it is off. `arco console:remove` (or `->console(false)`) deletes it
 on the next deploy.
 
-**Upgrading to 0.4.** Apps deployed with Arco 0.2 or 0.3 have a console function. Without a `console()`
-setting `arco deploy` stops before changing anything: add `->console()` to keep it or `->console(false)` to
-delete it.
+Apps deployed with Arco 0.2 or 0.3 have a console function and need a `console()` setting: see
+[Upgrading to 0.4](upgrading.md#04).
 
 ### Scheduler and log retention
 
@@ -295,7 +311,7 @@ scheduler:resume --env=<env>` stop and restart the rule at once without editing 
 paused scheduler paused.
 
 `arco logs:retention 30 --env=<env>` (or `->logRetention(30)`) keeps the web, console and queue worker logs for 30 days;
-`never` stops them from expiring, `--remove` leaves retention unmanaged (the default). Each deploy also
+`never` stops them from expiring, `--remove` goes back to the default, 30 days (before 0.9 retention was unmanaged: use `never` to keep logs forever). Each deploy also
 deletes unused `runtime/*` binaries from the code bucket (older than 24 hours, none referenced by a published
 version), best effort with a warning.
 
@@ -325,14 +341,15 @@ messages. Options, FIFO, existing queues and permissions: [Queues](configuration
 vendor/bin/arco storage:add uploads --env=production      # writes ->storage('uploads') in arco.php
 vendor/bin/arco storage:public uploads avatars/ --env=production
 vendor/bin/arco cache:add --env=production                # writes ->cache()
-vendor/bin/arco queue:failed-table --env=production       # writes ->failedJobsTable()
+vendor/bin/arco failed-jobs:add --env=production          # writes ->failedJobsTable()
 vendor/bin/arco deploy --env=production
 vendor/bin/arco storage:list --env=production
 ```
 
-Each `->storage('<name>')` gets a private S3 bucket, `<app>-<env>-<name>-<account>`. The first storage is
-Laravel's default disk (Arco sets `FILESYSTEM_DISK=s3`, `AWS_BUCKET` and `AWS_URL`), and every storage is also
-a disk of its own name, `Storage::disk('uploads')`, registered by `multiapi/arco-laravel` 0.6+. Laravel's S3
+Each `->storage('<name>')` gets a private S3 bucket, `<app>-<env>-<name>-<account>`. The first storage (or the
+one with `default: true`) is Laravel's default disk (Arco sets `FILESYSTEM_DISK=s3`, `AWS_BUCKET` and
+`AWS_URL`); when every storage says `default: false`, none is, and Laravel keeps its own default disk. Every
+storage is also a disk of its own name, `Storage::disk('uploads')`, registered by `multiapi/arco-laravel` 0.6+. Laravel's S3
 driver needs `league/flysystem-aws-s3-v3` (`composer require league/flysystem-aws-s3-v3 "^3.0"`) and
 `aws/aws-sdk-php`. Public
 prefixes, expiry rules and CORS are options of the storage (`storage:public`, `storage:expire`,
@@ -348,14 +365,14 @@ missing. Every one of them can point at a bucket or table you already have with 
 ### Commands
 
 ```bash
-vendor/bin/arco command "migrate:status" --env=production
+vendor/bin/arco command "migrate:status" --env=production   # production asks first; add --yes in scripts
 vendor/bin/arco command "cache:clear" --env=production
 vendor/bin/arco command "reports:build --month=10" --env=production --async   # returns at once
 ```
 
 The whole command goes in one quoted string (it is split into arguments without a shell, so pipes
-and redirects do not work). Arco prints the output and exits with the command's exit code, so it
-works in scripts and CI. A command can run up to `consoleTimeout()` (15 minutes by default);
+and redirects do not work); this one-string form is the one 1.x keeps. Arco prints the output and exits with the command's exit code, so it
+works in scripts and CI. A command can run up to `console(timeout:)` (15 minutes by default);
 `--timeout=<s>` lowers it. Use `--async` for longer work and follow it with
 `arco logs --source=console --follow`. For a plain PHP app, name the script: `arco command "bin/console app:sync"`.
 The console function must be on (`->console()`) and deployed: run `arco deploy` first.
@@ -441,7 +458,7 @@ open files) are dropped, and Arco names them. A database transaction cannot span
 Only the PsySH commands `help`, `exit`, `clear`, `history` and `buffer` are available; the others (`ls`,
 `doc`, `show`, `timeit`, ...) are disabled because they would run on your machine instead of Lambda. The
 history is a separate file per app and environment. `production` and environments marked `->protected()`
-ask for confirmation first; `--force` skips it (it is required without a terminal). Every statement is
+ask for confirmation first; `--yes` answers it (it is required without a terminal; `--force` still works but is deprecated). Every statement is
 written to the console function's log, as an audit trail (with its SHA-256 and length, the code cut at
 4000 bytes); results and variables are not, since they can hold secrets. `--execute` runs one statement and exits with
 1 if it throws.
@@ -487,21 +504,35 @@ Provide AWS credentials through the environment (for example with
 ```bash
 vendor/bin/arco secret:set app-key --env=production --no-interaction < key.txt
 vendor/bin/arco deploy --env=production --yes --no-interaction
-vendor/bin/arco remove --env=production --force --no-interaction
+vendor/bin/arco command "migrate:status" --env=production --yes --no-interaction
+vendor/bin/arco remove --env=production --yes --no-interaction
 ```
 
-`--yes` confirms creating a new environment; `--force` skips the typed confirmation of `remove`.
+`--yes` answers every confirmation: creating a new environment, the typed confirmation of `remove`, and the question protected environments (`production` by default) ask before `arco command`, `arco tinker` and `queue:dlq --redrive`. `--force` overrides a safety check instead (`init`, `deploy`, `deploy --force-dns`); `remove --force` and `tinker --force` are deprecated spellings of `--yes`.
 Arco's own real-AWS end-to-end run deploys `examples/laravel` to a dedicated test account this way.
+
+**Scripting.** `info`, `info --resources`, `logs`, `queue:list`, `storage:list` and `profile` take `--json`. Every
+JSON document (each line, for `logs --json`) starts with `"schema": 1`; within schema 1, keys are only ever
+added, never renamed or removed. A failure exits non-zero; with `--json`, `queue:list`, `storage:list` and
+`profile` report it as `{"schema": 1, "error": "..."}`, and `info` adds an `error` key when AWS could not be
+read. Commands exit with 0 on success and 1 on failure, except `arco command` (the exit code of the command it
+ran) and a deploy stopped by a failing deploy command (that command's exit code). Parse `--json` and exit codes,
+never the message texts: those change between releases and depend on the language.
 
 ### Minimal IAM permissions
 
 A deploy role (like the one of Arco's own end-to-end run, in a dedicated test account) needs:
 
-- `lambda:*WebFunction*`
-- `iam:GetRole`, `iam:CreateRole`, `iam:PutRolePolicy`, `iam:DeleteRolePolicy`, `iam:DeleteRole`,
-  `iam:PassRole` on `arn:aws:iam::*:role/arco-*`
+- `lambda:*WebFunction*`, plus `lambda:ListTags` (the ownership check reads the tags of the web
+  function, the console function and the workers) and `lambda:TagResource` (only to tag a resource an older
+  Arco left untagged)
+- `iam:TagRole` on `arn:aws:iam::*:role/arco-*`, only to tag a role an older Arco left untagged (`iam:GetRole`
+  already returns the role's tags)
+- `iam:GetRole` (it also returns the `arco:region` tag the region check reads), `iam:CreateRole`,
+  `iam:PutRolePolicy`, `iam:DeleteRolePolicy`, `iam:DeleteRole`, `iam:PassRole` on `arn:aws:iam::*:role/arco-*`
 - `s3:*` on `arn:aws:s3:::arco-*` (and its objects)
-- `ssm:PutParameter`, `ssm:GetParameters` on your app's parameters (`parameter/<app>/*`)
+- `ssm:PutParameter`, `ssm:GetParameters`, `ssm:AddTagsToResource` (`secret:set` tags the parameter for the
+  environment) on your app's parameters (`parameter/<app>/*`)
 - `logs:FilterLogEvents`, `logs:GetLogEvents`
 - `sts:GetCallerIdentity`
 - for the console function (`arn:aws:lambda:*:*:function:*-console` and `...:*-console:*`):
@@ -512,12 +543,21 @@ A deploy role (like the one of Arco's own end-to-end run, in a dedicated test ac
 - `logs:StartLiveTail` for `arco logs --follow` (Live Tail; without
   `logs:StartLiveTail` follow polls instead). `logs:FilterLogEvents` covers `arco logs` without `--follow`
 - for the scheduler (`arn:aws:events:*:*:rule/arco-*-scheduler`): `events:PutRule`, `events:PutTargets`,
-  `events:DescribeRule`, `events:RemoveTargets`, `events:DeleteRule`, `events:TagResource`,
+  `events:DescribeRule`, `events:ListTagsForResource` (the ownership check), `events:RemoveTargets`, `events:DeleteRule`, `events:TagResource`,
   `events:DisableRule`, `events:EnableRule` (`scheduler:pause` / `scheduler:resume`); on the console
   function: `lambda:AddPermission`, `lambda:RemovePermission`, `lambda:GetPolicy`
 - for the version check of the runtime clean-up: `lambda:ListVersionsByFunction` on the Arco functions
   (it reads every tagged function's versions), and `tag:GetResources` (without it the clean-up warns on every deploy)
-- for log retention: `logs:CreateLogGroup`, `logs:PutRetentionPolicy`, `logs:DeleteRetentionPolicy`
+- for log retention, on every deploy (an environment without `logRetention()` gets the 30-day default):
+  `logs:CreateLogGroup`, `logs:PutRetentionPolicy`, `logs:DeleteRetentionPolicy`, `logs:DescribeLogGroups` (Arco
+  reads the current retention and changes, and reports, only a group whose retention differs; without it every
+  deploy sets the retention and says so), and `logs:TagResource` (Arco tags each log group for the environment;
+  without it the groups stay untagged, with one note per deploy)
+- for the environment's Resource Group `arco-<app>-<env>` (a view of its tagged resources in the AWS console):
+  `resource-groups:GetGroupQuery`, `resource-groups:CreateGroup`, `resource-groups:Tag`,
+  `resource-groups:GetGroup`, `resource-groups:GetTags`, `resource-groups:UpdateGroupQuery` and, for
+  `arco remove`, `resource-groups:DeleteGroup`. Optional: without them the deploy and the remove print a note
+- for `arco info --resources` and the list `arco remove` prints before it asks: `tag:GetResources`
 - for the runtime clean-up: `s3:ListBucket` on the code bucket and `s3:GetObject`, `s3:PutObject`,
   `s3:DeleteObject` on `runtime/*`
 - for queues (only when `arco.php` has `queue()`; see [Permissions for queues](#permissions-for-queues))
@@ -526,11 +566,14 @@ A deploy role (like the one of Arco's own end-to-end run, in a dedicated test ac
 
 For your own apps, scope the SSM resource to your parameters and add Secrets Manager read access
 if you use `arco-secret:` references. If a permission is missing, Arco reports which operation
-AWS denied. The deploy keeps the live console version plus the 4 newest and deletes older ones on a best-effort
+AWS denied. Without `lambda:ListTags` or `events:ListTagsForResource` the ownership check cannot read
+the tags: the deploy stops and names the permission (`--force` skips the check), and `arco remove` deletes
+nothing. The deploy keeps the live console version plus the 4 newest and deletes older ones on a best-effort
 basis: without `lambda:ListVersionsByFunction` or `lambda:DeleteFunction` that step becomes a warning.
 
-People who only run `arco command`, `arco tinker` or `arco logs` need `lambda:InvokeFunction` on the console
-function (`arco logs` needs the `logs:` actions above). The function's execution role is separate: for the managed role Arco
+People who only run `arco command`, `arco tinker` or `arco logs` need `lambda:InvokeFunction`,
+`lambda:GetFunctionConfiguration` and `lambda:ListTags` on the console function (`command` and `tinker`
+first check that it belongs to the app and environment, and refuse to run anything otherwise) (`arco logs` needs the `logs:` actions above). The function's execution role is separate: for the managed role Arco
 adds `logs:CreateLogGroup`, `logs:CreateLogStream` and `logs:PutLogEvents` on the web, console and queue
 worker log groups, the SQS actions the app and workers need on the queues in `arco.php` (`ArcoQueues`), read
 and write access to the buckets and tables in `arco.php` (`ArcoStorage`, `ArcoStorageList`, `ArcoTables`), `s3:GetObject` on `runtime/*` of the code bucket (the console function only reads it when it
@@ -544,7 +587,8 @@ With `queue()`, the deploy profile also needs:
 
 - `cloudformation:CreateStack`, `UpdateStack`, `DeleteStack`, `DescribeStacks`, `DescribeStackEvents`,
   `DescribeStackResources` on `arn:aws:cloudformation:*:*:stack/arco-*-resources/*` (the queue stack;
-  `cloudformation:*Stack*` on `stack/arco-*`, as for custom domains, covers it)
+  `cloudformation:*Stack*` on `stack/arco-*`, as for custom domains, covers it), plus `cloudformation:GetTemplate`
+  to report which buckets, tables and queues an update changed (without it every updated resource is reported as updated)
 - `sqs:CreateQueue`, `sqs:GetQueueUrl`, `sqs:GetQueueAttributes`, `sqs:SetQueueAttributes`, `sqs:TagQueue`,
   `sqs:UntagQueue`, `sqs:ListQueueTags` (CloudFormation creates and updates the queues with the profile's
   credentials), `sqs:ReceiveMessage` (the `queue:dlq` sample) and `sqs:StartMessageMoveTask` (`queue:dlq

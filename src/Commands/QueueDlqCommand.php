@@ -7,6 +7,7 @@ use Closure;
 use Multiapi\Arco\Aws\AwsClients;
 use Multiapi\Arco\Cli\ArcoCommand;
 use Multiapi\Arco\Cli\UserError;
+use Multiapi\Arco\Commands\Concerns\ConfirmsProtected;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
 use Multiapi\Arco\Deploy\Queues;
 use Symfony\Component\Console\Attribute\AsCommand;
@@ -20,6 +21,7 @@ use Throwable;
 #[AsCommand(name: 'queue:dlq', description: 'Show the failed jobs in a queue\'s dead-letter queue, or move them back (--redrive)')]
 final class QueueDlqCommand extends ArcoCommand
 {
+    use ConfirmsProtected;
     use ResolvesTarget;
 
     public const SAMPLE = 10;
@@ -36,6 +38,7 @@ final class QueueDlqCommand extends ArcoCommand
     {
         $this->addArgument('name', InputArgument::REQUIRED, 'Queue name, as in arco.php')
             ->addOption('redrive', null, InputOption::VALUE_NONE, 'Move the messages back to the queue so the worker runs them again')
+            ->addOption('yes', 'y', InputOption::VALUE_NONE, 'Answer yes to the confirmation of a protected environment (with --redrive)')
             ->addOption('env', 'e', InputOption::VALUE_REQUIRED, 'Environment')
             ->addOption('profile', 'p', InputOption::VALUE_REQUIRED, 'AWS profile to use');
     }
@@ -58,7 +61,7 @@ final class QueueDlqCommand extends ArcoCommand
                 throw new UserError($this->t('queue.unknown', ['queue' => $name, 'queues' => $names === [] ? $this->t('queue.none') : implode(', ', $names)]));
             }
             if ($queue->dlqName($config) === null) {
-                throw new UserError($this->t('queue.no_dlq', ['queue' => $queue->name]));
+                throw new UserError($this->t('queue.no_dlq', ['queue' => $queue->name, 'environment' => $config->environment, 'yes' => $config->isProtected() ? ' --yes' : '']));
             }
 
             $aws = $this->awsClients($config, $input, $io);
@@ -76,6 +79,9 @@ final class QueueDlqCommand extends ArcoCommand
                 if ($count === 0) {
                     $io->note($this->t('queue.dlq_empty', ['dlq' => $dlq]));
                     return self::SUCCESS;
+                }
+                if (! $this->confirmProtected($input, $io, $config, 'redrive', $aws, ['dlq' => $dlq, 'queue' => $queue->physicalName($located)])) {
+                    return self::FAILURE;
                 }
                 $task = $queues->redrive((string) $queue->dlqArn($located), $queue->arn($located));
                 $io->success($this->t('queue.redrive_started', ['count' => $count, 'dlq' => $dlq, 'queue' => $queue->physicalName($located), 'task' => $task]));
@@ -101,7 +107,7 @@ final class QueueDlqCommand extends ArcoCommand
                 }
                 $io->newLine();
             }
-            $io->writeln($this->t('queue.dlq_redrive_hint', ['queue' => $queue->name]));
+            $io->writeln($this->t('queue.dlq_redrive_hint', ['queue' => $queue->name, 'environment' => $config->environment, 'yes' => $config->isProtected() ? ' --yes' : '']));
             return self::SUCCESS;
         } catch (Throwable $e) {
             $io->error($this->describeError($e) ?? throw $e);

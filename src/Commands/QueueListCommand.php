@@ -15,6 +15,7 @@ use Multiapi\Arco\Deploy\Sleeper;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
+use Symfony\Component\Console\Output\NullOutput;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Style\SymfonyStyle;
 use Throwable;
@@ -34,14 +35,25 @@ final class QueueListCommand extends ArcoCommand
     protected function configure(): void
     {
         $this->addOption('env', 'e', InputOption::VALUE_REQUIRED, 'Environment')
-            ->addOption('profile', 'p', InputOption::VALUE_REQUIRED, 'AWS profile to use');
+            ->addOption('profile', 'p', InputOption::VALUE_REQUIRED, 'AWS profile to use')
+            ->addOption('json', null, InputOption::VALUE_NONE, 'Print JSON');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $io = new SymfonyStyle($input, $output);
+        $json = (bool) $input->getOption('json');
+        if ($json) {
+            // No profile prompt or "profile saved" text in the JSON stream: it needs a profile that resolves.
+            $input->setInteractive(false);
+        }
         try {
-            $config = $this->loadTarget($input, $io);
+            // Notes and warnings would corrupt machine-readable output, so --json sends them nowhere.
+            $config = $this->loadTarget($input, $json ? new SymfonyStyle($input, new NullOutput()) : $io);
+            if ($config->queues === [] && $json) {
+                $this->printJson($output, $config, []);
+                return self::SUCCESS;
+            }
             if ($config->queues === []) {
                 $io->note($this->t('queue.none_configured', ['environment' => $config->environment]));
                 return self::SUCCESS;
@@ -50,6 +62,10 @@ final class QueueListCommand extends ArcoCommand
             $located = $config->account === null ? $config->withAccount($aws->accountId()) : $config;
             $queues = new Queues($aws->sqs(), $aws->lambda());
             $workers = new LambdaFunction($aws->lambda(), new Sleeper(), 'deploy.worker_missing', 'deploy.worker_update_failed');
+            if ($json) {
+                $this->printJson($output, $config, array_map(fn (QueueConfig $queue) => $this->jsonQueue($queues, $workers, $config, $located, $queue), $config->queues));
+                return self::SUCCESS;
+            }
             foreach ($config->queues as $queue) {
                 $io->section($queue->name);
                 $io->definitionList(
@@ -62,16 +78,85 @@ final class QueueListCommand extends ArcoCommand
                         'timeout' => $queue->timeout,
                         'memory' => $queue->memory,
                         'batch' => $queue->batchSize,
-                        'concurrency' => $queue->concurrency ?? $this->t('queue.no_limit'),
+                        'instances' => $queue->maxInstances ?? $this->t('queue.no_limit'),
                         'tries' => $queue->tries,
                     ])],
                 );
             }
             return self::SUCCESS;
         } catch (Throwable $e) {
-            $io->error($this->describeError($e) ?? throw $e);
+            $message = $this->describeError($e) ?? throw $e;
+            if ($json) {
+                $output->writeln((string) json_encode(['schema' => 1, 'error' => $message], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+            } else {
+                $io->error($message);
+            }
             return self::FAILURE;
         }
+    }
+
+    /** @param list<array<string, mixed>> $queues */
+    private function printJson(OutputInterface $output, AppConfig $config, array $queues): void
+    {
+        $output->writeln((string) json_encode(['schema' => 1, 'environment' => $config->environment, 'queues' => $queues], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+    }
+
+    /**
+     * `state` is ok, not_created, denied or unreadable (with `error`, the AWS error code).
+     *
+     * @return array<string, mixed>
+     */
+    private function jsonQueue(Queues $queues, LambdaFunction $workers, AppConfig $config, AppConfig $located, QueueConfig $queue): array
+    {
+        $url = $queue->url($located);
+        $messages = ['state' => 'ok', 'visible' => null, 'inFlight' => null];
+        try {
+            $counts = $queues->counts($url, ['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible']);
+            $messages['visible'] = $counts['ApproximateNumberOfMessages'];
+            $messages['inFlight'] = $counts['ApproximateNumberOfMessagesNotVisible'];
+        } catch (AwsException $e) {
+            $messages = ['state' => Queues::missing($e) ? 'not_created' : 'unreadable', 'visible' => null, 'inFlight' => null]
+                + (Queues::missing($e) ? [] : ['error' => (string) ($e->getAwsErrorCode() ?? 'UnknownError')]);
+        }
+
+        $dlq = null;
+        $dlqName = $queue->dlqName($located);
+        $dlqUrl = $queue->dlqUrl($located);
+        if ($dlqName !== null && $dlqUrl !== null) {
+            $dlq = ['name' => $dlqName, 'state' => 'ok', 'messages' => null];
+            try {
+                $dlq['messages'] = $queues->counts($dlqUrl, ['ApproximateNumberOfMessages'])['ApproximateNumberOfMessages'];
+            } catch (AwsException $e) {
+                $dlq['state'] = Queues::missing($e) ? 'not_created' : 'unreadable';
+                if (! Queues::missing($e)) {
+                    $dlq['error'] = (string) ($e->getAwsErrorCode() ?? 'UnknownError');
+                }
+            }
+        }
+
+        $function = $config->workerFunctionName($queue->name);
+        $worker = ['function' => $function, 'state' => 'ok', 'version' => null];
+        try {
+            $version = $workers->liveVersion($function);
+            $worker['version'] = $version;
+            $worker['state'] = $version === null ? 'not_created' : 'ok';
+        } catch (AwsException $e) {
+            $code = (string) ($e->getAwsErrorCode() ?? 'UnknownError');
+            $worker['state'] = str_contains($code, 'AccessDenied') ? 'denied' : 'unreadable';
+            if ($worker['state'] === 'unreadable') {
+                $worker['error'] = $code;
+            }
+        }
+
+        return [
+            'name' => $queue->name,
+            'url' => $url,
+            'existing' => $queue->existing !== null,
+            'messages' => $messages,
+            'dlq' => $dlq,
+            'worker' => $worker,
+            'settings' => ['timeout' => $queue->timeout, 'memory' => $queue->memory, 'batchSize' => $queue->batchSize, 'maxInstances' => $queue->maxInstances, 'tries' => $queue->tries],
+        ];
     }
 
     private function messages(Queues $queues, string $url): string

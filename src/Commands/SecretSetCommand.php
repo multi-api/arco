@@ -2,11 +2,13 @@
 
 namespace Multiapi\Arco\Commands;
 
+use Aws\Exception\AwsException;
 use Closure;
 use Multiapi\Arco\Aws\AwsClients;
 use Multiapi\Arco\Cli\ArcoCommand;
 use Multiapi\Arco\Cli\UserError;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
+use Multiapi\Arco\Deploy\Ownership;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
@@ -52,6 +54,18 @@ final class SecretSetCommand extends ArcoCommand
             $aws = $this->awsClients($config, $input, $io);
             $parameter = "/{$config->app}/{$config->environment}/$name";
             $aws->ssm()->putParameter(['Name' => $parameter, 'Value' => $value, 'Type' => 'SecureString', 'Overwrite' => true]);
+            // PutParameter cannot tag when it overwrites: the tags that make it the environment's follow apart.
+            try {
+                $aws->ssm()->addTagsToResource([
+                    'ResourceType' => 'Parameter',
+                    'ResourceId' => $parameter,
+                    'Tags' => array_map(static fn (string $key, string $tag): array => ['Key' => $key, 'Value' => $tag], array_keys(Ownership::tags($config)), array_values(Ownership::tags($config))),
+                ]);
+            } catch (AwsException $e) {
+                // The secret is saved: a refused tag is a warning.
+                $message = $e->getAwsErrorMessage();
+                $io->warning($this->t('secret.tags_not_added', ['parameter' => $parameter, 'error' => is_string($message) && $message !== '' ? $message : $e->getMessage()]));
+            }
 
             $io->success($this->t('secret.saved', ['parameter' => $parameter, 'reference' => "arco-ssm:$parameter"]));
             return self::SUCCESS;

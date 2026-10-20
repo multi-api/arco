@@ -3,6 +3,178 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.9.0
+
+The API freeze before 1.0: the last release allowed to break `arco.php`, the CLI, the `--json` output or the AWS
+names. Deprecated items keep working in 0.9 with one warning per run and are removed in 1.0. What to change, with
+before/after snippets: [Upgrading to 0.9](docs/upgrading.md#upgrading-to-09).
+
+- **Changed (breaking, IAM):** before the first 0.9 deploy, add `lambda:ListTags` and `events:ListTagsForResource`
+  to the deploy profile: the ownership check reads them before any change, and without them `arco deploy` and
+  `arco remove` stop naming the permission. The other new permissions are optional (a warning or note without
+  them); the table is the first step of [Upgrading to 0.9](docs/upgrading.md#upgrading-to-09).
+- **Added:** `->runtime(fn (Runtime $r) => $r->php('8.5'))` chooses the PHP version: the newest runtime build whose
+  PHP is 8.5.x. `frankenphp('1.13')` now matches by prefix and combines with `php()`. Without `php()`, Arco uses the
+  newest build of its default PHP minor (8.5), and a 1.x release moves that default only to a new PHP patch: a new
+  PHP minor is opt-in via `php()`, also for `frankenphp()` alone. An unknown minor is a validation error listing the
+  PHP versions this Arco knows. `arco init` now writes `->runtime(fn (Runtime $r) => $r->php('8.5'))`.
+  The selectors resolve per level: an environment's `build()` (or `binary()`) replaces the app's `php()`/`frankenphp()`,
+  and an environment's `php()`/`frankenphp()` replaces the app's `build()`; mixing them at one level is an error.
+- **Added:** tags are Arco's record of what belongs to an app and environment (no state file: local and CI runs
+  see the same). Every resource Arco creates for an environment carries `arco:app` and `arco:environment`: the
+  functions, the execution role, the scheduler rule, both stacks and what they make (queues, buckets, tables,
+  CloudFront), the managed certificate, and now also the log groups (created tagged, or adopted and tagged when
+  Lambda made them first) and the SSM parameters `arco secret:set` writes (tagged after every write, new or
+  overwritten).
+- **Added:** `arco deploy` keeps an AWS Resource Group `arco-<app>-<env>` (a tag query on both tags), so the AWS
+  console shows the environment's resources together; it creates the group or updates its query, and leaves a
+  group with that name that is not the environment's alone. `arco remove` deletes it last, only when its query
+  is the environment's. The group is a convenience: without permission the deploy and the remove print a note
+  (once). The deploy prints `deploy.group_ready` only when it created the group or updated its query.
+- **Added:** `arco info --resources` lists every resource tagged for the environment in its region (type, name,
+  whether `arco remove` deletes or keeps it), also as `--json` (`schema: 1`, `app`, `environment`, `group`,
+  `resources[]` with `type`, `name`, `arn`, `retained`). `arco remove` prints the same list before it asks for
+  confirmation (and with `--yes`).
+- **Added:** `arco info --profile/-p` (it ran without a profile flag before) and the account guard: `info` refuses to
+  read an environment locked with `account()` through a profile of another account, like `deploy` does. This is a change in behaviour: `info` now enforces the `account()` lock for any resolved profile
+  (the flag, `AWS_PROFILE`, the remembered one), where it used to read whatever account the profile pointed to.
+- **Added:** `--json` on `arco queue:list`, `arco storage:list` and `arco profile`, and `"schema": 1` as the first key of
+  every `--json` output (`info`, `info --resources`, `logs` (each line), `queue:list`, `storage:list`, `profile`).
+  Existing keys are unchanged. `--json` output and exit codes are the scripting API; message texts are not.
+- **Added:** execution roles are tagged `arco:region`. `arco deploy` refuses (`deploy.region_changed`), before any change and even with `--force`, when the
+  existing role was created for another region than `region()`: an app lives in one region, so use another
+  environment name for a second one. A role without the tag (created by an older Arco) deploys and gets it.
+- **Added:** `arco failed-jobs:add [--existing=<table>]` and `arco failed-jobs:remove` turn the failed-jobs table on or
+  off in `arco.php`, matching `cache:add` / `cache:remove`.
+- **Added:** `cache(driver: 'dynamodb')` is accepted (the only value; others are a validation error), so another cache
+  backend can be added later without renaming. The `arco.php` editor does not write the default driver.
+- **Added:** `docs/upgrading.md`: what to change in `arco.php`, CI and IAM for each version from 0.1 to 0.9, with
+  before/after snippets for 0.9, and the 1.x compatibility promise (what is API and what is not). The README,
+  the getting-started guide and the configuration reference describe 0.9 throughout, including a table of the
+  variables Arco sets, the named-argument policy, the default-build policy and the `--json` schema.
+- **Changed:** `protected()` guards `arco command`, `arco remove` and `arco queue:dlq --redrive`, not only `arco tinker`
+  (default: environments named `production`). At a terminal they ask first; without one they stop and say to add
+  `--yes`. CI scripts running `arco command ... --env=production --no-interaction` or `arco remove` there must add
+  `--yes`. Deploy commands (`deployCommands()`, `--migrate`) are not asked.
+- **Changed:** `--yes` / `-y` answers every confirmation on `deploy`, `remove`, `tinker`, `command` and `queue:dlq`;
+  `--force` only overrides a safety check (`init`, `deploy`, `deploy --force-dns`).
+- **Changed:** before a deploy updates, or `arco remove` deletes, the web function, console function, queue
+  workers, execution role or scheduler rule, Arco reads their `arco:app`/`arco:environment` tags and refuses,
+  before changing anything, a resource tagged for another app or environment (names are `<app>-<env>`, so app
+  `shop-eu` + env `prod` and app `shop` + env `eu-prod` collide), or one with no tags and no Arco description.
+  Untagged resources that an older Arco made (its description is on them) are this environment's, and the
+  deploy tags them. `arco deploy --force` overrides a refusal (dangerous); `arco remove` never deletes another
+  environment's resources. The deploy profile needs `lambda:ListTags` and `events:ListTagsForResource`
+  (and `lambda:TagResource`, `iam:TagRole` to tag older resources); without them the deploy stops naming
+  the permission (`events:DescribeRule` too, when the deploy puts a scheduler rule). `scheduler:set --apply`,
+  `scheduler:remove --apply`, `scheduler:pause` and `scheduler:resume` check the rule the same way, and
+  `arco command` / `arco tinker` check the console function before invoking it (they now also need
+  `lambda:GetFunctionConfiguration` and `lambda:ListTags` on it); none of these has an override.
+- **Changed:** app and environment names may not end in `-console`, `-resources`, `-scheduler` or `-host`, nor
+  contain `-queue-`, nor may `<app>-<env>` when it names another app's resource (app `shop-eu` + env
+  `console` is the console function of `shop`/`eu`): validation names the rule.
+- **Changed:** `variables()` refuses every name starting with `ARCO`: they are reserved for Arco (it sets `ARCO`,
+  `ARCO_APP`, `ARCO_ENV`, `ARCO_BUILD` and the ones its runtime reads). The error names the variable. A variable
+  of your own that starts with `ARCO` needs another name (a value of `ARCO_QUEUES` or `ARCO_STORAGE` no longer
+  replaces Arco's map).
+- **Changed:** log retention defaults to 30 days. An environment without `logRetention()` (new or already deployed)
+  now gets 30 days on its web, console and queue worker log groups on the next deploy, which prints the
+  `deploy.log_retention_default` line once; before, those groups kept logs forever. `logRetention(false)` keeps
+  "never expire" and an explicit value is unchanged. `arco info` shows `30 days (default)`.
+  Every deploy now calls `logs:CreateLogGroup` and reads the current retention (`logs:DescribeLogGroups`): only
+  a group whose retention changes (a new group, or one without that retention) gets `logs:PutRetentionPolicy`
+  (or `logs:DeleteRetentionPolicy` for `false`), and the default line is printed only then. Without
+  `logs:DescribeLogGroups` every deploy sets the retention and prints the line, as the first one does. A missing
+  `logs:CreateLogGroup` / `logs:PutRetentionPolicy` is a warning after the deploy is live.
+- **Changed:** a profile without `logs:TagResource` gets a plain note, once per deploy, instead of a warning.
+- **Changed:** when every `storage()` sets `default: false` explicitly, the app has no default disk: only
+  `ARCO_STORAGE` is injected (no `FILESYSTEM_DISK`, `AWS_BUCKET` or `AWS_URL`). A storage without the option is still
+  the default, as before.
+- **Changed:** `queue(maxInstances: N)` is the most concurrent worker invocations of a queue (the event source
+  mapping's `MaximumConcurrency`), the same name `maxInstances()` has for the web function. `queue:add
+  --max-instances` and `queue:set <queue> max-instances` replace `--concurrency` / `concurrency`; editing a queue
+  rewrites `concurrency:` as `maxInstances:`.
+- **Changed:** `workers(int $count)` is the Octane worker count and the new `maxThreads(int $threads)` is FrankenPHP's
+  `max_threads` (defaults 4 and 64, as before). `arco info` shows `runtime.maxThreads` next to `runtime.workers`.
+  `mode()` is marked `@internal` and left out of the docs.
+- **Changed:** `arco info --json` reports `settings."runtime.workers"` as an integer (the Octane worker count; it was
+  the string `"4-64"`) and the new `settings."runtime.maxThreads"` (FrankenPHP `max_threads`).
+- **Changed:** `console(bool $enabled = true, ?int $timeout = null, ?int $memory = null)`: the console function's
+  timeout (3 to 900 s) and memory (128 to 10240 MB, default 2048) are options of `console()`; giving one turns the
+  console on. `arco set console-timeout` / `console-memory` (and `unset`) write them there.
+- **Changed:** `cache(bool $enabled = true, ?string $existing = null, string $driver = 'dynamodb')` and
+  `failedJobsTable(bool $enabled = true, ?string $existing = null)` no longer take `null` (it meant `true`);
+  `cache(driver:)` accepts only `dynamodb` and validation refuses anything else. `dns()`'s parameter is named
+  `$dns`.
+- **Changed:** runtime build ids are `php<php>-fp<frankenphp>-r<n>` (`php8.5.11-fp1.13.0-r2`); `arco info` (also
+  `runtime.build` in `--json`), the deploy output and new packages show them. The old ids `1.13.0-r1` and
+  `1.13.0-r2` stay valid forever as aliases: `build('1.13.0-r2')` and packages built with it deploy the identical
+  binaries. `build()` is an exact pin and is now an error next to `php()` too (as next to `frankenphp()`). The local
+  runtime cache moves to `~/.arco/cache/runtime/<new id>/`, so each machine downloads the build once more. When the
+  console downloads FrankenPHP at cold start (a build without a PHP CLI, such as `1.13.0-r1`), its S3 key becomes
+  `runtime/<new id>/frankenphp`: the binary is uploaded once more (same bytes), and the old key is kept while any
+  published function version references it.
+- **Changed:** `binary(string $frankenphp, ?string $php = null)`: the parameter `$path` is now `$frankenphp`
+  (`binary(path: ...)` no longer works). With `php:` (a Linux arm64 static PHP CLI, checked at validation) the
+  console function and the queue workers carry it as `bin/php` like the official builds, instead of downloading
+  the FrankenPHP binary at cold start; without it nothing changes.
+- **Changed:** the framework preset interfaces (`FrameworkPreset`, `CachesPaths`, `RunsCommands`,
+  `PresetRegistry`) and `App::toArray()` / `Environment::toArray()` are marked `@internal`: not part of the 1.x
+  compatibility promise.
+- **Changed:** new deploy-profile permissions, all optional (a warning or note without them):
+  `logs:TagResource` (log group tags), `logs:DescribeLogGroups` (log retention changes only when needed),
+  `ssm:AddTagsToResource` (`secret:set`), `tag:GetResources`
+  (`info --resources`, the list before `remove`), and for the Resource Group `resource-groups:GetGroupQuery`,
+  `resource-groups:CreateGroup`, `resource-groups:Tag`, `resource-groups:GetGroup`, `resource-groups:GetTags`,
+  `resource-groups:UpdateGroupQuery`, `resource-groups:DeleteGroup`.
+- **Changed:** the `composer require` line that `arco deploy` and `arco init` print for a missing
+  `multiapi/arco-laravel` names `multiapi/arco-laravel:^0.9` (the release line of this Arco; `^1.0` from 1.0).
+  It printed `^0.5` or `^0.6`, which Composer reads as 0.5.x or 0.6.x only. The check itself is unchanged: it
+  still accepts any install that has what the feature needs.
+- **Changed:** the E2E suite now pins Floci `nightly-10192026`, where storage writes and CloudFront to a Web Function work, so all eight Floci checks are mandatory.
+- **Changed:** the real-AWS E2E cleanup also deletes the run's log groups (`/aws/lambda/<app>-e2e*` and
+  `/aws/lambda/web/<app>-e2e*`), within the guarded account and the run's app name. When the profile may not list
+  them or read their tags, it reports `log groups not checked: <error>`, deletes none of them and still cleans up
+  the other resources.
+- **Deprecated:** `queue(concurrency:)`, `queue:add --concurrency` and `queue:set <queue> concurrency` (use
+  `maxInstances` / `max-instances`) and `workers(min:, max:)` (use `workers(N)` and `maxThreads(N)`). They keep
+  working in 0.9, print one warning per run, and are removed in 1.0. Giving both `concurrency` and `maxInstances`
+  to a queue is a validation error.
+- **Deprecated:** `arco remove --force` and `arco tinker --force` (use `--yes`). They keep working in 0.9, print
+  one warning, and are removed in 1.0.
+- **Deprecated:** `arco queue:failed-table` (use `failed-jobs:add` / `failed-jobs:remove`). It is hidden from the command
+  list, keeps working, prints one warning per run, and is removed in 1.0.
+- **Removed:** `maxEnvironments()` (the deprecated old name of `maxInstances()`) and `consoleTimeout()`. An `arco.php` that
+  still calls them stops with a message naming the replacement: `maxInstances(N)` and `console(timeout: N)`.
+- **Fixed:** `arco deploy` reports `updated` (not `up to date`) for a bucket, table or queue whose definition the
+  resources stack update changed (lifecycle, CORS, bucket policy, table settings). It compares the running template
+  (`cloudformation:GetTemplate`); when that is denied it reports `updated` for every resource it updates.
+- **Fixed:** help and message texts that named removed or wrong things: `arco command --timeout` (it named
+  `consoleTimeout`), `storage:add --default` (it said `FILESYSTEM_DISK`, which is always `s3`; the option picks
+  the bucket behind `AWS_BUCKET` and `AWS_URL`), the `maxEnvironments()` error (it said the rename happened in
+  0.5; `maxInstances()` is the name since 0.1) and the deploy's log retention default note. The validation error
+  for an `<app>-<env>` ending in `-resources`, `-scheduler` or `-host` no longer calls it a console function: it
+  names the resource each suffix belongs to.
+- **Fixed:** `arco remove` refuses, before deleting anything, when the execution role was created for another
+  region than `region()` (`deploy.region_changed`, as `deploy` does): after a region change it would have
+  deleted the account-global role and the CloudFront stack still used by the live function in the old region.
+- **Fixed:** `arco deploy --force` refuses a resources stack or domains stack with Arco's name that another app or
+  environment made before it tags anything (the stack check moved into the read-only ownership check); it used to
+  tag the resources it took over first, then refuse the stack.
+- **Fixed:** `arco init` leaves `ARCO*` keys of `.env` (such as `ARCO_API_SECRET`) out of `arco.php`: `variables()`
+  refuses them, so the written file did not validate.
+- **Fixed:** any failed `cloudformation:GetTemplate` (not only a denied one) reports the resources as `updated`
+  and the deploy goes on.
+- **Fixed:** an unexpected failure while `arco remove` deletes the Resource Group is a `remove.group_failed` note;
+  the remove still succeeds.
+- **Fixed:** `arco info --json` and `arco info --resources --json` print a config error as
+  `{"schema": 1, "error": "..."}` with exit code 1, like `queue:list` and `storage:list`.
+- **Fixed:** `arco tinker` prints config warnings (such as `deprecated.*`) on stderr, so the value
+  `tinker --execute` prints on stdout stays clean.
+- **Fixed:** an `arco.php` still written for an 0.8 signature gets a message naming the 0.9 one:
+  `binary(path: ...)` (now `binary(frankenphp: ..., php: ...)`), `dns(profile: ...)` (positional or `dns(dns: ...)`)
+  and `cache(null)` / `failedJobsTable(null)` (null meant `true`: pass `true` or nothing to keep it on, `false` to turn it off). Other errors keep PHP's text.
+
 ## 0.8.1
 
 - **Note:** the `v0.8.0` tag was created on the 0.7.0 commit by mistake, so 0.8.0 ships exactly the code of

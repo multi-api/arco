@@ -16,7 +16,7 @@ use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Style\SymfonyStyle;
 use Throwable;
 
-#[AsCommand(name: 'set', description: 'Set concurrency, max-instances, rate-limit, timeout or log-level in arco.php')]
+#[AsCommand(name: 'set', description: 'Set concurrency, max-instances, rate-limit, timeout, log-level, console-timeout or console-memory in arco.php')]
 final class SetCommand extends ArcoCommand
 {
     use ResolvesTarget;
@@ -26,7 +26,7 @@ final class SetCommand extends ArcoCommand
 
     protected function configure(): void
     {
-        $this->addArgument('key', InputArgument::REQUIRED, 'concurrency, max-instances, rate-limit, timeout or log-level')
+        $this->addArgument('key', InputArgument::REQUIRED, 'concurrency, max-instances, rate-limit, timeout, log-level, console-timeout or console-memory')
             ->addArgument('value', InputArgument::REQUIRED, 'New value');
         $this->addTargetOptions();
     }
@@ -45,16 +45,8 @@ final class SetCommand extends ArcoCommand
 
             $before = (string) @file_get_contents($this->arcoPhp());
             $unchanged = self::levelValue($raw, $environment, $method) === $value;
-            if (! $unchanged || ArcoFileEditor::usesAlias($this->arcoPhp(), $method)) {
-                // An equal value written with an older name (maxEnvironments) is still rewritten,
-                // but failing to rename it is no reason to fail the command.
-                try {
-                    $this->writeSetting($environment, $method, $value);
-                } catch (UserError $e) {
-                    if (! $unchanged) {
-                        throw $e;
-                    }
-                }
+            if (! $unchanged) {
+                $this->writeSetting($environment, $method, $value);
                 $unchanged = (string) @file_get_contents($this->arcoPhp()) === $before;
             }
             $unchanged
@@ -63,7 +55,7 @@ final class SetCommand extends ArcoCommand
             if ($environment === null) {
                 foreach (ConfigResolver::environments($raw) as $env) {
                     if (self::levelValue($raw, $env, $method) !== null) {
-                        $io->warning($this->t('settings.overridden', ['environment' => $env, 'method' => $method]));
+                        $io->warning($this->t('settings.overridden', ['environment' => $env, 'method' => self::callLabel($method)]));
                     }
                 }
             }

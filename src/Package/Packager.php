@@ -126,7 +126,7 @@ final class Packager
             'publicDir' => 'app/' . $preset->publicDir(),
             'workerScript' => $worker === null ? null : 'app/' . $worker,
             'threads' => $config->runtime->threads,
-            'workers' => ['min' => $config->runtime->workersMin, 'max' => $config->runtime->workersMax],
+            'workers' => ['min' => $config->runtime->workers, 'max' => $config->runtime->maxThreads],
             // Empty maps must serialize as {} because the runtime expects an object.
             'phpIni' => $config->runtime->phpIni === [] ? new \stdClass() : $config->runtime->phpIni,
             // Read by runtime/console.php: commands run as `php <entry> <args>`, or `php <args>` when null.

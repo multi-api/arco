@@ -126,11 +126,14 @@ final class CustomDomains
 
     /**
      * A stack with Arco's name that this environment did not create (no matching arco:app and
-     * arco:environment tags) is never updated or deleted.
+     * arco:environment tags) is never updated or deleted. Also AwsDeployer::checkOwnership()'s read-only
+     * pre-check, so a deploy refuses before it tags or changes anything.
+     *
+     * @throws DeployException domains.stack_not_ours
      *
      * @param array{status: string, outputs: array<string, string>, tags: array<string, string>}|null $stack
      */
-    private static function assertOwned(?array $stack, string $stackName, AppConfig $config): void
+    public static function assertOwned(?array $stack, string $stackName, AppConfig $config): void
     {
         if ($stack !== null && (($stack['tags']['arco:app'] ?? null) !== $config->app || ($stack['tags']['arco:environment'] ?? null) !== $config->environment)) {
             throw DeployException::make('domains.stack_not_ours', ['stack' => $stackName, 'app' => $config->app, 'environment' => $config->environment]);

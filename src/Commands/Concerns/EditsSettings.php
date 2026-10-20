@@ -22,7 +22,19 @@ trait EditsSettings
         'rate-limit' => 'rateLimit',
         'timeout' => 'timeout',
         'log-level' => 'logLevel',
+        'console-timeout' => 'consoleTimeout',
+        'console-memory' => 'consoleMemory',
     ];
+
+    /** How a setting reads in arco.php: console-timeout and console-memory are options of ->console(). */
+    private static function callLabel(string $method): string
+    {
+        return match ($method) {
+            'consoleTimeout' => 'console(timeout:)',
+            'consoleMemory' => 'console(memory:)',
+            default => $method . '()',
+        };
+    }
 
     private function argument(InputInterface $input, string $name): string
     {
@@ -119,7 +131,7 @@ trait EditsSettings
     {
         $this->writeOrExplain(
             $environment,
-            $value === null ? $this->t('settings.remove_call', ['method' => $method]) : ArcoFileEditor::settingLine($method, $value),
+            $value === null ? $this->t('settings.remove_call', ['method' => in_array($method, ['consoleTimeout', 'consoleMemory'], true) ? 'console' : $method]) : ArcoFileEditor::settingLine($method, $value),
             fn (): bool => ArcoFileEditor::setSetting($this->arcoPhp(), $environment, $method, $value),
         );
     }

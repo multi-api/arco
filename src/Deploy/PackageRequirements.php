@@ -7,11 +7,12 @@ use Multiapi\Arco\Config\AppConfig;
 /** The Composer packages each arco.php feature needs in the app, for the deploy check and for `arco init`. */
 final class PackageRequirements
 {
-    /** WorkCommand (`arco:work`) first shipped in multiapi/arco-laravel 0.5. */
-    public const ARCO_LARAVEL_05 = 'multiapi/arco-laravel:^0.5';
-
-    /** The storage disks and the table wiring first shipped in multiapi/arco-laravel 0.6. */
-    public const ARCO_LARAVEL_06 = 'multiapi/arco-laravel:^0.6';
+    /**
+     * The multiapi/arco-laravel release line that goes with this Arco (`^1.0` from 1.0: same major). The checks
+     * below find what a feature needs by its files (WorkCommand since 0.5, the storage disks and table wiring
+     * since 0.6), so an older install that has them still passes; this is only what `composer require` gets.
+     */
+    public const ARCO_LARAVEL = 'multiapi/arco-laravel:^0.9';
 
     private const PROVIDER = 'vendor/multiapi/arco-laravel/src/ArcoServiceProvider.php';
 
@@ -28,20 +29,20 @@ final class PackageRequirements
     {
         $features = [];
         if ($config->queues !== []) {
-            $features['queue()'] = [[self::ARCO_LARAVEL_05, 'vendor/multiapi/arco-laravel/src/Console/WorkCommand.php', null], self::AWS_SDK];
+            $features['queue()'] = [[self::ARCO_LARAVEL, 'vendor/multiapi/arco-laravel/src/Console/WorkCommand.php', null], self::AWS_SDK];
         }
         if ($config->storage !== []) {
             $features['storage()'] = [
                 ['league/flysystem-aws-s3-v3:^3.0', 'vendor/league/flysystem-aws-s3-v3/AwsS3V3Adapter.php', null],
                 self::AWS_SDK,
-                [self::ARCO_LARAVEL_06, self::PROVIDER, 'ARCO_STORAGE'],
+                [self::ARCO_LARAVEL, self::PROVIDER, 'ARCO_STORAGE'],
             ];
         }
         if ($config->cacheTable !== null) {
             $features['cache()'] = [self::AWS_SDK];
         }
         if ($config->failedJobsTable !== null) {
-            $features['failedJobsTable()'] = [self::AWS_SDK, [self::ARCO_LARAVEL_06, self::PROVIDER, 'ARCO_FAILED_JOBS_TABLE']];
+            $features['failedJobsTable()'] = [self::AWS_SDK, [self::ARCO_LARAVEL, self::PROVIDER, 'ARCO_FAILED_JOBS_TABLE']];
         }
         return $features;
     }

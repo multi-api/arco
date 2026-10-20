@@ -136,7 +136,7 @@ final class WorkerFunctions
             $this->lambda->updateEventSourceMapping([
                 'UUID' => $current,
                 ...$settings,
-                'ScalingConfig' => $queue->concurrency === null ? [] : ['MaximumConcurrency' => $queue->concurrency],
+                'ScalingConfig' => $queue->maxInstances === null ? [] : ['MaximumConcurrency' => $queue->maxInstances],
             ]);
         } else {
             if ($queue->existing !== null) {
@@ -149,7 +149,7 @@ final class WorkerFunctions
                 'FunctionName' => $alias,
                 'EventSourceArn' => $arn,
                 ...$settings,
-                ...($queue->concurrency === null ? [] : ['ScalingConfig' => ['MaximumConcurrency' => $queue->concurrency]]),
+                ...($queue->maxInstances === null ? [] : ['ScalingConfig' => ['MaximumConcurrency' => $queue->maxInstances]]),
             ]);
         }
         $onStep('deploy.worker_mapping', ['queue' => $queue->name, 'function' => $name, 'batch' => $queue->batchSize]);

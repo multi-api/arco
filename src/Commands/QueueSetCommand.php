@@ -22,7 +22,9 @@ final class QueueSetCommand extends ArcoCommand
     use EditsQueues;
 
     /** CLI option => queue() argument. */
-    private const OPTIONS = ['timeout' => 'timeout', 'memory' => 'memory', 'concurrency' => 'concurrency', 'batch-size' => 'batchSize', 'tries' => 'tries', 'dlq' => 'dlq', 'default' => 'default'];
+    private const OPTIONS = ['timeout' => 'timeout', 'memory' => 'memory', 'max-instances' => 'maxInstances', 'batch-size' => 'batchSize', 'tries' => 'tries', 'dlq' => 'dlq', 'default' => 'default'];
+    /** Deprecated option names and their replacements. */
+    private const DEPRECATED = ['concurrency' => 'max-instances'];
     private const FLAGS = ['dlq', 'default'];
     private const TRUE = ['true', 'on', 'yes', '1'];
     private const FALSE = ['false', 'off', 'no', '0'];
@@ -43,6 +45,10 @@ final class QueueSetCommand extends ArcoCommand
             $option = $this->argument($input, 'option');
             if (in_array($option, ['fifo', 'existing'], true)) {
                 throw new UserError($this->t('queue.option_fixed', ['option' => $option, 'queue' => $name]));
+            }
+            $deprecated = isset(self::DEPRECATED[$option]);
+            if ($deprecated) {
+                $option = self::DEPRECATED[$option];
             }
             $key = self::OPTIONS[$option] ?? throw new UserError($this->t('queue.unknown_option', ['option' => $option, 'options' => implode(', ', array_keys(self::OPTIONS))]));
             $value = $this->parse($option, $this->argument($input, 'value'));
@@ -70,6 +76,9 @@ final class QueueSetCommand extends ArcoCommand
             }
             $this->assertValid($changed, $environment);
             $this->writeQueue($environment, $name, $options);
+            if ($deprecated) {
+                $io->warning($this->t('deprecated.queue_concurrency_option'));
+            }
             $io->success($this->t('queue.changed', ['queue' => $name, 'environment' => $this->levelLabel($environment), 'option' => $option, 'from' => $from, 'to' => $to]));
             $io->writeln($this->t('settings.result', ['where' => $this->where($environment)]));
             $io->writeln('    ' . ArcoFileEditor::queueLine($name, $options));
@@ -83,7 +92,7 @@ final class QueueSetCommand extends ArcoCommand
 
     private function parse(string $option, string $value): int|bool|null
     {
-        if ($option === 'concurrency' && strtolower($value) === 'none') {
+        if ($option === 'max-instances' && strtolower($value) === 'none') {
             return null;
         }
         if (in_array($option, self::FLAGS, true)) {
@@ -105,7 +114,7 @@ final class QueueSetCommand extends ArcoCommand
         $value = match ($key) {
             'timeout' => $queue->timeout,
             'memory' => $queue->memory,
-            'concurrency' => $queue->concurrency,
+            'maxInstances' => $queue->maxInstances,
             'batchSize' => $queue->batchSize,
             'tries' => $queue->tries,
             'dlq' => $queue->dlq,

@@ -29,13 +29,117 @@ final class AwsDeployer implements Deployer
      * @param AwsClients|null $dns clients for the account holding the DNS zones (dns() profile or
      *                             --dns-profile); null for the deploy account
      * @param bool $forceDns replace existing DNS records that point elsewhere (--force-dns)
+     * @param bool $force change name-addressed resources another app or environment owns, or that carry
+     *                    no Arco tags (deploy --force); never used by remove
      */
     public function __construct(
         private readonly AwsClients $aws,
         private readonly Sleeper $sleeper = new Sleeper(),
         private readonly ?AwsClients $dns = null,
         private readonly bool $forceDns = false,
+        private readonly bool $force = false,
     ) {
+    }
+
+    /** @var array<string, true> names whose ownership this deployer already checked (checkOwnership()) */
+    private array $verified = [];
+
+    public function checkOwnership(AppConfig $config, Closure $onStep): void
+    {
+        $guard = new OwnershipGuard($this->aws);
+        $names = [];
+        $resources = [];
+        if ($config->role === null) {
+            $role = $guard->role($names[] = ExecutionRole::roleName($config));
+            // Before any change (bucket, upload, policy), and even with --force: it overrides ownership, not the region.
+            if ($role !== null) {
+                ExecutionRole::refuseOtherRegion($role->name, $role->tags[ExecutionRole::REGION_TAG] ?? null, (string) $config->region);
+            }
+            $resources[] = $role;
+        }
+        $resources[] = $guard->webFunction($names[] = $config->functionName(), self::prefix($config));
+        // Checked whether the console is on or off: a deploy updates it, or deletes it once verified.
+        $resources[] = $guard->lambdaFunction($names[] = $config->consoleFunctionName(), OwnershipGuard::CONSOLE_MARKER);
+        foreach ($config->queues as $queue) {
+            $resources[] = $guard->lambdaFunction($names[] = $config->workerFunctionName($queue->name), OwnershipGuard::WORKER_MARKER);
+        }
+        $rule = $guard->schedulerRule(SchedulerRule::name($config));
+        if ($rule !== null && OwnershipGuard::isUndescribed($rule) && ! ($config->consoleEnabled() && $config->scheduler !== null)) {
+            // No rule will be put; one that may exist is only deleted once it can be described (the
+            // scheduler steps warn otherwise), and then it is checked there.
+            $rule = null;
+        } else {
+            $names[] = SchedulerRule::name($config);
+        }
+        $resources[] = $rule;
+        // Read-only, before claim() tags anything: a stack refusal later would come after those tags.
+        $this->checkStacks($config);
+        $guard->claim($config, array_values(array_filter($resources)), $this->force, $onStep);
+        foreach ($names as $name) {
+            $this->verified[$name] = true;
+        }
+    }
+
+    /**
+     * The stacks a deploy would refuse to update (stack.not_ours, domains.stack_not_ours) are read
+     * here, before checkOwnership() tags or changes anything, and refused even with --force (it overrides
+     * the ownership of functions, role and rule, never of a stack). deployResources() and the domains
+     * step check again when they run.
+     *
+     * @throws DeployException stack.not_ours, domains.stack_not_ours
+     * @throws AwsException a refused read of the resources stack while the config has resources (the
+     *         deploy would stop on it in deployResources() anyway)
+     */
+    private function checkStacks(AppConfig $config): void
+    {
+        $stacks = new Stacks($this->aws->cloudFormation(), $this->sleeper);
+        /** @var array<string, mixed> $resources */
+        $resources = ResourcesStack::template($config)['Resources'];
+        // Without resources, someone else's stack with the name is left alone: nothing to refuse.
+        if ($resources !== []) {
+            $name = ResourcesStack::name($config);
+            $stack = $stacks->describe($name);
+            if ($stack !== null && ! self::ownsStack($stack, $config)) {
+                throw DeployException::make('stack.not_ours', ['stack' => $name, 'app' => $config->app, 'environment' => $config->environment]);
+            }
+        }
+        if ($config->domains !== []) {
+            $name = DomainStack::stackName($config);
+            try {
+                $stack = $stacks->describe($name);
+            } catch (AwsException $e) {
+                // The domains step reports a refused CloudFormation read when it runs.
+                if (in_array($e->getAwsErrorCode(), ['AccessDenied', 'AccessDeniedException'], true)) {
+                    return;
+                }
+                throw $e;
+            }
+            CustomDomains::assertOwned($stack, $name, $config);
+        }
+    }
+
+    /** @param array{tags: array<string, string>} $stack */
+    private static function ownsStack(array $stack, AppConfig $config): bool
+    {
+        return ($stack['tags']['arco:app'] ?? null) === $config->app && ($stack['tags']['arco:environment'] ?? null) === $config->environment;
+    }
+
+    /**
+     * Checks one name-addressed resource outside a deploy's checkOwnership() (scheduler:set --apply, the
+     * console's removal): skipped when this deployer already checked it.
+     *
+     * @param Closure(OwnershipGuard): ?NamedResource $read
+     * @param callable(string, array<string, string|int>): void $onStep
+     */
+    private function claimOne(AppConfig $config, string $name, Closure $read, callable $onStep): void
+    {
+        if (isset($this->verified[$name])) {
+            return;
+        }
+        $guard = new OwnershipGuard($this->aws);
+        $resource = $read($guard);
+        $guard->claim($config, $resource === null ? [] : [$resource], $this->force, $onStep);
+        $this->verified[$name] = true;
     }
 
     public function prepare(AppConfig $config, Package $package, ?ConsoleArtifacts $console, array $variables, ?callable $onStep = null): PreparedDeploy
@@ -69,7 +173,7 @@ final class AwsDeployer implements Deployer
                 array_map(fn (QueueConfig $queue) => $config->workerFunctionName($queue->name), $config->queues),
                 array_map(fn (StorageConfig $storage) => $storage->arn($config), $config->storage),
                 array_map(fn (TableConfig $table) => $table->arn($config), array_values(array_filter([$config->cacheTable, $config->failedJobsTable]))));
-            ['arn' => $roleArn, 'created' => $roleCreated] = (new ExecutionRole($this->aws->iam()))->ensure(ExecutionRole::roleName($config), $policy, $tags);
+            ['arn' => $roleArn, 'created' => $roleCreated] = (new ExecutionRole($this->aws->iam()))->ensure(ExecutionRole::roleName($config), $policy, $tags, $region, $step);
         }
 
         $revision = RevisionFactory::revision($config, $bucket, $key, $versionId, $roleArn, $variables);
@@ -297,6 +401,9 @@ final class AwsDeployer implements Deployer
     public function remove(AppConfig $config, ?callable $onStep = null): void
     {
         $step = $onStep ?? static function (string $key, array $params = []): void {};
+        $queues = $this->workerQueues($config, $step);
+        // Before anything is deleted: a resource another app or environment owns stops the whole remove.
+        $this->checkRemoval($config, $queues);
         if ($config->domains !== [] || $this->stackExists($config)) {
             $this->customDomains($config)->remove($config, $step);
         }
@@ -305,7 +412,7 @@ final class AwsDeployer implements Deployer
             $step('remove.step_scheduler', ['rule' => SchedulerRule::name($config)]);
             $this->schedulerRule()->delete($config);
         }
-        $this->removeWorkers($config, $step);
+        $this->removeWorkers($config, $queues, $step);
         $this->removeResources($config, $step);
         $step('remove.step_console', ['function' => $config->consoleFunctionName()]);
         $this->consoleFunction()->delete($config->consoleFunctionName());
@@ -314,27 +421,118 @@ final class AwsDeployer implements Deployer
         if ($config->role === null) {
             (new ExecutionRole($this->aws->iam()))->delete(ExecutionRole::roleName($config));
         }
+        $this->removeGroup($config, $step);
     }
 
     /**
-     * Deletes the event source mappings and functions of the environment's workers: the queues in
-     * arco.php and any left from queues removed earlier (found by tag; when that lookup fails, only the
-     * queues in arco.php are removed, with a warning when there are any).
+     * Last in a remove: the Resource Group, when its query is this environment's. A convenience view, so
+     * nothing here fails the remove: a refusal or another owner's group is a note.
      *
      * @param callable(string, array<string, string|int>): void $step
      */
-    private function removeWorkers(AppConfig $config, callable $step): void
+    private function removeGroup(AppConfig $config, callable $step): void
     {
-        $workers = $this->workerFunctions();
+        $name = EnvironmentGroup::name($config);
+        try {
+            if ((new EnvironmentGroup($this->aws->resourceGroups()))->delete($config)) {
+                $step('remove.step_group', ['group' => $name]);
+            }
+        } catch (DeployException $e) {
+            $step($e->key, $e->params);
+        } catch (AwsException $e) {
+            $denied = in_array($e->getAwsErrorCode(), EnvironmentGroup::DENIED, true);
+            $step($denied ? 'remove.group_denied' : 'remove.group_failed', ['group' => $name, 'error' => self::awsError($e)]);
+        } catch (\Throwable $e) {
+            // Anything else (a dropped connection, an unexpected answer): still only a note, the remove succeeded.
+            $step('remove.group_failed', ['group' => $name, 'error' => self::errorText($e)]);
+        }
+    }
+
+    public function syncGroup(AppConfig $config, Closure $onStep): void
+    {
+        $name = EnvironmentGroup::name($config);
+        try {
+            $changed = (new EnvironmentGroup($this->aws->resourceGroups()))->ensure($config);
+        } catch (DeployException $e) {
+            $onStep($e->key, $e->params);
+            return;
+        } catch (AwsException $e) {
+            $denied = in_array($e->getAwsErrorCode(), EnvironmentGroup::DENIED, true);
+            $onStep($denied ? 'deploy.group_denied' : 'deploy.group_failed', ['group' => $name, 'error' => self::awsError($e)]);
+            return;
+        }
+        // Printed when the deploy created the group or updated its query: an unchanged group is not news.
+        if ($changed) {
+            $onStep('deploy.group_ready', ['group' => $name]);
+        }
+    }
+
+    public function resources(AppConfig $config): array
+    {
+        return (new TaggedResources($this->aws->taggingApi()))->list($config);
+    }
+
+    /**
+     * The queues whose workers remove deletes: the queues in arco.php and any left from queues removed
+     * earlier (found by tag; when that lookup fails, only the queues in arco.php, with a warning when
+     * there are any).
+     *
+     * @param callable(string, array<string, string|int>): void $step
+     * @return list<string>
+     */
+    private function workerQueues(AppConfig $config, callable $step): array
+    {
         $queues = array_map(static fn (QueueConfig $queue): string => $queue->name, $config->queues);
         try {
-            $queues = array_values(array_unique([...$queues, ...$workers->existing($config, self::tags($config))]));
+            return array_values(array_unique([...$queues, ...$this->workerFunctions()->existing($config, self::tags($config))]));
         } catch (\Throwable $e) {
             // Only the queues in arco.php are removed; without any, there is nothing to warn about.
             if ($config->queues !== []) {
                 $step('remove.worker_scan_failed', ['error' => self::errorText($e)]);
             }
+            return $queues;
         }
+    }
+
+    /**
+     * Reads the tags of every name-addressed resource remove deletes and refuses, before any is
+     * deleted, when one belongs to another app or environment (or carries no sign of Arco).
+     *
+     * @param list<string> $queues
+     * @throws DeployException remove.not_owned, remove.untagged_resource, remove.tags_unreadable
+     */
+    private function checkRemoval(AppConfig $config, array $queues): void
+    {
+        $guard = new OwnershipGuard($this->aws);
+        $rule = $guard->schedulerRule(SchedulerRule::name($config));
+        // A rule EventBridge refuses to describe is not deleted either (remove.scheduler_unreadable).
+        $resources = [$rule !== null && OwnershipGuard::isUndescribed($rule) ? null : $rule];
+        foreach ($queues as $queue) {
+            $resources[] = $guard->lambdaFunction($config->workerFunctionName($queue), OwnershipGuard::WORKER_MARKER);
+        }
+        $resources[] = $guard->lambdaFunction($config->consoleFunctionName(), OwnershipGuard::CONSOLE_MARKER);
+        $resources[] = $guard->webFunction($config->functionName(), self::prefix($config));
+        if ($config->role === null) {
+            $role = $guard->role(ExecutionRole::roleName($config));
+            // The role (and CloudFront) serve the function in the role's region: a region() change followed by
+            // remove would otherwise delete them from under the environment still live there.
+            if ($role !== null) {
+                ExecutionRole::refuseOtherRegion($role->name, $role->tags[ExecutionRole::REGION_TAG] ?? null, (string) $config->region);
+            }
+            $resources[] = $role;
+        }
+        $guard->checkRemoval($config, array_values(array_filter($resources)));
+    }
+
+    /**
+     * Deletes the event source mappings and functions of the environment's workers (workerQueues()).
+     *
+     * @param list<string> $queues
+     * @param callable(string, array<string, string|int>): void $step
+     */
+    private function removeWorkers(AppConfig $config, array $queues, callable $step): void
+    {
+        $workers = $this->workerFunctions();
         foreach ($queues as $queue) {
             $step('remove.step_worker', ['queue' => $queue, 'function' => $config->workerFunctionName($queue)]);
             $workers->remove($config, $queue);
@@ -380,6 +578,7 @@ final class AwsDeployer implements Deployer
 
     public function removeConsole(AppConfig $config, Closure $onStep): void
     {
+        $this->claimOne($config, $config->consoleFunctionName(), fn (OwnershipGuard $guard) => $guard->lambdaFunction($config->consoleFunctionName(), OwnershipGuard::CONSOLE_MARKER), $onStep);
         // The scheduler rule goes before the function it invokes.
         $this->removeScheduler($config, $onStep);
         $this->consoleFunction()->delete($config->consoleFunctionName());
@@ -390,9 +589,16 @@ final class AwsDeployer implements Deployer
     {
         $unreadable = fn (string $error) => $onStep('deploy.scheduler_unreadable', ['rule' => SchedulerRule::name($config), 'function' => $config->consoleFunctionName(), 'error' => $error]);
         if ($this->schedulerRuleExists($config, $unreadable)) {
+            $this->claimRule($config, $onStep);
             $this->schedulerRule()->delete($config);
             $onStep('deploy.scheduler_removed', []);
         }
+    }
+
+    /** @param callable(string, array<string, string|int>): void $onStep */
+    private function claimRule(AppConfig $config, callable $onStep): void
+    {
+        $this->claimOne($config, SchedulerRule::name($config), fn (OwnershipGuard $guard) => $guard->schedulerRule(SchedulerRule::name($config)), $onStep);
     }
 
     public function syncScheduler(AppConfig $config, Closure $onStep): void
@@ -405,6 +611,7 @@ final class AwsDeployer implements Deployer
                 }
             };
             if ($this->schedulerRuleExists($config, $unreadable)) {
+                $this->claimRule($config, $onStep);
                 $this->schedulerRule()->delete($config);
                 $onStep('deploy.scheduler_removed', []);
             }
@@ -412,6 +619,7 @@ final class AwsDeployer implements Deployer
         }
         $function = $config->consoleFunctionName();
         $alias = $this->consoleFunction()->aliasArn($function) ?? throw DeployException::make('deploy.console_missing', ['function' => $function]);
+        $this->claimRule($config, $onStep);
         $paused = $this->schedulerRule()->put($config, $alias, self::tags($config));
         $onStep('deploy.scheduler_set', ['every' => $config->scheduler]);
         if ($paused) {
@@ -419,17 +627,33 @@ final class AwsDeployer implements Deployer
         }
     }
 
+    /** Days CloudWatch keeps the logs of an environment without a logRetention() setting. */
+    public const DEFAULT_LOG_RETENTION = 30;
+
     public function applyLogRetention(AppConfig $config, Closure $onStep): void
     {
-        if ($config->logRetention === null) {
-            return;
-        }
+        // No setting: the default applies (and is announced when it changes a group), so groups never silently keep logs forever.
+        $days = $config->logRetention ?? self::DEFAULT_LOG_RETENTION;
         $scope = self::logRetentionScope($config);
         $groups = LogGroups::for($config, 'web');
         if ($config->consoleEnabled()) {
             $groups = [...$groups, ...LogGroups::for($config, 'console')];
         }
-        (new LogRetention($this->aws->logs()))->apply([...$groups, ...LogGroups::for($config, 'queues')], $config->logRetention);
+        $region = (string) $config->region;
+        // Lambda makes a group untagged on the first invoke: Arco adopts it and tags it for the environment.
+        ['untagged' => $untagged, 'changed' => $changed] = (new LogRetention($this->aws->logs()))->apply([...$groups, ...LogGroups::for($config, 'queues')], $days, self::tags($config),
+            fn (string $group): string => LogGroups::arn($region, $this->aws->accountId(), $group));
+        if ($untagged !== []) {
+            // One note for the deploy, not one per group, and only when a tag was attempted and refused.
+            $onStep('deploy.log_tags_not_added', ['groups' => implode(', ', array_column($untagged, 'group')), 'error' => $untagged[0]['error']]);
+        }
+        if ($config->logRetention === null) {
+            // The default is announced when it changes a group (new, or kept forever until now), not on every deploy.
+            if ($changed !== []) {
+                $onStep('deploy.log_retention_default', ['groups' => $scope]);
+            }
+            return;
+        }
         // {groups} is a code (web, all, web_queues, all_queues) the step printer translates: only the groups touched are named.
         $onStep(...self::logRetentionStep($config->logRetention, $scope));
     }
@@ -659,28 +883,39 @@ final class AwsDeployer implements Deployer
             // The queues, buckets and tables stay (Retain): only the empty stack goes.
             $stacks->delete($name);
         } else {
+            // What the stack runs now, to say which resources this update changes. Unknown: reported as changed.
+            $changed = $stack === null ? [] : ResourcesStack::changedResources($stacks->template($name), $template);
             try {
                 $stacks->deploy($name, ResourcesStack::body($template), self::tags($config));
             } catch (DeployException $e) {
                 throw self::publicPolicyFailure($config, $e) ?? $e;
             }
             foreach ($created as $queue) {
-                $key = isset($owned[ResourcesStack::logicalId($queue->name)]) ? 'deploy.queue_updated' : 'deploy.queue_created';
+                $id = ResourcesStack::logicalId($queue->name);
+                $key = ! isset($owned[$id]) ? 'deploy.queue_created' : (self::isChanged($changed, $id) ? 'deploy.queue_changed' : 'deploy.queue_updated');
                 $onStep($key, ['queue' => $queue->name, 'name' => $queue->physicalName($config)]);
             }
             foreach ($storage as $bucket) {
-                $key = isset($owned[ResourcesStack::bucketLogicalId($bucket->name)]) ? 'deploy.storage_updated' : 'deploy.storage_created';
+                $id = ResourcesStack::bucketLogicalId($bucket->name);
+                $key = ! isset($owned[$id]) ? 'deploy.storage_created' : (self::isChanged($changed, $id) ? 'deploy.storage_changed' : 'deploy.storage_updated');
                 $onStep($key, ['storage' => $bucket->name, 'bucket' => $bucket->bucketName($config)]);
                 if ($bucket->public !== []) {
                     $onStep('deploy.storage_public', ['storage' => $bucket->name, 'prefixes' => implode(', ', $bucket->public), 'url' => $bucket->url($config)]);
                 }
             }
             foreach ($tables as $table) {
-                $key = isset($owned[ResourcesStack::tableLogicalId($table->kind)]) ? 'deploy.table_updated' : 'deploy.table_created';
+                $id = ResourcesStack::tableLogicalId($table->kind);
+                $key = ! isset($owned[$id]) ? 'deploy.table_created' : (self::isChanged($changed, $id) ? 'deploy.table_changed' : 'deploy.table_updated');
                 $onStep($key, ['kind' => $table->kind, 'name' => $table->tableName($config)]);
             }
         }
         $this->reportKept($removed, $onStep, 'deploy.', $config);
+    }
+
+    /** @param array<string, true>|null $changed null: unknown, so any resource may have changed */
+    private static function isChanged(?array $changed, string $id): bool
+    {
+        return $changed === null || isset($changed[$id]);
     }
 
     /**
@@ -845,9 +1080,7 @@ final class AwsDeployer implements Deployer
     /** @return array<string, string> */
     private static function tags(AppConfig $config): array
     {
-        // Stable on purpose: a tag change would update every tagged resource (and the CloudFront stack) on
-        // each Arco upgrade. The Arco version is in each revision's description instead.
-        return ['arco:app' => $config->app, 'arco:environment' => $config->environment];
+        return Ownership::tags($config);
     }
 
     /** S3 prefix of the environment's web zips. */

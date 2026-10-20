@@ -146,6 +146,54 @@ final class ResourcesStack
         ];
     }
 
+    /**
+     * The logical ids whose definition differs between the template the stack runs and the new one:
+     * changed, added or removed (a bucket's policy counts for its bucket, a queue's dead-letter queue
+     * for the queue). Null when the running template is unknown.
+     *
+     * @param array<string, mixed>|null $deployed
+     * @param array<string, mixed> $new
+     * @return array<string, true>|null
+     */
+    public static function changedResources(?array $deployed, array $new): ?array
+    {
+        if ($deployed === null) {
+            return null;
+        }
+        $before = is_array($deployed['Resources'] ?? null) ? $deployed['Resources'] : [];
+        $after = is_array($new['Resources'] ?? null) ? $new['Resources'] : [];
+        $changed = [];
+        foreach (array_unique([...array_keys($before), ...array_keys($after)]) as $id) {
+            $id = (string) $id;
+            if (self::canonical($before[$id] ?? null) !== self::canonical($after[$id] ?? null)) {
+                $changed[$id] = true;
+                // The owner of a policy or dead-letter queue: its logical id without the suffix.
+                foreach (['Policy', 'Dlq'] as $suffix) {
+                    if (str_ends_with($id, $suffix)) {
+                        $changed[substr($id, 0, -strlen($suffix))] = true;
+                    }
+                }
+            }
+        }
+        return $changed;
+    }
+
+    /** The definition with object keys sorted, so key order never counts as a change. */
+    private static function canonical(mixed $value): string
+    {
+        $sort = static function (mixed $node) use (&$sort): mixed {
+            if (! is_array($node)) {
+                return $node;
+            }
+            $node = array_map($sort, $node);
+            if (! array_is_list($node)) {
+                ksort($node);
+            }
+            return $node;
+        };
+        return json_encode($sort($value), JSON_THROW_ON_ERROR);
+    }
+
     /** @param array<string, mixed> $template */
     public static function body(array $template): string
     {

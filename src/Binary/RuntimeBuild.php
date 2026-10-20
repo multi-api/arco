@@ -18,6 +18,12 @@ final readonly class RuntimeBuild
     public function revision(): int
     {
         preg_match(RuntimeManifest::ID_PATTERN, $this->id, $m);
-        return (int) ($m[2] ?? 0);
+        return (int) ($m[3] ?? 0);
+    }
+
+    /** The PHP minor version, such as 8.5 for PHP 8.5.11. */
+    public function phpMinor(): string
+    {
+        return implode('.', array_slice(explode('.', $this->php), 0, 2));
     }
 }

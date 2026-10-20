@@ -15,6 +15,13 @@ use Multiapi\Arco\Secrets\SecretReference;
 final class Validator
 {
     public const NAME = '/^[a-z][a-z0-9-]*$/';
+
+    /**
+     * Endings of the names Arco derives from <app>-<environment> for its other resources (console
+     * function, resources stack, scheduler rule, CloudFront function); `-queue-` marks a worker.
+     */
+    public const RESERVED_SUFFIXES = ['-console', '-resources', '-scheduler', '-host'];
+
     private const VARIABLE = '/^[A-Za-z_][A-Za-z0-9_]*$/';
     private const SECRET_LIKE = '/(_KEY|_SECRET|_PASSWORD|_TOKEN)$/';
     /** Disks Laravel's stock config/filesystems.php defines: a storage cannot take their names. */
@@ -29,6 +36,8 @@ final class Validator
         'AWS_SESSION_TOKEN', 'LAMBDA_TASK_ROOT', 'LAMBDA_RUNTIME_DIR',
     ];
     private const RESERVED_PREFIXES = ['AWS_LAMBDA_', 'AWS_XRAY_'];
+    /** Every variable starting with this belongs to Arco (the ones it sets, and the ones later versions may add). */
+    private const ARCO_PREFIX = 'ARCO';
     private const HOSTNAME = '/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/';
     private const CERTIFICATE = '/^arn:aws[a-z-]*:acm:us-east-1:\d{12}:certificate\/[A-Za-z0-9-]+$/';
     public const MAX_DOMAINS = 10;
@@ -61,6 +70,40 @@ final class Validator
     {
     }
 
+    /**
+     * App and environment names that would collide with a name Arco gives another resource of some
+     * app and environment: ending in a reserved suffix, or containing `-queue-` (also across the
+     * hyphen that joins them).
+     */
+    private static function addReservedNameErrors(AppConfig $config, ValidationResult $result): void
+    {
+        $queue = false;
+        $suffixed = false;
+        foreach (['app' => $config->app, 'environment' => $config->environment] as $kind => $name) {
+            foreach (self::RESERVED_SUFFIXES as $suffix) {
+                if (str_ends_with($name, $suffix)) {
+                    $result->error("validation.{$kind}_name_suffix", ['name' => $name, 'suffix' => $suffix]);
+                    $suffixed = true;
+                }
+            }
+            if (str_contains($name, '-queue-')) {
+                $result->error("validation.{$kind}_name_queue", ['name' => $name]);
+                $queue = true;
+            }
+        }
+        // App `shop-eu` + environment `console` is the console function of app `shop`, environment `eu`;
+        // app `shop` + environment `console` is no one's (`shop` alone is no <app>-<environment>).
+        foreach ($suffixed ? [] : self::RESERVED_SUFFIXES as $suffix) {
+            $rest = substr($config->functionName(), 0, -strlen($suffix));
+            if (str_ends_with($config->functionName(), $suffix) && str_contains($rest, '-')) {
+                $result->error('validation.function_name_suffix', ['app' => $config->app, 'environment' => $config->environment, 'function' => $config->functionName(), 'suffix' => $suffix]);
+            }
+        }
+        if (! $queue && str_contains($config->functionName(), '-queue-')) {
+            $result->error('validation.function_name_queue', ['app' => $config->app, 'environment' => $config->environment, 'function' => $config->functionName()]);
+        }
+    }
+
     public function validate(AppConfig $config, string $projectDir): ValidationResult
     {
         $result = new ValidationResult();
@@ -71,6 +114,7 @@ final class Validator
         if (! preg_match(self::NAME, $config->environment)) {
             $result->error('validation.environment_name', ['name' => $config->environment]);
         }
+        self::addReservedNameErrors($config, $result);
         if (strlen($config->functionName()) > 64) {
             $result->error('validation.function_name_length', ['name' => $config->functionName()]);
         } elseif (strlen($config->consoleFunctionName()) > 64) {
@@ -81,12 +125,15 @@ final class Validator
         } elseif (! in_array($config->region, Arco::REGIONS, true)) {
             $result->error('validation.region', ['region' => $config->region, 'regions' => implode(', ', Arco::REGIONS)]);
         }
-        $limits = ['concurrency' => $config->concurrency, 'timeout' => $config->timeout, 'maxInstances' => $config->maxInstances, 'rateLimit' => $config->rateLimit, 'consoleTimeout' => $config->consoleTimeout];
+        $limits = ['concurrency' => $config->concurrency, 'timeout' => $config->timeout, 'maxInstances' => $config->maxInstances, 'rateLimit' => $config->rateLimit, 'consoleTimeout' => $config->consoleTimeout, 'consoleMemory' => $config->consoleMemory];
         foreach ($limits as $setting => $value) {
             self::addSettingError($result, $setting, $value);
         }
         if (! in_array($config->auth, ['public', 'iam'], true)) {
             $result->error('validation.auth', ['value' => $config->auth]);
+        }
+        if ($config->cacheDriver !== null) {
+            $result->error('validation.cache_driver', ['value' => $config->cacheDriver]);
         }
         self::addSettingError($result, 'logLevel', $config->logLevel);
         self::addSettingError($result, 'scheduler', $config->scheduler);
@@ -99,8 +146,11 @@ final class Validator
         }
 
         $runtime = $config->runtime;
-        if ($runtime->workersMin < 1 || $runtime->workersMax < $runtime->workersMin) {
-            $result->error('validation.workers', ['min' => $runtime->workersMin, 'max' => $runtime->workersMax]);
+        if ($runtime->workers < 1 || $runtime->maxThreads < $runtime->workers) {
+            $result->error('validation.workers', ['workers' => $runtime->workers, 'maxThreads' => $runtime->maxThreads]);
+        }
+        if ($runtime->deprecatedWorkers) {
+            $result->warning('deprecated.workers_min_max');
         }
         if ($runtime->threads < 1) {
             $result->error('validation.threads', ['value' => $runtime->threads]);
@@ -116,7 +166,7 @@ final class Validator
             $result->error('validation.mode', ['value' => $runtime->mode]);
         }
         if ($runtime->binary !== null) {
-            if ($runtime->build !== null || $runtime->frankenphp !== null) {
+            if ($runtime->build !== null || $runtime->frankenphp !== null || $runtime->php !== null) {
                 $result->warning('validation.binary_overrides_build');
             }
             $path = str_starts_with($runtime->binary, '/') ? $runtime->binary : $projectDir . '/' . $runtime->binary;
@@ -125,9 +175,17 @@ final class Validator
             } elseif (! ElfInspector::isLinuxArm64($path)) {
                 $result->error('validation.binary_arch', ['path' => $runtime->binary]);
             }
+            if ($runtime->phpBinary !== null) {
+                $php = str_starts_with($runtime->phpBinary, '/') ? $runtime->phpBinary : $projectDir . '/' . $runtime->phpBinary;
+                if (! is_file($php)) {
+                    $result->error('validation.php_binary_missing', ['path' => $runtime->phpBinary]);
+                } elseif (! ElfInspector::isLinuxArm64($php)) {
+                    $result->error('validation.php_binary_arch', ['path' => $runtime->phpBinary]);
+                }
+            }
         } else {
             try {
-                ($this->manifest ?? RuntimeManifest::load())->resolve($runtime->build, $runtime->frankenphp);
+                ($this->manifest ?? RuntimeManifest::load())->resolve($runtime->build, $runtime->frankenphp, $runtime->php);
             } catch (BinaryException $e) {
                 $result->error($e->key, $e->params);
             }
@@ -175,6 +233,10 @@ final class Validator
         }
 
         foreach ($config->variables as $name => $value) {
+            if (str_starts_with($name, self::ARCO_PREFIX)) {
+                $result->error('validation.reserved_arco_variable', ['variable' => $name]);
+                continue;
+            }
             if (self::isReserved($name)) {
                 $result->error('validation.reserved_variable', ['variable' => $name]);
                 continue;
@@ -220,6 +282,7 @@ final class Validator
             'rateLimit' => ['validation.rate_limit', is_int($value) && $value >= 100 && $value <= 10000
                 && $value % ($value <= 1000 ? 100 : 1000) === 0],
             'consoleTimeout' => ['validation.console_timeout', is_int($value) && $value >= 3 && $value <= 900],
+            'consoleMemory' => ['validation.console_memory', is_int($value) && $value >= 128 && $value <= 10240],
             'scheduler' => ['validation.scheduler_interval', is_int($value) && in_array($value, self::SCHEDULER_INTERVALS, true)],
             'logRetention' => ['validation.log_retention', is_int($value) && in_array($value, self::LOG_RETENTION_DAYS, true)],
             'logLevel' => ['validation.log_level', in_array($value, self::LOG_LEVELS, true)],
@@ -274,8 +337,12 @@ final class Validator
     private static function validateQueues(AppConfig $config, ValidationResult $result): void
     {
         $defaults = 0;
+        $deprecated = [];
         foreach ($config->queues as $queue) {
             $name = $queue->name;
+            if ($queue->deprecatedConcurrency) {
+                $deprecated[] = $name;
+            }
             if (! preg_match(self::NAME, $name)) {
                 $result->error('validation.queue_name', ['name' => $name]);
                 continue;
@@ -291,8 +358,11 @@ final class Validator
             if ($queue->memory < 128 || $queue->memory > 10240) {
                 $result->error('validation.queue_memory', ['queue' => $name, 'value' => $queue->memory]);
             }
-            if ($queue->concurrency !== null && $queue->concurrency < 2) {
-                $result->error('validation.queue_concurrency', ['queue' => $name, 'value' => $queue->concurrency]);
+            if ($queue->conflictingConcurrency) {
+                $result->error('validation.queue_both_concurrency', ['queue' => $name]);
+            }
+            if ($queue->maxInstances !== null && $queue->maxInstances < 2) {
+                $result->error('validation.queue_max_instances', ['queue' => $name, 'value' => $queue->maxInstances]);
             }
             $maxBatch = $queue->fifo ? 10 : 10000;
             if ($queue->batchSize < 1 || $queue->batchSize > $maxBatch) {
@@ -312,6 +382,9 @@ final class Validator
                     $result->error('validation.queue_existing_fifo', ['queue' => $name, 'value' => $queue->existing]);
                 }
             }
+        }
+        if ($deprecated !== []) {
+            $result->warning('deprecated.queue_concurrency', ['queues' => implode(', ', $deprecated)]);
         }
         if ($defaults > 1) {
             $result->error('validation.queue_default_twice');

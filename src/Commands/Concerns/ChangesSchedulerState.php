@@ -3,6 +3,7 @@
 namespace Multiapi\Arco\Commands\Concerns;
 
 use Multiapi\Arco\Cli\UserError;
+use Multiapi\Arco\Deploy\OwnershipGuard;
 use Multiapi\Arco\Deploy\SchedulerRule;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
@@ -36,6 +37,10 @@ trait ChangesSchedulerState
             if ($state === null) {
                 throw new UserError($this->t('scheduler.no_rule', $params));
             }
+            // Before EventBridge changes it: a rule another app or environment owns is left alone.
+            $guard = new OwnershipGuard($aws);
+            $owned = $guard->schedulerRule(SchedulerRule::name($config));
+            $guard->checkUse($config, $owned === null ? [] : [$owned]);
             if (($state === SchedulerRule::DISABLED) === $pause) {
                 $io->note($this->t($pause ? 'scheduler.already_paused' : 'scheduler.already_active', $params));
                 return self::SUCCESS;

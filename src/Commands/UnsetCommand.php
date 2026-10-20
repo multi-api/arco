@@ -20,7 +20,7 @@ final class UnsetCommand extends ArcoCommand
 
     protected function configure(): void
     {
-        $this->addArgument('key', InputArgument::REQUIRED, 'concurrency, max-instances, rate-limit, timeout or log-level');
+        $this->addArgument('key', InputArgument::REQUIRED, 'concurrency, max-instances, rate-limit, timeout, log-level, console-timeout or console-memory');
         $this->addTargetOptions();
     }
 
@@ -37,7 +37,9 @@ final class UnsetCommand extends ArcoCommand
                 return self::SUCCESS;
             }
             $this->writeSetting($environment, $method, null);
-            $io->success($this->t('settings.removed', ['method' => $method, 'where' => $this->where($environment)]));
+            $io->success(in_array($method, ['consoleTimeout', 'consoleMemory'], true)
+                ? $this->t('settings.removed_console_option', ['option' => self::callLabel($method), 'where' => $this->where($environment)])
+                : $this->t('settings.removed', ['method' => $method, 'where' => $this->where($environment)]));
             $this->printDeployNext($io, $raw, $environment);
             return self::SUCCESS;
         } catch (Throwable $e) {
