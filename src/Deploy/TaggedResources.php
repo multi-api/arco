@@ -2,6 +2,7 @@
 
 namespace Multiapi\Arco\Deploy;
 
+use Aws\Exception\AwsException;
 use Aws\ResourceGroupsTaggingAPI\ResourceGroupsTaggingAPIClient;
 use Multiapi\Arco\Config\AppConfig;
 use Multiapi\Arco\Deploy\Domains\Aws;
@@ -11,12 +12,14 @@ use Multiapi\Arco\Deploy\Domains\DomainStack;
  * Every resource of the app's region carrying both `arco:app` and `arco:environment` tags of the
  * environment (Resource Groups Tagging API, tag:GetResources): what `arco info --resources` shows and
  * `arco remove` lists before it asks. Tags are Arco's record of what belongs to an environment, so local
- * and CI runs see the same list. Global resources listed only in us-east-1 (CloudFront) and IAM roles
- * do not appear unless the Tagging API returns them for the region.
+ * and CI runs see the same list. Global resources listed only in us-east-1 (CloudFront) appear
+ * only when the Tagging API returns them for the region. IAM roles are account-global and never come from
+ * it: the execution role Arco made is read directly (iam:GetRole) and listed when it carries this
+ * environment's tags.
  */
 final class TaggedResources
 {
-    public function __construct(private readonly ResourceGroupsTaggingAPIClient $tagging)
+    public function __construct(private readonly ResourceGroupsTaggingAPIClient $tagging, private readonly OwnershipGuard $guard)
     {
     }
 
@@ -59,8 +62,35 @@ final class TaggedResources
             $token = Aws::string($page['PaginationToken'] ?? null);
             $token = $token === '' ? null : $token;
         } while ($token !== null);
+        $role = $this->executionRole($config);
+        if ($role !== null) {
+            $resources[] = $role;
+        }
         usort($resources, static fn (array $a, array $b): int => [$a['type'], $a['name']] <=> [$b['type'], $b['name']]);
         return $resources;
+    }
+
+    /**
+     * The execution role Arco manages, when it exists and is this environment's. Informational: a role
+     * that is missing, unreadable or denied is simply not listed.
+     *
+     * @return array{type: string, name: string, arn: string, retained: bool}|null
+     */
+    private function executionRole(AppConfig $config): ?array
+    {
+        if ($config->role !== null) {
+            return null;
+        }
+        $name = ExecutionRole::roleName($config);
+        try {
+            $role = $this->guard->role($name);
+        } catch (AwsException) {
+            return null;
+        }
+        if ($role === null || ! Ownership::tagged($role->tags, $config)) {
+            return null;
+        }
+        return ['type' => 'iam:role', 'name' => $name, 'arn' => $role->fullArn ?? $name, 'retained' => false];
     }
 
     /**
@@ -109,6 +139,11 @@ final class TaggedResources
             $type === 'cloudformation:stack' => in_array($name, [ResourcesStack::name($config), $domainStack], true),
             $type === 'resource-groups:group' => $name === EnvironmentGroup::name($config),
             $type === 'iam:role' => $name === ExecutionRole::roleName($config),
+            // Made by the domain stack, which remove deletes (its tags reach the distribution, but not the
+            // aws:cloudformation:* ones; the distribution is the only one carrying this environment's tags).
+            $type === 'cloudfront:distribution' => true,
+            $type === 'cloudfront:function' => $name === DomainStack::functionName($config),
+            // Only the certificate Arco requested (arco:managed): one it found and reused is kept.
             $type === 'acm:certificate' => ($tags['arco:managed'] ?? null) === 'true',
             default => ($tags['aws:cloudformation:stack-name'] ?? null) === $domainStack,
         };

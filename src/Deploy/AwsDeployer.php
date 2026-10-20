@@ -469,7 +469,7 @@ final class AwsDeployer implements Deployer
 
     public function resources(AppConfig $config): array
     {
-        return (new TaggedResources($this->aws->taggingApi()))->list($config);
+        return (new TaggedResources($this->aws->taggingApi(), new OwnershipGuard($this->aws)))->list($config);
     }
 
     /**

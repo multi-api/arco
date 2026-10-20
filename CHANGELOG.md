@@ -3,6 +3,15 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.9.1
+
+- **Fixed:** `arco info --resources` (and the list `arco remove` shows before asking) marked the CloudFront
+  distribution and function as kept although the domain stack, which `arco remove` deletes, owns them: they are now
+  shown as deleted. A certificate Arco requested stays deleted and one it found and reused stays kept.
+- **Fixed:** the same list did not include the execution role, because the Tagging API does not return IAM roles. Arco
+  now reads it directly (`iam:GetRole`) and lists it, as deleted, when it carries the environment's tags; if the role
+  is missing or the read is denied, it is simply not listed.
+
 ## 0.9.0
 
 The API freeze before 1.0: the last release allowed to break `arco.php`, the CLI, the `--json` output or the AWS

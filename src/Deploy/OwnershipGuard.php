@@ -40,7 +40,7 @@ final class OwnershipGuard
             throw $e;
         }
         // GetRole returns the role's tags: no other permission is needed to read them.
-        return new NamedResource(NamedResource::ROLE, $name, $name, self::tagList($role['Tags'] ?? []), ($role['Description'] ?? null) === self::ROLE_MARKER);
+        return new NamedResource(NamedResource::ROLE, $name, $name, self::tagList($role['Tags'] ?? []), ($role['Description'] ?? null) === self::ROLE_MARKER, fullArn: Aws::string($role['Arn'] ?? null));
     }
 
     /** @param string $keyPrefix the S3 prefix of the environment's web zips (`<app>/<env>/`) */
