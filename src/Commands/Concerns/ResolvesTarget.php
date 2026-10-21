@@ -20,6 +20,7 @@ use Multiapi\Arco\Config\AppConfig;
 use Multiapi\Arco\Config\ConfigException;
 use Multiapi\Arco\Config\ConfigLoader;
 use Multiapi\Arco\Config\ConfigResolver;
+use Multiapi\Arco\Config\PermissionsBoundary;
 use Multiapi\Arco\Config\Validator;
 use Multiapi\Arco\Deploy\DeployException;
 use Multiapi\Arco\Deploy\Domains\Route53Dns;
@@ -53,6 +54,13 @@ trait ResolvesTarget
         }
 
         $config = ConfigResolver::resolve($raw, $environment);
+        // deploy and info: the deploy host's override, validated with the rest (info shows what deploy uses).
+        if ($input->hasOption(PermissionsBoundary::OPTION)) {
+            $flag = $input->getOption(PermissionsBoundary::OPTION);
+            /** @var array<string, string> $env */
+            $env = getenv();
+            $config = PermissionsBoundary::apply($config, is_string($flag) ? $flag : null, $env);
+        }
         $validation = (new Validator())->validate($config, $this->projectDir());
         foreach ($validation->warnings as $warning) {
             $warn !== null ? $warn($warning['key'], $warning['params']) : $io->warning($this->t($warning['key'], $warning['params']));

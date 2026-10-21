@@ -200,6 +200,15 @@ final class Validator
         if ($config->permissions !== [] && $config->role !== null) {
             $result->warning('validation.permissions_with_role');
         }
+        if ($config->permissionsBoundary !== null) {
+            $source = $config->sources['permissionsBoundary'] ?? 'default';
+            if (! PermissionsBoundary::isPolicyArn($config->permissionsBoundary)) {
+                $result->error('validation.boundary_arn', ['value' => $config->permissionsBoundary, 'source' => $source]);
+            }
+            if ($config->role !== null) {
+                $result->error('validation.boundary_with_custom_role', ['boundary' => $config->permissionsBoundary, 'source' => $source]);
+            }
+        }
 
         self::validateDomains($config, $result);
         self::validateQueues($config, $result);

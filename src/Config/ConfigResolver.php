@@ -16,6 +16,7 @@ final class ConfigResolver
         'logLevel' => 'info',
         'role' => null,
         'kmsKey' => null,
+        'permissionsBoundary' => null,
         'profile' => null,
         'account' => null,
         'dns' => null,
@@ -159,6 +160,7 @@ final class ConfigResolver
         $console = $setting('console');
         $scheduler = $setting('scheduler');
         $logRetention = $setting('logRetention');
+        $permissionsBoundary = $setting('permissionsBoundary');
 
         $config = new AppConfig(
             app: self::nullableString($raw['name'] ?? null) ?? '',
@@ -198,6 +200,7 @@ final class ConfigResolver
             cacheDriver: self::nullableString($setting('cacheDriver')),
             dnsCloudflare: $dns === self::CLOUDFLARE,
             tables: $tables,
+            permissionsBoundary: $permissionsBoundary === false ? null : self::nullableString($permissionsBoundary),
         );
 
         return $config;

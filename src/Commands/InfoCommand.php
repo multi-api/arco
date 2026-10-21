@@ -15,6 +15,7 @@ use Multiapi\Arco\Cli\UserError;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
 use Multiapi\Arco\Config\AppConfig;
 use Multiapi\Arco\Config\GenericTableConfig;
+use Multiapi\Arco\Config\PermissionsBoundary;
 use Multiapi\Arco\Config\StorageConfig;
 use Multiapi\Arco\Config\TableConfig;
 use Multiapi\Arco\Deploy\AppStatus;
@@ -51,7 +52,8 @@ final class InfoCommand extends ArcoCommand
         $this->addOption('env', 'e', InputOption::VALUE_REQUIRED, 'Environment')
             ->addOption('profile', 'p', InputOption::VALUE_REQUIRED, 'AWS profile to use')
             ->addOption('json', null, InputOption::VALUE_NONE, 'Print JSON')
-            ->addOption('resources', null, InputOption::VALUE_NONE, 'List every AWS resource tagged for the environment');
+            ->addOption('resources', null, InputOption::VALUE_NONE, 'List every AWS resource tagged for the environment')
+            ->addOption(PermissionsBoundary::OPTION, null, InputOption::VALUE_REQUIRED, 'Show the permissions boundary as deploy would use it with this flag');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -107,6 +109,8 @@ final class InfoCommand extends ArcoCommand
                     'existing' => $table->existing !== null,
                     'ttl' => $table->ttl,
                 ], $config->tables),
+                // Additive (0.11), last: the execution role's boundary after the deploy-host override; null without one.
+                'permissions_boundary' => $config->permissionsBoundary,
             ] + ($remoteError !== null ? ['error' => $remoteError] : []), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
             return $remoteError === null ? self::SUCCESS : self::FAILURE;
         }
@@ -411,6 +415,7 @@ final class InfoCommand extends ArcoCommand
             'protected' => [$config->isProtected(), $s['protected']],
             'deployCommands' => [$config->deployCommands === [] ? null : implode('; ', $config->deployCommands), $s['deployCommands']],
             'permissions' => [count($config->permissions), $config->permissions === [] ? 'default' : 'app/environment'],
+            'permissionsBoundary' => [$config->permissionsBoundary, $s['permissionsBoundary']],
             'domains' => [$config->domains === [] ? null : implode(', ', $config->domains), $s['domains']],
             'dns' => [$config->domains === [] ? null : $this->dnsLabel($config), $s['dns']],
             'certificate' => [$config->certificate, $s['certificate']],
@@ -455,6 +460,10 @@ final class InfoCommand extends ArcoCommand
     {
         $json = [];
         foreach ($settings as $key => $row) {
+            // The top-level permissions_boundary carries it, so `settings` keeps the keys it had.
+            if ($key === 'permissionsBoundary') {
+                continue;
+            }
             $json[$key] = $row[0];
             if ($key === 'scheduler') {
                 $json['schedulerPaused'] = $row[0] === null ? null : $status?->schedulerPaused;

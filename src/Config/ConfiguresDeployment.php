@@ -35,6 +35,13 @@ trait ConfiguresDeployment
     public function profile(string $awsProfile): static { $this->settings['profile'] = $awsProfile; return $this; }
 
     /**
+     * An IAM policy ARN set as the permissions boundary of the execution role Arco creates; false at the
+     * environment level clears the app's. ARCO_PERMISSIONS_BOUNDARY on the deploy host, or
+     * `--permissions-boundary`, overrides it. Not with role(): Arco then creates no role to bound.
+     */
+    public function permissionsBoundary(string|false $policyArn): static { $this->settings['permissionsBoundary'] = $policyArn; return $this; }
+
+    /**
      * Custom domains served through CloudFront. Calls add to the list; an environment's list
      * replaces the app's list as a whole.
      *

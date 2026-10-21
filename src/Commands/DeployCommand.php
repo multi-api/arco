@@ -15,6 +15,7 @@ use Multiapi\Arco\Commands\Concerns\StreamsJson;
 use Multiapi\Arco\Commands\Concerns\UsesCloudflare;
 use Multiapi\Arco\Config\AppConfig;
 use Multiapi\Arco\Config\ArcoFileEditor;
+use Multiapi\Arco\Config\PermissionsBoundary;
 use Multiapi\Arco\Console\CommandResult;
 use Multiapi\Arco\Console\Console;
 use Multiapi\Arco\Console\LambdaConsole;
@@ -92,7 +93,8 @@ final class DeployCommand extends ArcoCommand
             ->addOption('package', null, InputOption::VALUE_REQUIRED, 'Deploy a zip written by "arco package" instead of building')
             ->addOption('migrate', null, InputOption::VALUE_NONE, 'Run "migrate --force" before traffic moves (added to the deploy commands)')
             ->addOption('no-deploy-commands', null, InputOption::VALUE_NONE, 'Skip the deploy commands of arco.php')
-            ->addOption('json', null, InputOption::VALUE_NONE, 'Print NDJSON step events and a final result line on stdout (never asks: implies --no-interaction)');
+            ->addOption('json', null, InputOption::VALUE_NONE, 'Print NDJSON step events and a final result line on stdout (never asks: implies --no-interaction)')
+            ->addOption(PermissionsBoundary::OPTION, null, InputOption::VALUE_REQUIRED, 'IAM policy ARN for the execution role\'s permissions boundary (overrides ARCO_PERMISSIONS_BOUNDARY and arco.php)');
         $this->addCloudflareTokenOption();
     }
 

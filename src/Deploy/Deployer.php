@@ -25,6 +25,10 @@ interface Deployer
      * Uploads the package and puts the code in place without moving traffic: execution role, a new
      * web revision, and (with $console) the console zip and runtime binary uploaded, the console
      * function (when the console is on) and one worker per queue updated with a published version.
+     * The role comes first and carries the config's permissions boundary (step deploy.boundary_set when
+     * it is put on an existing role, note deploy.boundary_kept when the config no longer sets the one
+     * the role has); a denied role write with a boundary throws deploy.boundary_denied before any
+     * function is changed.
      *
      * @param ConsoleArtifacts|null $console null leaves the console function as it is
      * @param array<string, string> $variables final environment variables

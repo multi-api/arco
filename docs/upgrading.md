@@ -6,10 +6,34 @@ Upgrade one minor version at a time when you can, read its section below and the
 `multiapi/arco-laravel` release of the same minor, and from 1.0 any 1.x of one works with any 1.x of the other.
 
 ```bash
-composer require --dev multiapi/arco:^0.10
-composer require multiapi/arco-laravel:^0.10
+composer require --dev multiapi/arco:^0.11
+composer require multiapi/arco-laravel:^0.11
 vendor/bin/arco info --env=staging     # validation runs here: errors and deprecations name the fix
 ```
+
+## Upgrading to 0.11
+
+Nothing is required: 0.11 only adds an opt-in setting. Without a permissions boundary, a deploy makes the same IAM
+calls as 0.10.2 and its output, `--json` included, is unchanged, with one exception: a role whose boundary was set
+by hand (outside Arco) keeps it, and every deploy now prints the note `deploy.boundary_kept` for it. The deploy
+profile needs no new permission.
+What is new:
+
+- **`->permissionsBoundary(string|false $policyArn)`** puts an IAM permissions boundary on the managed execution
+  role `arco-<app>-<env>`. The deploy host can set or override it without editing `arco.php`:
+  `arco deploy --permissions-boundary=<arn>` > `ARCO_PERMISSIONS_BOUNDARY` > `arco.php`. Combining it with
+  `role()` is an error. See [Permissions boundary](configuration.md#permissions-boundary).
+- With a boundary, the deploy profile also needs `iam:PutRolePermissionsBoundary` on `role/arco-*` (grant it
+  together with `iam:CreateRole`), and an account owner can tie role writes to the boundary with the account guard in
+  [Enforcing a permissions boundary](getting-started.md#enforcing-a-permissions-boundary). That section also says
+  what the guard needs to hold (every existing `arco-*` role bounded, Lambda writes scoped to the app's functions,
+  no CloudFormation on other stacks) and has a recommended boundary policy. Before you set a boundary on an existing environment, check that it allows what the
+  app's `permissions()` add: the effective permissions are the intersection.
+- `arco info` shows a `permissionsBoundary` row (`-  default` when unset), and `arco info --json` has the key
+  `permissions_boundary` (string or `null`) after `tables`.
+- `deploy --json`: the steps `deploy.boundary_set` and `deploy.boundary_kept` (status `note`), the error
+  `deploy.boundary_denied` with params `{role, boundary, action, error}`, and the param `boundary` on
+  `deploy.step_role` when a boundary is configured.
 
 ## Upgrading to 0.10.1 (security)
 
@@ -364,23 +388,29 @@ Deprecations print a warning naming the replacement and keep working until 2.0.
   positional form (see [Named arguments](configuration.md#named-arguments)). `dns('cloudflare')` means Cloudflare
   (the name is reserved in `dns()`), with the token read from `CLOUDFLARE_API_TOKEN` or `--cloudflare-token`, the
   `proxied: false` records and the ownership comments `managed by arco: <app>/<env>` and `managed by arco`
-  described in [Cloudflare](configuration.md#cloudflare).
-- **The CLI.** Every command in `arco list`, its arguments and its documented options, including
+  described in [Cloudflare](configuration.md#cloudflare). `permissionsBoundary()` (0.11) with its precedence
+  (`--permissions-boundary` > `ARCO_PERMISSIONS_BOUNDARY` > `arco.php`), its error with `role()`, and the rule that
+  Arco never removes a boundary from a role.
+- **The CLI.** Every command in `arco list`, its arguments and its documented options (`--permissions-boundary` of
+  `deploy` and `info` among them), including
   `arco command "<one string>"` as the form of `arco command`.
 - **`--json` and exit codes.** The documents of `info`, `info --resources`, `logs`, `queue:list`, `storage:list`
   and `profile`, versioned by `"schema": 1`: keys may be added, never renamed, removed or retyped within a schema.
   This includes the 0.10 keys `dns` and `tables` of `info --json` and `relations` of `info --resources --json`
-  (with its `type` values `worker_of`, `dlq_of`, `invokes`, `serves` and `validates`).
+  (with its `type` values `worker_of`, `dlq_of`, `invokes`, `serves` and `validates`), and the 0.11 key
+  `permissions_boundary` of `info --json`.
   The NDJSON of `deploy --json` and `remove --json` is API the same way: its line types (`step`, `progress`,
   `result`), their keys, the `status` and `outcome` values, the progress keys, and each step's and error's `key`
-  with its `params` (a key keeps its meaning; params may gain entries). Not covered: the `message` texts and
-  which steps a run prints in what order.
+  with its `params` (a key keeps its meaning; params may gain entries), including the 0.11 keys
+  `deploy.boundary_set` and `deploy.boundary_kept` (`{role, boundary}`), `deploy.boundary_denied`
+  (`{role, boundary, action, error}`) and the `boundary` param of `deploy.step_role`. Not covered: the `message`
+  texts and which steps a run prints in what order.
   Exit codes: 0 success, 1 failure, and the command's own code for `arco command` and a failing deploy command.
 - **Variables.** The ones Arco sets that the [variables table](configuration.md#variables-arco-sets) marks
   stable (`ARCO`, `ARCO_APP`, `ARCO_ENV`, `ARCO_BUILD`, `ARCO_TABLES`, and for `multiapi/arco-laravel`
   `ARCO_QUEUES`, `ARCO_STORAGE`, `ARCO_CACHE_TABLE`, `ARCO_FAILED_JOBS_TABLE`), the Laravel variables it sets per
   feature, the reservation of every `ARCO*` name, and the variables Arco reads on your machine (`ARCO_LANG`,
-  `AWS_ENDPOINT_URL`, `AWS_PROFILE`, `CLOUDFLARE_API_TOKEN`).
+  `AWS_ENDPOINT_URL`, `AWS_PROFILE`, `CLOUDFLARE_API_TOKEN`, `ARCO_PERMISSIONS_BOUNDARY`).
 - **AWS names and tags.** The web function `<app>-<env>`, the console function `<app>-<env>-console`, the
   workers `<app>-<env>-queue-<queue>`, the execution role `arco-<app>-<env>`, the scheduler rule
   `arco-<app>-<env>-scheduler`, the stacks `arco-<app>-<env>` and `arco-<app>-<env>-resources`, the CloudFront

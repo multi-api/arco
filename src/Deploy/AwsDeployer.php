@@ -168,7 +168,7 @@ final class AwsDeployer implements Deployer
         if ($config->role !== null) {
             $roleArn = $config->role;
         } else {
-            $step('deploy.step_role', ['role' => ExecutionRole::roleName($config)]);
+            $step('deploy.step_role', ['role' => ExecutionRole::roleName($config), ...($config->permissionsBoundary === null ? [] : ['boundary' => $config->permissionsBoundary])]);
             // runtime/* stays readable even when this console carries bin/php: the role is shared by every
             // console version, and an older download-based one can still be live (a failed verification,
             // a console skipped for size, arco rollback). Dropping it waits for the storage clean-up.
@@ -178,7 +178,7 @@ final class AwsDeployer implements Deployer
                 array_map(fn (StorageConfig $storage) => $storage->arn($config), $config->storage),
                 array_map(fn (TableConfig $table) => $table->arn($config), array_values(array_filter([$config->cacheTable, $config->failedJobsTable]))),
                 array_map(fn (GenericTableConfig $table) => $table->arn($config), $config->tables));
-            ['arn' => $roleArn, 'created' => $roleCreated] = (new ExecutionRole($this->aws->iam()))->ensure(ExecutionRole::roleName($config), $policy, $tags, $region, $step);
+            ['arn' => $roleArn, 'created' => $roleCreated] = (new ExecutionRole($this->aws->iam()))->ensure(ExecutionRole::roleName($config), $policy, $tags, $region, $step, $config->permissionsBoundary);
         }
 
         $revision = RevisionFactory::revision($config, $bucket, $key, $versionId, $roleArn, $variables);

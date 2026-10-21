@@ -95,6 +95,7 @@ like the others (an environment's call replaces the app's, and `cache(false)` tu
 | `auth('public'\|'iam')` | `public` | Endpoint `authType`: `public` is `ApplicationManaged`, `iam` is `IamAuth` |
 | `logLevel(string)` | `info` | Revision log level: trace, debug, info, warn, error, fatal |
 | `role(arn)` | managed | Your own execution role ARN instead of the managed `arco-<app>-<env>` role |
+| `permissionsBoundary(string\|false $policyArn)` | unset | IAM permissions boundary (a policy ARN) on the managed execution role `arco-<app>-<env>`; `false` at environment level clears an app-level one; overridden on the deploy host by `--permissions-boundary` or `ARCO_PERMISSIONS_BOUNDARY`; cannot be combined with `role()` (see [Permissions boundary](#permissions-boundary)) |
 | `kmsKey(arn)` | unset | Revision `kmsKeyArn` |
 | `profile(string)` | unset | AWS profile for the environment. Without it, the first deploy asks and remembers the answer in `.arco/local.php`, not in `arco.php` (see [Choosing the AWS profile](getting-started.md#choosing-the-aws-profile)) |
 | `account(string)` | written on first deploy | 12-digit account lock; environment level only |
@@ -262,6 +263,59 @@ App::make('shop')
 - IAM limits the role's policy to 10,240 characters; a larger policy stops the deploy before
   anything changes. Use wildcards to stay under it.
 - With `role(arn)` Arco does not manage the role, so `permissions()` is ignored with a warning.
+
+### Permissions boundary
+
+An IAM [permissions boundary](https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_boundaries.html)
+caps what the managed execution role can do, whatever its inline policy says. Accounts that hand the deploy
+profile to someone else (a CI, a team, Arco Cloud) use it so that whoever deploys cannot give the app's role
+more than the account owner allows: see
+[Enforcing a permissions boundary](getting-started.md#enforcing-a-permissions-boundary).
+
+```php
+App::make('shop')
+    ->region('us-east-1')
+    ->permissionsBoundary('arn:aws:iam::123456789012:policy/arco-boundary')
+    ->environment('production')
+    ->environment('sandbox', fn (Environment $env) => $env
+        ->permissionsBoundary(false));   // no boundary for this environment
+```
+
+- The value is a policy ARN, `arn:<partition>:iam::<12-digit account or aws>:policy/<path/name>`, on one line.
+  AWS-managed policies (`arn:aws:iam::aws:policy/PowerUserAccess`) are allowed. Anything else stops `info` and
+  `deploy` with `validation.boundary_arn`.
+- It is a scalar setting: an environment's value replaces the app's, and `permissionsBoundary(false)` at environment
+  level clears an app-level one.
+- **The deploy host can set it without editing `arco.php`.** Precedence: `arco deploy --permissions-boundary=<arn>` >
+  the environment variable `ARCO_PERMISSIONS_BOUNDARY` > `arco.php`. A CI that must enforce a boundary therefore wins
+  over the repository's `arco.php`. The variable is read from the environment of the machine that runs Arco; it is
+  not an app variable (`ARCO*` app variables stay reserved). An empty flag or variable (`--permissions-boundary=`,
+  `ARCO_PERMISSIONS_BOUNDARY=`) counts as not given, as for `--profile` and `AWS_PROFILE`: a CI that writes
+  `--permissions-boundary=$UNSET` deploys with whatever `arco.php` says, and an account that enforces the boundary
+  (see the account guard) refuses that deploy at IAM. In `arco.php`, use `false` to clear it: an empty string
+  there is not a policy ARN (`validation.boundary_arn`). The flag and variable apply to `arco deploy` and `arco info`
+  only; other commands read `arco.php` alone.
+- `arco info` shows the effective value in the `permissionsBoundary` row with its source (`app`, `environment`,
+  `--permissions-boundary`, `ARCO_PERMISSIONS_BOUNDARY`, or `default` when unset); `arco info --json` has it as
+  `permissions_boundary` (a string, or `null`).
+- **Not with `role()`.** With your own role Arco creates none, so there is nothing to bound: a boundary from any
+  source combined with `role(arn)` is an error (`validation.boundary_with_custom_role`). Set the boundary on your role
+  in IAM instead.
+- **Deploys.** A new role is created with the boundary. An existing role without it, or with another one, gets it
+  (`iam:PutRolePermissionsBoundary`) before its inline policy is written, and the deploy prints
+  `deploy.boundary_set`. A role that already has it costs no extra call. The deploy profile needs
+  `iam:PutRolePermissionsBoundary` on `role/arco-*` (see
+  [Minimal IAM permissions](getting-started.md#minimal-iam-permissions)).
+- **Arco never removes a boundary.** When `arco.php` stops setting one, the role keeps the boundary it has and the
+  deploy prints the note `deploy.boundary_kept`. Removing it is the account owner's call
+  (`aws iam delete-role-permissions-boundary --role-name arco-<app>-<env>`).
+- `arco remove` deletes a bounded role like any other.
+
+**Effective permissions are the intersection.** IAM allows an action only when both the role's inline policy
+(Arco's statements plus your `permissions()`) and the boundary allow it. An action you add with `permissions()`
+that the boundary does not allow **silently does nothing**: the deploy succeeds, and the app gets `AccessDenied`
+at runtime. When you add a statement to `permissions()` on a bounded environment, ask the account owner to allow
+it in the boundary too.
 
 ## Console function
 

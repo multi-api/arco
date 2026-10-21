@@ -8,6 +8,10 @@ foreach ([__DIR__ . '/../../../autoload.php', __DIR__ . '/../vendor/autoload.php
     }
 }
 
+// PHP warnings and notices (for example the AWS SDK failing to write a refreshed SSO token to a read-only
+// ~/.aws) go to stderr, so they never corrupt the --json documents on stdout.
+ini_set('display_errors', 'stderr');
+
 set_error_handler([\Multiapi\Arco\Cli\SdkNoticeFilter::class, 'handle'], \Multiapi\Arco\Cli\SdkNoticeFilter::LEVELS);
 
 exit(\Multiapi\Arco\Cli\Application::create()->run());

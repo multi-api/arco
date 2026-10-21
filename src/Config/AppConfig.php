@@ -66,11 +66,31 @@ final readonly class AppConfig
         public bool $dnsCloudflare = false,
         /** table() entries, declaration order, app level first */
         public array $tables = [],
+        /**
+         * IAM policy ARN for the execution role's permissions boundary, after the deploy-host override
+         * (--permissions-boundary, then ARCO_PERMISSIONS_BOUNDARY, then arco.php); null: none
+         */
+        public ?string $permissionsBoundary = null,
     ) {
     }
 
     /** The same configuration with the account the credentials resolved to (arco.php did not lock one). */
     public function withAccount(string $account): self
+    {
+        return $this->copy($account, $this->permissionsBoundary, $this->sources);
+    }
+
+    /**
+     * The same configuration with the permissions boundary a deploy-host override gives, and where it
+     * came from (shown by `arco info`). See PermissionsBoundary::apply().
+     */
+    public function withPermissionsBoundary(?string $policyArn, string $source): self
+    {
+        return $this->copy($this->account, $policyArn, ['permissionsBoundary' => $source] + $this->sources);
+    }
+
+    /** @param array<string, string> $sources */
+    private function copy(?string $account, ?string $permissionsBoundary, array $sources): self
     {
         return new self(
             app: $this->app,
@@ -90,7 +110,7 @@ final readonly class AppConfig
             variables: $this->variables,
             exclude: $this->exclude,
             include: $this->include,
-            sources: $this->sources,
+            sources: $sources,
             permissions: $this->permissions,
             domains: $this->domains,
             dnsProfile: $this->dnsProfile,
@@ -110,6 +130,7 @@ final readonly class AppConfig
             cacheDriver: $this->cacheDriver,
             dnsCloudflare: $this->dnsCloudflare,
             tables: $this->tables,
+            permissionsBoundary: $permissionsBoundary,
         );
     }
 
