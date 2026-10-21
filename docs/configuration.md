@@ -78,7 +78,7 @@ shows each resolved value with its source (`default`, `app` or `environment`).
 Settings, `variables()`, `permissions()`, `runtime()` and the custom domain methods can be set at app level or inside `environment()`.
 `domain()` is the exception to per-key merging: an environment's domain list replaces the app's list as a whole.
 `queue()` merges by queue name: an environment's options for a queue go over the app's, and `queue(name, false)` drops it there.
-`storage()` merges by storage name the same way (`storage(name, false)` drops it); `cache()` and `failedJobsTable()` are settings
+`storage()` and `table()` merge by name the same way (`storage(name, false)`, `table(name, false)` drop one); `cache()` and `failedJobsTable()` are settings
 like the others (an environment's call replaces the app's, and `cache(false)` turns it off there).
 `region()`, `exclude()` and `include()` exist only at app level; `account()` only on an environment.
 
@@ -102,7 +102,7 @@ like the others (an environment's call replaces the app's, and `cache(false)` tu
 | `permissions(array)` | `[]` | Extra IAM statements for the managed execution role (below) |
 | `exclude(array)` / `include(array)` | preset rules | Packaging globs (below) |
 | `domain(string\|array)` | none | Custom domains served through CloudFront (below); lowercase hostnames, no wildcards, at most 10 |
-| `dns(string\|false $dns)` | Route 53 in the deploy account | `dns('profile')`: Route 53 in the account of that AWS profile; `dns(false)`: DNS is elsewhere, Arco prints the records |
+| `dns(string\|false $dns)` | Route 53 in the deploy account | `dns('profile')`: Route 53 in the account of that AWS profile; `dns('cloudflare')`: Cloudflare (see [Cloudflare](#cloudflare)), so a profile named `cloudflare` cannot be used here; `dns(false)`: DNS is elsewhere, Arco prints the records |
 | `deployCommands(array)` | `[]` | Commands run on the console function during every deploy, before traffic moves; an environment's list replaces the app's |
 | `console(bool = true, ?int timeout, ?int memory)` | off | Deploy the console function (`arco command`, `arco tinker`, `deployCommands()`); `console(false)` deletes an existing one on the next deploy; a scheduler implies it. `timeout:` is in seconds (3 to 900, default 900), `memory:` in MB (128 to 10240, default 2048); giving either also turns the console on |
 | `scheduler(int\|false)` | off | Run Laravel's `schedule:run` every N minutes (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30 or 60), aligned to the UTC clock; needs the console, which it turns on |
@@ -113,6 +113,7 @@ like the others (an environment's call replaces the app's, and `cache(false)` tu
 | `storage(name, ...)` | none | An S3 bucket, used as a Laravel disk (see [Storage](#storage)); `storage(name, false)` drops an app-level storage from an environment |
 | `cache(bool = true, existing: ?string, driver: 'dynamodb')` | off | A DynamoDB table for Laravel's cache (see [Cache and failed-jobs tables](#cache-and-failed-jobs-tables)) |
 | `failedJobsTable(bool = true, existing: ?string)` | off | A DynamoDB table for Laravel's failed jobs (same section) |
+| `table(name, ttl: ?string, existing: ?string)` | none | A DynamoDB table of your own (`PK`/`SK` strings, on demand) for the app to use through the AWS SDK (see [Tables](#tables)); `table(name, false)` drops an app-level table from an environment |
 
 An *environment* in Arco is an `environment()` in `arco.php` (staging, production), each deployed as
 its own Web Function. AWS calls one running copy of a function an *execution environment*; Arco calls
@@ -133,6 +134,7 @@ one of yours. Values may be references (`arco-ssm:...`, `arco-secret:...`).
 | `ARCO_BUILD` | the preset's build commands (`php artisan event:cache`) on your machine | `1` | stable: test it in code that runs during the build |
 | `ARCO_QUEUES`, `ARCO_STORAGE` | web, console and worker functions, with queues / storage | JSON maps, see [Queues](#several-queues-and-onqueue) and [Laravel disks](#laravel-disks) | stable for `multiapi/arco-laravel`; their JSON shape may gain keys |
 | `ARCO_CACHE_TABLE`, `ARCO_FAILED_JOBS_TABLE` | web, console and worker functions, with the tables | the table name, see [Cache and failed-jobs tables](#cache-and-failed-jobs-tables) | stable for `multiapi/arco-laravel` |
+| `ARCO_TABLES` | web, console and worker functions, with `table()` | JSON map `{"<name>": "<table>"}`, see [Tables](#tables) | stable: read it in your app; its JSON shape may gain keys |
 | `ARCO_WORKER_QUEUE`, `ARCO_QUEUE_TRIES`, `ARCO_QUEUE_MAX_RECEIVES`, `ARCO_BINARY_BUCKET`, `ARCO_BINARY_KEY`, `ARCO_BINARY_SHA256`, `ARCO_PHP_BINARY`, `ARCO_TMP`, `ARCO_S3_ENDPOINT` | the runtime of the console and worker functions | | internal: may change in any release, do not read them |
 
 Arco also sets the Laravel variables of the features you use (`QUEUE_CONNECTION`, `SQS_*`, `FILESYSTEM_DISK`,
@@ -142,11 +144,12 @@ not set by Arco: it is read on your machine to pick the CLI's language.
 
 ### Named arguments
 
-`queue()`, `storage()`, `cache()`, `failedJobsTable()`, `console()` and the `Runtime` methods documented with
+`queue()`, `storage()`, `table()`, `cache()`, `failedJobsTable()`, `console()` and the `Runtime` methods documented with
 named arguments (`workers()`, `binary()` with `php:`) are covered by the 1.x promise with those names: write
 `->queue('emails', timeout: 120)` or `->console(timeout: 300)`. For every other method only the positional form
-is covered (`->maxInstances(10)`, not `->maxInstances(count: 10)`), and the order of the options after a queue's or
-a storage's name is not: name them. `toArray()` on `App`, `Environment` and `Runtime` and `Runtime::mode()` are
+is covered (`->maxInstances(10)`, not `->maxInstances(count: 10)`), and the order of the options after a queue's,
+a storage's or a table's name is not: name them (`->table('state', ttl: 'expires_at')`; a positional
+`->table('state', 'expires_at')` is a type error). `toArray()` on `App`, `Environment` and `Runtime` and `Runtime::mode()` are
 internal. See [The 1.x promise](upgrading.md#the-1x-promise).
 
 ### Deploy commands
@@ -234,7 +237,7 @@ vendor/bin/arco set timeout 60 --app          # app level (all environments)
 
 ## Permissions
 
-The managed execution role only gets what Arco itself needs: writing logs (web, console and queue workers), sending to and reading the queues in `arco.php`, reading and writing the buckets and tables of `storage()`, `cache()` and `failedJobsTable()`, reading
+The managed execution role only gets what Arco itself needs: writing logs (web, console and queue workers), sending to and reading the queues in `arco.php`, reading and writing the buckets and tables of `storage()`, `cache()`, `failedJobsTable()` and `table()`, reading
 the console function's FrankenPHP binary (only used when it downloads it) and the secrets your variables reference. When your app uses other AWS
 resources (a bucket or table not in `arco.php`, SES), add IAM statements with `permissions()`, in the same shape as an IAM
 policy statement:
@@ -882,6 +885,114 @@ The managed execution role gets the `ArcoTables` statement (`dynamodb:GetItem`, 
 The deploy profile's additions are in
 [Permissions for storage and tables](getting-started.md#permissions-for-storage-and-tables).
 
+## Tables
+
+`->table('<name>')` gives the environment a DynamoDB table of its own, for single-table designs your app reads
+and writes through the AWS SDK (state, idempotency keys, sessions of an external API...):
+
+```php
+App::make('shop')
+    ->region('us-east-1')
+    ->table('state', ttl: 'expires_at')                 // shop-<env>-state, TTL on expires_at
+    ->environment('staging', fn (Environment $env) => $env
+        ->table('state', false))                        // no state table on staging
+    ->environment('production', fn (Environment $env) => $env
+        ->table('ledger', existing: 'shop-ledger'));    // a table Arco does not manage
+```
+
+Signature: `table(string $name, ttl: ?string, existing: ?string)`; write `ttl:` and `existing:` as named
+arguments (the second positional argument is reserved for `table('<name>', false)`). Tables merge by name like
+`storage()`: an environment's options for a table go over the app's, and `table('<name>', false)` drops it there.
+
+- **Name.** Lowercase letters, digits and hyphens, starting with a letter (the rule of queue and storage names).
+  `cache` and `failed-jobs` are reserved: they are the names of Arco's own [cache and failed-jobs
+  tables](#cache-and-failed-jobs-tables). The table name `<app>-<env>-<name>` must fit DynamoDB's 255 characters.
+- **The table Arco creates** is `<app>-<env>-<name>` in the resources stack: partition key `PK` and sort key `SK`,
+  both strings, on demand (`PAY_PER_REQUEST`), tagged `arco:app`, `arco:environment` and `arco:resource` =
+  `table:<name>`. Other key schemas and secondary indexes are not available in 0.10.
+- **`ttl:`** turns on DynamoDB TTL on that attribute: write the item's expiry there as epoch seconds (a number),
+  and DynamoDB deletes the item some time after it (AWS gives no exact time; filter expired items when you read
+  them). Adding, removing or renaming the TTL attribute updates the table in place, and **DynamoDB allows one TTL
+  change per table per hour**: a second TTL change within the hour makes that deploy's stack update fail and
+  roll back. Deploy it again an hour later.
+- **`existing:`** names a table Arco does not manage, by name or ARN: no table is created, the execution role
+  gets access to it, and the name is passed on as given (an ARN as an ARN: the AWS SDK accepts both as
+  `TableName`). `ttl:` with `existing:` is a warning: Arco never changes that table. Two tables of
+  `arco.php` (`cache()`, `failedJobsTable()` and `table()` included) cannot name the same DynamoDB table.
+- **Kept on remove.** Like the cache table, a table Arco created is kept when it leaves `arco.php` and by `arco
+  remove`, with its items (the deploy prints about how many; see [What stays](#what-stays)). Adding a table back
+  under a kept name stops the deploy before any change and prints the line that uses the kept table,
+  `->table('<name>', existing: '<table>')`. Pointing a created table at itself with `existing:` hands it over to you.
+
+### Using a table from Laravel
+
+Arco sets `ARCO_TABLES` on the web, console and worker functions, a JSON map from each `table()` name to its
+DynamoDB table (`{"state":"shop-production-state"}`; only with at least one `table()`). Nothing in
+`multiapi/arco-laravel` is needed: read the map in a config file and use the AWS SDK (`aws/aws-sdk-php`, which
+picks up the function's credentials and region by itself).
+
+```php
+// config/services.php
+'arco' => [
+    'tables' => json_decode((string) env('ARCO_TABLES', '{}'), true) ?: [],
+],
+```
+
+```php
+use Aws\DynamoDb\DynamoDbClient;
+
+$dynamo = new DynamoDbClient(['region' => env('AWS_REGION'), 'version' => 'latest']);
+$table = config('services.arco.tables.state');
+
+$dynamo->putItem(['TableName' => $table, 'Item' => [
+    'PK' => ['S' => "order#$orderId"],
+    'SK' => ['S' => 'status'],
+    'status' => ['S' => 'paid'],
+    'expires_at' => ['N' => (string) now()->addDays(30)->getTimestamp()],
+]]);
+
+$item = $dynamo->getItem([
+    'TableName' => $table,
+    'Key' => ['PK' => ['S' => "order#$orderId"], 'SK' => ['S' => 'status']],
+])['Item'] ?? null;
+```
+
+`examples/laravel` does the same in its `/e2e/table` route.
+
+### Commands
+
+```bash
+vendor/bin/arco table:add state --ttl=expires_at --env=production
+vendor/bin/arco table:add ledger --existing=shop-ledger --app
+vendor/bin/arco table:remove state --env=staging
+```
+
+- `table:add <name> [--ttl=<attribute>] [--existing=<table>]` writes `->table(...)`; `table:remove <name>`
+  removes it, or writes `->table('<name>', false)` on an environment that inherits it from the app level. The
+  DynamoDB table stays in AWS.
+- They take `--env=<env>` or `--app`, check the name and options with the validation rules before writing, edit
+  `arco.php` only and need `arco deploy` to apply.
+- `arco init` does not ask for tables.
+- `arco info` shows a `Table <name>` row with the table's name (or `<table> (existing, not managed by Arco)`)
+  and `· TTL <attribute>`; `--json` has `tables`: a list of `{name, table, existing, ttl}` (`[]` without
+  tables). `arco info --resources` lists the created tables as `dynamodb:table`.
+
+### Permissions of `table()` tables
+
+The managed execution role gets the `ArcoAppTables` statement on each table, created or `existing`, and its
+indexes: `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:DeleteItem`,
+`dynamodb:Query`, `dynamodb:Scan`, `dynamodb:BatchGetItem`, `dynamodb:BatchWriteItem`,
+`dynamodb:ConditionCheckItem`, `dynamodb:DescribeTable`. No table management action: TTL is set by the
+resources stack. With your own `role()`, give it the same:
+
+```json
+{"Effect": "Allow", "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:BatchGetItem", "dynamodb:BatchWriteItem", "dynamodb:ConditionCheckItem", "dynamodb:DescribeTable"], "Resource": ["arn:aws:dynamodb:<region>:<account>:table/<app>-<env>-<name>", "arn:aws:dynamodb:<region>:<account>:table/<app>-<env>-<name>/index/*"]}
+```
+
+The deploy profile needs the table actions of
+[Permissions for storage and tables](getting-started.md#permissions-for-storage-and-tables); the
+`arn:aws:dynamodb:*:*:table/<app>-*` resource there covers these tables too.
+
 ## Custom domains
 
 Lambda Web Function endpoints only answer on their own `*.on.aws` domain. With `domain()`, `arco
@@ -913,7 +1024,7 @@ After the function is deployed and verified, `deploy`:
    (`/build/*` for Laravel), and a viewer-request function that passes the original host to the
    app as `X-Forwarded-Host`. The first creation takes several minutes; later deploys only
    update the stack when something changed.
-3. **DNS**: `A` and `AAAA` alias records to the distribution.
+3. **DNS**: `A` and `AAAA` alias records to the distribution in Route 53, or a `CNAME` to it in Cloudflare.
 
 The summary lists `https://<domain>` for every domain next to the endpoint URL.
 
@@ -923,6 +1034,7 @@ The summary lists `https://<domain>` for every domain next to the endpoint URL.
 |---|---|
 | nothing | Route 53 of the deploy account. A domain with no public hosted zone there falls back to manual. |
 | `dns('profile')` | Route 53 of the account behind that AWS profile (for example a shared DNS account). `--dns-profile=` on `deploy` and `remove` overrides it. |
+| `dns('cloudflare')` | Cloudflare, through its API with your API token (see [Cloudflare](#cloudflare)). A domain with no Cloudflare zone stops the deploy. |
 | `dns(false)` | Not in Route 53. Arco prints the certificate validation `CNAME`s and waits up to 30 minutes for the certificate, then prints `CNAME <domain> → <distribution>.cloudfront.net` for you to create. |
 
 For each record Arco picks the longest public hosted zone that is a suffix of the name. It never
@@ -933,10 +1045,55 @@ record. `deploy --force-dns` replaces such records.
 At a zone apex (`example.com`), most DNS providers do not allow a `CNAME`; in manual mode use your
 provider's ALIAS/ANAME record type.
 
+### Cloudflare
+
+With `->dns('cloudflare')` (or `--dns=cloudflare` / the "Cloudflare" choice in `arco init` and `arco domain:add`),
+Arco writes the records in Cloudflare through its API v4:
+
+```php
+->environment('production', fn (Environment $env) => $env
+    ->domain(['example.com', 'www.example.com'])
+    ->dns('cloudflare'))
+```
+
+- **Token.** Arco reads a Cloudflare API token from `CLOUDFLARE_API_TOKEN`, or from `--cloudflare-token=<token>`
+  on `deploy`, `remove`, `init` and `domain:add` (the flag wins). It never writes the token anywhere
+  (`arco.php`, `.arco/local.php`, logs, `--json` output) and never creates one: create it in the Cloudflare
+  dashboard with the permissions **Zone → DNS → Edit** and **Zone → Zone → Read** on the zones of your domains.
+  A missing or refused token stops `deploy` right after loading `arco.php`, before any AWS change, with a message
+  naming the variable and those permissions. `remove` checks it before it asks, when the environment has domain
+  resources.
+- **Zones.** For each domain Arco uses the longest active Cloudflare zone the token can see that is a suffix
+  of the name, the same rule as Route 53. A domain without such a zone stops the deploy before any change: unlike
+  Route 53 there is no fallback to manual records (use `dns(false)` for that).
+- **Records.** The certificate validation `CNAME`s, then `CNAME <domain> → <distribution>.cloudfront.net` for
+  each domain, always with **proxied off** (DNS only, the grey cloud): CloudFront terminates TLS. A domain at
+  the zone apex works too, through Cloudflare's CNAME flattening.
+- **Ownership.** Each record Arco writes for a domain carries the comment `managed by arco: <app>/<env>`, the
+  Cloudflare counterpart of the `arco:*` tags. A live `A`, `AAAA` or `CNAME` record at a domain without that
+  comment stops the deploy before creating anything and is named in the message; `deploy --force-dns` replaces it
+  (deleting `A`/`AAAA` records just before creating the `CNAME` leaves a few seconds without an answer). Keep the
+  comment when you edit a record by hand, or Arco will no longer recognise it.
+- **Validation `CNAME`s** carry the comment `managed by arco`, without app or environment: one validation
+  record serves every environment and certificate of that name. An identical record is left as it is; one with
+  other content (or proxied, unless Arco wrote it) at the validation name is refused unless `--force-dns`. Arco
+  only sees that conflict once ACM gives it the validation name, that is after it requested the certificate: the
+  deploy then stops with the certificate requested, and the next deploy reuses it.
+- **Remove.** `arco remove` deletes only the records carrying this environment's comment. The validation `CNAME`s
+  are kept, as with Route 53 (see [Remove](#remove)).
+- **Reserved name.** `'cloudflare'` in `dns()` always means Cloudflare: an AWS profile named `cloudflare` can no
+  longer be used as a DNS profile through `dns()`. Rename the profile in `~/.aws/config` if you had one.
+- A Cloudflare request answered with HTTP 429 or 5xx is tried up to 4 times in all (the first try and 3 retries,
+  with backoff). If a change fails
+  part-way, the message lists what was already changed; deploy again to finish, Arco recognises its own records.
+- `--dns-profile` cannot be combined with `dns('cloudflare')`. `arco info` shows the provider in a `dns.provider`
+  row (`cloudflare`, `route53 (<profile>)`, `route53 (deploy account)` or `manual`), and `--json` in the `dns` key
+  (`null` without domains).
+
 ### Remove
 
-`remove` deletes the alias records that point at this environment's distribution (Route 53 modes
-only), then the stack, then the certificate if Arco requested it for this environment. Certificates
+`remove` deletes the alias records that point at this environment's distribution (Route 53 modes; in
+Cloudflare, the `CNAME`s carrying this environment's comment), then the stack, then the certificate if Arco requested it for this environment. Certificates
 you created are never deleted. Certificate validation `CNAME`s (`_….<domain>`) are always kept: they
 are harmless, and ACM reuses the same record for any certificate of that name in any region of the
 account. Delete them yourself if no certificate needs them.

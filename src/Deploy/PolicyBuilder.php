@@ -20,9 +20,10 @@ final class PolicyBuilder
      * @param list<string> $workerFunctions queue worker function names, for their log groups
      * @param list<string> $bucketArns the storage buckets the app reads and writes (created and existing)
      * @param list<string> $tableArns the DynamoDB tables of the cache and the failed jobs (created and existing)
+     * @param list<string> $genericTableArns the table() tables (created and existing)
      * @return array{Version: string, Statement: list<array<string, mixed>>}
      */
-    public static function document(string $region, string $account, string $function, array $references, array $permissions = [], ?string $codeBucket = null, array $queueArns = [], array $workerFunctions = [], array $bucketArns = [], array $tableArns = []): array
+    public static function document(string $region, string $account, string $function, array $references, array $permissions = [], ?string $codeBucket = null, array $queueArns = [], array $workerFunctions = [], array $bucketArns = [], array $tableArns = [], array $genericTableArns = []): array
     {
         // Web Functions log to /aws/lambda/web/<function> and also to a "<group>.local" group; the
         // console function to the classic /aws/lambda/<function>-console group.
@@ -64,6 +65,18 @@ final class PolicyBuilder
                 'Effect' => 'Allow',
                 'Action' => ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:DeleteItem', 'dynamodb:Query', 'dynamodb:BatchGetItem', 'dynamodb:BatchWriteItem', 'dynamodb:DescribeTable'],
                 'Resource' => $tableArns,
+            ];
+        }
+        if ($genericTableArns !== []) {
+            // Item reads and writes on each table and its indexes; no table management (the stack sets TTL).
+            $statements[] = [
+                'Sid' => 'ArcoAppTables',
+                'Effect' => 'Allow',
+                'Action' => [
+                    'dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:DeleteItem', 'dynamodb:Query', 'dynamodb:Scan',
+                    'dynamodb:BatchGetItem', 'dynamodb:BatchWriteItem', 'dynamodb:ConditionCheckItem', 'dynamodb:DescribeTable',
+                ],
+                'Resource' => array_merge(...array_map(fn (string $arn) => [$arn, "$arn/index/*"], $genericTableArns)),
             ];
         }
         if ($codeBucket !== null) {

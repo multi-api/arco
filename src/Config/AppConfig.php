@@ -14,6 +14,7 @@ final readonly class AppConfig
      * @param list<string> $deployCommands
      * @param list<QueueConfig> $queues
      * @param list<StorageConfig> $storage
+     * @param list<GenericTableConfig> $tables
      */
     public function __construct(
         public string $app,
@@ -61,6 +62,10 @@ final readonly class AppConfig
         public ?TableConfig $failedJobsTable = null,
         /** cache(driver:) when it is not 'dynamodb' (the validator refuses it); null: dynamodb */
         public ?string $cacheDriver = null,
+        /** dns('cloudflare'): the custom domains' zones are on Cloudflare ($dnsProfile is then null) */
+        public bool $dnsCloudflare = false,
+        /** table() entries, declaration order, app level first */
+        public array $tables = [],
     ) {
     }
 
@@ -103,6 +108,8 @@ final readonly class AppConfig
             cacheTable: $this->cacheTable,
             failedJobsTable: $this->failedJobsTable,
             cacheDriver: $this->cacheDriver,
+            dnsCloudflare: $this->dnsCloudflare,
+            tables: $this->tables,
         );
     }
 

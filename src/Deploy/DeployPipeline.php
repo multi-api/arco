@@ -75,7 +75,25 @@ final class DeployPipeline
      */
     public static function injectedVariables(AppConfig $config): array
     {
-        return [...self::queueVariables($config), ...self::storageVariables($config), ...self::tableVariables($config), ...self::endpointVariables()];
+        return [...self::queueVariables($config), ...self::storageVariables($config), ...self::tableVariables($config), ...self::genericTableVariables($config), ...self::endpointVariables()];
+    }
+
+    /**
+     * ARCO_TABLES, name => table, for the table() tables (only when there is one): the created table's
+     * name, or `existing` as given (a name or an ARN; the AWS SDK takes either as TableName).
+     *
+     * @return array<string, string>
+     */
+    public static function genericTableVariables(AppConfig $config): array
+    {
+        if ($config->tables === []) {
+            return [];
+        }
+        $tables = [];
+        foreach ($config->tables as $table) {
+            $tables[$table->name] = $table->tableName($config);
+        }
+        return ['ARCO_TABLES' => json_encode($tables, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES)];
     }
 
     /**

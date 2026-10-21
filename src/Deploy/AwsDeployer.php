@@ -8,10 +8,12 @@ use Multiapi\Arco\Aws\AwsClients;
 use Aws\Exception\AwsException;
 use Multiapi\Arco\Config\AppConfig;
 use Multiapi\Arco\Config\QueueConfig;
+use Multiapi\Arco\Config\GenericTableConfig;
 use Multiapi\Arco\Config\StorageConfig;
 use Multiapi\Arco\Config\TableConfig;
 use Multiapi\Arco\Deploy\Domains\Certificates;
 use Multiapi\Arco\Deploy\Domains\CustomDomains;
+use Multiapi\Arco\Deploy\Domains\DnsProvider;
 use Multiapi\Arco\Deploy\Domains\DomainStack;
 use Multiapi\Arco\Deploy\Domains\Stacks;
 use Multiapi\Arco\Logs\LogGroups;
@@ -31,6 +33,7 @@ final class AwsDeployer implements Deployer
      * @param bool $forceDns replace existing DNS records that point elsewhere (--force-dns)
      * @param bool $force change name-addressed resources another app or environment owns, or that carry
      *                    no Arco tags (deploy --force); never used by remove
+     * @param DnsProvider|null $dnsProvider the DNS provider when it is not Route 53 (dns('cloudflare'))
      */
     public function __construct(
         private readonly AwsClients $aws,
@@ -38,6 +41,7 @@ final class AwsDeployer implements Deployer
         private readonly ?AwsClients $dns = null,
         private readonly bool $forceDns = false,
         private readonly bool $force = false,
+        private readonly ?DnsProvider $dnsProvider = null,
     ) {
     }
 
@@ -172,7 +176,8 @@ final class AwsDeployer implements Deployer
                 array_map(fn (QueueConfig $queue) => $queue->arn($config), $config->queues),
                 array_map(fn (QueueConfig $queue) => $config->workerFunctionName($queue->name), $config->queues),
                 array_map(fn (StorageConfig $storage) => $storage->arn($config), $config->storage),
-                array_map(fn (TableConfig $table) => $table->arn($config), array_values(array_filter([$config->cacheTable, $config->failedJobsTable]))));
+                array_map(fn (TableConfig $table) => $table->arn($config), array_values(array_filter([$config->cacheTable, $config->failedJobsTable]))),
+                array_map(fn (GenericTableConfig $table) => $table->arn($config), $config->tables));
             ['arn' => $roleArn, 'created' => $roleCreated] = (new ExecutionRole($this->aws->iam()))->ensure(ExecutionRole::roleName($config), $policy, $tags, $region, $step);
         }
 
@@ -790,6 +795,7 @@ final class AwsDeployer implements Deployer
         $created = ResourcesStack::createdQueues($config);
         $storage = ResourcesStack::createdStorage($config);
         $tables = ResourcesStack::createdTables($config);
+        $generic = ResourcesStack::createdGenericTables($config);
         $stacks = new Stacks($this->aws->cloudFormation(), $this->sleeper);
         try {
             $stack = $stacks->describe($name);
@@ -835,6 +841,9 @@ final class AwsDeployer implements Deployer
         foreach ($tables as $table) {
             $names[ResourcesStack::tableLogicalId($table->kind)] = [$table->kind, $table->tableName($config)];
         }
+        foreach ($generic as $table) {
+            $names[ResourcesStack::genericTableLogicalId($table->name)] = ["table:{$table->name}", $table->tableName($config)];
+        }
         foreach ($names as $id => [$resource, $to]) {
             if (isset($owned[$id]) && $owned[$id]['id'] !== $to) {
                 throw DeployException::make('deploy.resource_replaced', ['resource' => $resource, 'from' => $owned[$id]['id'], 'to' => $to]);
@@ -875,6 +884,11 @@ final class AwsDeployer implements Deployer
                 throw DeployException::make('deploy.table_retained', ['kind' => $table->kind, 'table' => $table->tableName($config), 'existing' => "{$method}(existing: '{$table->tableName($config)}')"]);
             }
         }
+        foreach ($generic as $table) {
+            if (! isset($owned[ResourcesStack::genericTableLogicalId($table->name)]) && $lookup->exists($table->tableName($config))) {
+                throw DeployException::make('deploy.generic_table_retained', ['kind' => 'table', 'name' => $table->name, 'table' => $table->tableName($config), 'existing' => "table('{$table->name}', existing: '{$table->tableName($config)}')"]);
+            }
+        }
 
         $removed = array_diff_key($owned, $resources);
 
@@ -907,6 +921,11 @@ final class AwsDeployer implements Deployer
                 $id = ResourcesStack::tableLogicalId($table->kind);
                 $key = ! isset($owned[$id]) ? 'deploy.table_created' : (self::isChanged($changed, $id) ? 'deploy.table_changed' : 'deploy.table_updated');
                 $onStep($key, ['kind' => $table->kind, 'name' => $table->tableName($config)]);
+            }
+            foreach ($generic as $table) {
+                $id = ResourcesStack::genericTableLogicalId($table->name);
+                $key = ! isset($owned[$id]) ? 'deploy.generic_table_created' : (self::isChanged($changed, $id) ? 'deploy.generic_table_changed' : 'deploy.generic_table_updated');
+                $onStep($key, ['table' => $table->name, 'name' => $table->tableName($config)]);
             }
         }
         $this->reportKept($removed, $onStep, 'deploy.', $config);
@@ -1002,6 +1021,13 @@ final class AwsDeployer implements Deployer
         foreach ([$config->cacheTable, $config->failedJobsTable] as $table) {
             if ($table !== null && $table->existing === $id) {
                 return ['deploy.table_now_existing', ['table' => $id, 'as' => $table->kind]];
+            }
+        }
+        // By ARN: an `existing` ARN of another region or account with the same name is another table.
+        $removed = GenericTableConfig::arnOf($id, $config);
+        foreach ($config->tables as $table) {
+            if ($table->existing !== null && GenericTableConfig::sameTable($table->arn($config), $removed)) {
+                return ['deploy.generic_table_now_existing', ['table' => $id, 'as' => $table->name]];
             }
         }
         return null;
@@ -1131,7 +1157,7 @@ final class AwsDeployer implements Deployer
 
     private function customDomains(AppConfig $config): CustomDomains
     {
-        return CustomDomains::create($config, $this->aws, $this->dns, $this->sleeper, $this->forceDns);
+        return CustomDomains::create($config, $this->aws, $this->dns, $this->sleeper, $this->forceDns, $this->dnsProvider);
     }
 
     /**

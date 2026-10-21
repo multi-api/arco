@@ -9,17 +9,17 @@ use Multiapi\Arco\Deploy\Sleeper;
 
 /**
  * Puts an environment's endpoint behind its custom domains: ACM certificate, CloudFront
- * distribution (one CloudFormation stack) and DNS records, in Route 53 or printed for the user.
+ * distribution (one CloudFormation stack) and DNS records, through a DnsProvider or printed for the user.
  */
 final class CustomDomains
 {
     private const CERTIFICATE_TIMEOUT = 1800;
 
-    /** @param Dns|null $dns Route 53 holding the zones; null when DNS is managed elsewhere (dns(false)) */
+    /** @param DnsProvider|null $dns the service holding the zones; null when DNS is managed elsewhere (dns(false)) */
     public function __construct(
         private readonly Certificates $certificates,
         private readonly Stacks $stacks,
-        private readonly ?Dns $dns,
+        private readonly ?DnsProvider $dns,
         private readonly bool $forceDns = false,
     ) {
     }
@@ -27,10 +27,17 @@ final class CustomDomains
     /**
      * @param AwsClients $aws deploy account
      * @param AwsClients|null $dnsAws account of the dns() profile; null to use the deploy account
+     * @param DnsProvider|null $provider the provider when it is not Route 53 (dns('cloudflare')); without
+     *     one, a Cloudflare environment fails on its first DNS operation and never touches Route 53
      */
-    public static function create(AppConfig $config, AwsClients $aws, ?AwsClients $dnsAws, Sleeper $sleeper, bool $forceDns = false): self
+    public static function create(AppConfig $config, AwsClients $aws, ?AwsClients $dnsAws, Sleeper $sleeper, bool $forceDns = false, ?DnsProvider $provider = null): self
     {
-        $dns = $config->dnsManual && $dnsAws === null ? null : new Dns(($dnsAws ?? $aws)->route53(), $sleeper);
+        $dns = match (true) {
+            $provider !== null => $provider,
+            $config->dnsCloudflare => UnavailableDns::cloudflareTokenMissing(),
+            $config->dnsManual && $dnsAws === null => null,
+            default => new Route53Dns(($dnsAws ?? $aws)->route53(), $sleeper),
+        };
         return new self(new Certificates($aws->acm(), $sleeper), new Stacks($aws->cloudFormation(), $sleeper, 'domains.stack_'), $dns, $forceDns);
     }
 
@@ -48,7 +55,7 @@ final class CustomDomains
         $distribution = $stack['outputs']['DistributionDomain'] ?? null;
 
         // Checked before anything slow is created, so a conflict fails in seconds.
-        $this->guardAliases($config->domains, $distribution);
+        $this->guardAliases($config, $distribution);
 
         $step('domains.step_certificate', ['domains' => implode(', ', $config->domains)]);
         $certificate = $this->certificate($config, $step);
@@ -61,12 +68,12 @@ final class CustomDomains
         $step('domains.step_dns', ['distribution' => $distribution]);
         $records = [];
         foreach ($config->domains as $domain) {
-            array_push($records, ...DnsRecord::aliases($domain, $distribution));
+            array_push($records, ...($this->dns?->servingRecords($domain, $distribution) ?? DnsRecord::aliases($domain, $distribution)));
         }
         // Checked again on a fresh read: records may have changed during the certificate and
         // CloudFront waits, and an UPSERT would silently overwrite a new A/AAAA record.
-        $guard = $this->guardAliases($config->domains, $distribution);
-        $manual = $this->write($records, $guard['deletes'], $guard['existing']);
+        $guard = $this->guardAliases($config, $distribution);
+        $manual = $this->write($config, $records, $guard['deletes'], $guard['existing']);
         if ($manual !== []) {
             $step('domains.manual_records', []);
             foreach ($config->domains as $domain) {
@@ -100,14 +107,14 @@ final class CustomDomains
             foreach ($domains as $domain) {
                 $zone = $this->dns->zoneFor($domain);
                 if ($zone !== null) {
-                    foreach (RecordGuard::ourAliases($this->dns->recordSets($zone, $domain), $domain, $distribution) as $set) {
+                    foreach ($this->dns->removable($this->dns->records($zone, $domain), $domain, $distribution, $config) as $set) {
                         $byZone[$zone->id]['zone'] = $zone;
-                        $byZone[$zone->id]['changes'][] = ['DELETE', $set];
+                        $byZone[$zone->id]['deletes'][] = $set;
                     }
                 }
             }
             foreach ($byZone as $batch) {
-                $this->dns->change($batch['zone'], $batch['changes']);
+                $this->dns->apply($batch['zone'], $batch['deletes'], [], $config);
             }
         }
 
@@ -148,11 +155,10 @@ final class CustomDomains
     }
 
     /**
-     * @param list<string> $domains
      * @return array{deletes: array<string, list<array<string, mixed>>>, existing: array<string, list<array<string, mixed>>>}
-     *         records to delete with the aliases, and the record sets read, by domain
+     *         records to delete with the serving records, and the records read, by domain
      */
-    private function guardAliases(array $domains, ?string $distribution): array
+    private function guardAliases(AppConfig $config, ?string $distribution): array
     {
         if ($this->dns === null) {
             return ['deletes' => [], 'existing' => []];
@@ -160,19 +166,19 @@ final class CustomDomains
         $conflicts = [];
         $deletes = [];
         $existing = [];
-        foreach ($domains as $domain) {
+        foreach ($config->domains as $domain) {
             $zone = $this->dns->zoneFor($domain);
             if ($zone === null) {
                 continue;
             }
-            $sets = $this->dns->recordSets($zone, $domain);
-            $plan = RecordGuard::plan($sets, $domain, $distribution, $this->forceDns);
+            $sets = $this->dns->records($zone, $domain);
+            $plan = $this->dns->plan($sets, $domain, $distribution, $this->forceDns, $config);
             array_push($conflicts, ...$plan['conflicts']);
             $deletes[Hostname::normalize($domain)] = $plan['deletes'];
             $existing[Hostname::normalize($domain)] = $sets;
         }
         if ($conflicts !== [] && ! $this->forceDns) {
-            throw DeployException::make('domains.record_conflict', ['records' => implode("\n", array_map(fn (array $s) => '  ' . RecordGuard::describe($s), $conflicts))]);
+            throw DeployException::make('domains.record_conflict', ['records' => implode("\n", array_map(fn (array $s) => '  ' . $this->dns->describe($s), $conflicts))]);
         }
         return ['deletes' => $deletes, 'existing' => $existing];
     }
@@ -211,7 +217,7 @@ final class CustomDomains
 
         $certificate = $this->certificates->waitForValidationRecords($arn);
         if ($certificate->status === 'PENDING_VALIDATION') {
-            $manual = $this->write($certificate->validationRecords, []);
+            $manual = $this->write($config, $certificate->validationRecords, []);
             if ($manual !== []) {
                 $step('domains.manual_records', []);
                 foreach ($manual as $record) {
@@ -230,10 +236,10 @@ final class CustomDomains
      *
      * @param list<DnsRecord> $records
      * @param array<string, list<array<string, mixed>>> $deletes by record name
-     * @param array<string, list<array<string, mixed>>> $existing current record sets by record name, when already read
+     * @param array<string, list<array<string, mixed>>> $existing current records by record name, when already read
      * @return list<DnsRecord>
      */
-    private function write(array $records, array $deletes, array $existing = []): array
+    private function write(AppConfig $config, array $records, array $deletes, array $existing = []): array
     {
         if ($this->dns === null) {
             return $records;
@@ -249,18 +255,17 @@ final class CustomDomains
             $batches[$zone->id] ??= ['zone' => $zone, 'deletes' => [], 'upserts' => []];
             $recordDeletes = $deletes[$record->name] ?? [];
             // A redeploy finds its records already in place: skip them, and the INSYNC wait.
-            if ($recordDeletes === [] && array_filter($existing[$record->name] ?? [], fn (array $set) => $record->isSatisfiedBy($set)) !== []) {
+            if ($recordDeletes === [] && array_filter($existing[$record->name] ?? [], fn (array $set) => $this->dns->isSatisfied($record, $set, $config)) !== []) {
                 continue;
             }
             foreach ($recordDeletes as $set) {
-                $batches[$zone->id]['deletes'][serialize($set)] = ['DELETE', $set];
+                $batches[$zone->id]['deletes'][serialize($set)] = $set;
             }
-            $batches[$zone->id]['upserts'][] = ['UPSERT', $record->recordSet()];
+            $batches[$zone->id]['upserts'][] = $record;
         }
         foreach ($batches as $batch) {
-            $changes = [...array_values($batch['deletes']), ...$batch['upserts']];
-            if ($changes !== []) {
-                $this->dns->change($batch['zone'], $changes);
+            if ($batch['deletes'] !== [] || $batch['upserts'] !== []) {
+                $this->dns->apply($batch['zone'], array_values($batch['deletes']), $batch['upserts'], $config);
             }
         }
         return $manual;

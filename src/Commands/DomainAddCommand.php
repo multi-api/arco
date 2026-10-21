@@ -13,6 +13,7 @@ use Multiapi\Arco\Commands\Concerns\ChoosesDns;
 use Multiapi\Arco\Commands\Concerns\EditsDomains;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
 use Multiapi\Arco\Config\AppConfig;
+use Multiapi\Arco\Config\ConfigResolver;
 use Multiapi\Arco\Config\Validator;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Input\InputArgument;
@@ -29,10 +30,11 @@ final class DomainAddCommand extends ArcoCommand
     use ChoosesDns;
     use EditsDomains;
 
-    public function __construct(?Closure $awsFactory = null, ?DnsZoneFinder $zoneFinder = null)
+    public function __construct(?Closure $awsFactory = null, ?DnsZoneFinder $zoneFinder = null, ?Closure $cloudflareFactory = null)
     {
         $this->awsFactory = $awsFactory ?? fn (?string $profile, string $region) => new AwsClients($profile, $region);
         $this->zoneFinder = $zoneFinder ?? DnsZoneFinder::default();
+        $this->cloudflareFactory = $cloudflareFactory;
         parent::__construct();
     }
 
@@ -42,7 +44,8 @@ final class DomainAddCommand extends ArcoCommand
             ->addOption('env', 'e', InputOption::VALUE_REQUIRED, 'Environment')
             ->addOption('profile', 'p', InputOption::VALUE_REQUIRED, 'AWS profile used to deploy (its zones need no dns() call)')
             ->addOption('dns-profile', null, InputOption::VALUE_REQUIRED, 'AWS profile whose Route 53 holds the DNS zones')
-            ->addOption('dns', null, InputOption::VALUE_REQUIRED, '"manual" when the DNS is not in Route 53');
+            ->addOption('dns', null, InputOption::VALUE_REQUIRED, '"manual" when the DNS is not in Route 53, "cloudflare" when the zones are on Cloudflare');
+        $this->addCloudflareTokenOption();
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -83,8 +86,8 @@ final class DomainAddCommand extends ArcoCommand
 
     /**
      * An explicit dns() in arco.php only changes on a flag or the user's answer: dns(false) stays
-     * without lookups; dns('X') stays when X holds every zone, else non-interactive fails and
-     * interactive asks where the DNS is, with X preselected.
+     * without lookups; dns('X') (or dns('cloudflare')) stays when X holds every zone, else
+     * non-interactive fails and interactive asks where the DNS is, with X preselected.
      *
      * @param list<string> $domains
      */
@@ -93,7 +96,7 @@ final class DomainAddCommand extends ArcoCommand
         if ($current === false) {
             return false;
         }
-        $problem = $this->checkProfile($io, $domains, $current);
+        $problem = $current === ConfigResolver::CLOUDFLARE ? $this->checkCloudflare($input, $io, $domains) : $this->checkProfile($io, $domains, $current);
         if ($problem === null) {
             return $current;
         }

@@ -3,6 +3,46 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.10.0
+
+Four features (Cloudflare DNS, `deploy`/`remove --json`, resource relations, `table()`) and two `info --json` keys;
+nothing else changes meaning, so an upgrade needs no change unless an AWS profile is named `cloudflare`
+([Upgrading to 0.10](docs/upgrading.md#upgrading-to-010)).
+
+- **Changed:** `'cloudflare'` is reserved in `dns()`: `->dns('cloudflare')` now means Cloudflare, so an AWS profile
+  named `cloudflare` can no longer be used as a DNS profile there. Rename the profile and write the new name.
+
+- **Added:** `->dns('cloudflare')` puts the custom domains' DNS records in Cloudflare (API v4): the ACM validation
+  `CNAME`s and `CNAME <domain> → <distribution>.cloudfront.net`, always `proxied: false` (the apex works through
+  CNAME flattening). The API token comes from `CLOUDFLARE_API_TOKEN` or `--cloudflare-token` (on `deploy`,
+  `remove`, `init` and `domain:add`), is never written anywhere and needs Zone → DNS → Edit and Zone → Zone → Read;
+  a missing or refused token, or a domain without a Cloudflare zone, stops the deploy before any AWS change.
+  Records carry the comment `managed by arco: <app>/<env>`: a live record without it is refused unless
+  `--force-dns`, and `arco remove` deletes only this environment's. Validation `CNAME`s carry `managed by arco`
+  and are kept on remove, as with Route 53; a conflicting record at a validation name shows only after the
+  certificate is requested. Requests answered with HTTP 429 or 5xx are tried up to 4 times. `arco init` and `domain:add` offer
+  Cloudflare (`--dns=cloudflare`); `arco info` shows the DNS provider (`dns.provider` row, `dns` key in `--json`).
+  See [Cloudflare](docs/configuration.md#cloudflare).
+- **Added:** `arco deploy --json` and `arco remove --json` print NDJSON on stdout: `step` events (`started`,
+  `done` with `elapsed_ms`, `warning`, `note`), throttled `progress` lines (`build.zip`, `binary.download`) and a
+  final `result` line (`outcome` `deployed`, `removed`, `failed` or `refused`, `revision`, `url`, `domains`,
+  `rolled_back`, `cold_start_ms`, `error {key, message}`). Every line has `"schema": 1`. `--json` never asks,
+  sends the remaining human output to stderr or nowhere, redacts resolved secrets and tokens (inside text from 8
+  characters, as whole values below that), and keeps the exit
+  codes. Step and error `key`s with their `params` are API; `message` texts are not. See
+  [Deploy and remove with `--json`](docs/getting-started.md#deploy-and-remove-with---json).
+- **Added:** `relations` on every resource of `arco info --resources --json`: `worker_of`, `dlq_of`, `invokes`,
+  `serves` and `validates`, outgoing from the resource, `[]` when unknown.
+- **Added:** `->table('<name>', ttl: ..., existing: ...)`: a DynamoDB table `<app>-<env>-<name>` for your own code
+  (keys `PK`/`SK` strings, on demand, optional TTL, tagged, kept when removed), or an `existing` one. Its names
+  reach the functions as `ARCO_TABLES` (`{"<name>": "<table>"}`), and the managed role gets item access on it
+  (`ArcoAppTables`). `cache` and `failed-jobs` are reserved names. New commands `table:add` and `table:remove`;
+  `arco info` lists the tables (`tables` in `--json`). DynamoDB allows one TTL change per table per hour. See
+  [Tables](docs/configuration.md#tables).
+- **Added:** `arco info --json` has the keys `dns` and `tables`, after the existing keys and before the conditional `error` key.
+- **Docs:** Cloudflare, tables, `deploy`/`remove --json`, relations, the 0.10 upgrade notes and the new entries of
+  the 1.x promise. The end-to-end suite deploys a `table()` and runs `arco deploy --json` against Floci.
+
 ## 0.9.1
 
 - **Fixed:** `arco info --resources` (and the list `arco remove` shows before asking) marked the CloudFront

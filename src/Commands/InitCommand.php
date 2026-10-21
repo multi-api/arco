@@ -2,6 +2,7 @@
 
 namespace Multiapi\Arco\Commands;
 
+use Closure;
 use Multiapi\Arco\Arco;
 use Multiapi\Arco\Aws\DnsZoneFinder;
 use Multiapi\Arco\Aws\LocalState;
@@ -37,10 +38,14 @@ final class InitCommand extends ArcoCommand
 
     private const SECRET_LIKE = '/(^APP_KEY$|_KEY$|_SECRET$|_PASSWORD$|_TOKEN$)/';
 
-    /** @param AppInspector|null $inspector reads what a Laravel app uses; default: one that asks artisan for the schedule */
-    public function __construct(private readonly ?PresetRegistry $presets = null, ?DnsZoneFinder $zoneFinder = null, private readonly ?AppInspector $inspector = null)
+    /**
+     * @param AppInspector|null $inspector reads what a Laravel app uses; default: one that asks artisan for the schedule
+     * @param (Closure(string): \Multiapi\Arco\Deploy\Domains\CloudflareApi)|null $cloudflareFactory
+     */
+    public function __construct(private readonly ?PresetRegistry $presets = null, ?DnsZoneFinder $zoneFinder = null, private readonly ?AppInspector $inspector = null, ?Closure $cloudflareFactory = null)
     {
         $this->zoneFinder = $zoneFinder ?? DnsZoneFinder::default();
+        $this->cloudflareFactory = $cloudflareFactory;
         parent::__construct();
     }
 
@@ -52,7 +57,7 @@ final class InitCommand extends ArcoCommand
             ->addOption('force', null, InputOption::VALUE_NONE, 'Overwrite an existing arco.php')
             ->addOption('domain', null, InputOption::VALUE_REQUIRED | InputOption::VALUE_IS_ARRAY, 'Custom domain for the environments (repeatable)')
             ->addOption('dns-profile', null, InputOption::VALUE_REQUIRED, 'AWS profile whose Route 53 holds the DNS zones of the domains')
-            ->addOption('dns', null, InputOption::VALUE_REQUIRED, '"manual" when the DNS is not in Route 53')
+            ->addOption('dns', null, InputOption::VALUE_REQUIRED, '"manual" when the DNS is not in Route 53, "cloudflare" when the zones are on Cloudflare')
             ->addOption('console', null, InputOption::VALUE_NEGATABLE, 'Add the console function (arco command, tinker, deploy commands, scheduler)')
             ->addOption('migrate', null, InputOption::VALUE_NEGATABLE, 'Run "migrate --force" on every deploy (adds the console function)')
             ->addOption('scheduler', null, InputOption::VALUE_REQUIRED, 'Run the Laravel scheduler every N minutes (' . implode(', ', Validator::SCHEDULER_INTERVALS) . ')')
@@ -61,6 +66,7 @@ final class InitCommand extends ArcoCommand
             ->addOption('failed-jobs-table', null, InputOption::VALUE_NONE, 'Keep failed jobs in a DynamoDB table')
             ->addOption('storage', null, InputOption::VALUE_REQUIRED, 'Add an S3 bucket under this storage name')
             ->addOption('cache', null, InputOption::VALUE_NONE, 'Add the DynamoDB cache table');
+        $this->addCloudflareTokenOption();
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int

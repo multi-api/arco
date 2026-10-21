@@ -6,6 +6,7 @@ use Multiapi\Arco\Cli\UserError;
 use Multiapi\Arco\Config\AppConfig;
 use Multiapi\Arco\Config\ArcoFileEditor;
 use Multiapi\Arco\Config\ConfigResolver;
+use Multiapi\Arco\Config\GenericTableConfig;
 use Multiapi\Arco\Config\QueueConfig;
 use Multiapi\Arco\Config\StorageConfig;
 use Symfony\Component\Console\Input\InputInterface;
@@ -13,7 +14,7 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 
 /**
  * Shared by the commands that edit calls keyed by a name, such as ->queue('<name>', ...) and
- * ->storage('<name>', ...): the calls of one level, where a name is configured, validation and the
+ * ->storage('<name>', ...) or ->table('<name>', ...): the calls of one level, where a name is configured, validation and the
  * arco.php edit. The using trait names the call through resource().
  *
  * @phpstan-import-type Option from ArcoFileEditor
@@ -26,14 +27,14 @@ trait EditsNamedResources
      * The call this command edits: its method, the raw config key it loads into, and the validation
      * error keys (or key prefixes) that concern it.
      *
-     * @return array{method: 'queue'|'storage', key: string, errors: list<string>}
+     * @return array{method: 'queue'|'storage'|'table', key: string, errors: list<string>}
      */
     abstract private static function resource(): array;
 
     /**
      * The resolved entries of this call in one environment.
      *
-     * @return list<QueueConfig|StorageConfig>
+     * @return list<QueueConfig|StorageConfig|GenericTableConfig>
      */
     abstract private static function resolvedEntries(AppConfig $config): array;
 
@@ -110,7 +111,7 @@ trait EditsNamedResources
     }
 
     /** @param array<string, mixed> $raw */
-    private static function resolvedNamed(array $raw, string $environment, string $name): QueueConfig|StorageConfig|null
+    private static function resolvedNamed(array $raw, string $environment, string $name): QueueConfig|StorageConfig|GenericTableConfig|null
     {
         foreach (self::resolvedEntries(ConfigResolver::resolve($raw, $environment)) as $entry) {
             if ($entry->name === $name) {
@@ -126,7 +127,7 @@ trait EditsNamedResources
      *
      * @param array<string, mixed> $raw
      */
-    private static function appLevelNamed(array $raw, string $name): QueueConfig|StorageConfig|null
+    private static function appLevelNamed(array $raw, string $name): QueueConfig|StorageConfig|GenericTableConfig|null
     {
         $environments = ConfigResolver::environments($raw);
         if (! is_array(self::levelNamed($raw, null)[$name] ?? null) || $environments === []) {

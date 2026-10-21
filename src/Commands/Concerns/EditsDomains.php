@@ -6,15 +6,20 @@ use Multiapi\Arco\Cli\UserError;
 use Multiapi\Arco\Config\AppConfig;
 use Multiapi\Arco\Config\ArcoFileEditor;
 use Multiapi\Arco\Config\ConfigException;
+use Multiapi\Arco\Config\ConfigResolver;
 use Symfony\Component\Console\Style\SymfonyStyle;
 
 /** Writes an environment's domain()/dns() to arco.php, or explains the change to make by hand. */
 trait EditsDomains
 {
-    /** The current dns() setting: a profile, false (manual) or null (deploy account). */
+    /** The current dns() setting: a profile, 'cloudflare', false (manual) or null (deploy account). */
     private static function currentDns(AppConfig $config): string|false|null
     {
-        return $config->dnsManual ? false : $config->dnsProfile;
+        return match (true) {
+            $config->dnsManual => false,
+            $config->dnsCloudflare => ConfigResolver::CLOUDFLARE,
+            default => $config->dnsProfile,
+        };
     }
 
     /**

@@ -4,6 +4,9 @@ namespace Multiapi\Arco\Config;
 
 final class ConfigResolver
 {
+    /** The dns() value that means Cloudflare (a profile with this name is not reachable through dns()). */
+    public const CLOUDFLARE = 'cloudflare';
+
     private const DEFAULTS = [
         'concurrency' => null,
         'timeout' => 30,
@@ -53,7 +56,7 @@ final class ConfigResolver
     /** @param array<string, mixed> $raw */
     public static function resolve(array $raw, string $environment): AppConfig
     {
-        /** @var array<string, array{settings: array<string, mixed>, variables: array<string, string>, runtime: array<string, mixed>, permissions?: list<array<string, mixed>>, domains?: list<string>|null, deployCommands?: list<string>|null, queues?: array<string, array<string, mixed>|false>, storage?: array<string, array<string, mixed>|false>}> $environments */
+        /** @var array<string, array{settings: array<string, mixed>, variables: array<string, string>, runtime: array<string, mixed>, permissions?: list<array<string, mixed>>, domains?: list<string>|null, deployCommands?: list<string>|null, queues?: array<string, array<string, mixed>|false>, storage?: array<string, array<string, mixed>|false>, tables?: array<string, array<string, mixed>|false>}> $environments */
         $environments = $raw['environments'] ?? [];
         if (! isset($environments[$environment])) {
             throw ConfigException::make('config.unknown_environment', [
@@ -145,6 +148,9 @@ final class ConfigResolver
         $appStorage = $raw['storage'] ?? [];
         $storage = self::storage($appStorage, $env['storage'] ?? []);
         $sources['storage'] = ($env['storage'] ?? []) !== [] ? 'environment' : ($appStorage !== [] ? 'app' : 'default');
+        /** @var array<string, array<string, mixed>|false> $appTables */
+        $appTables = $raw['tables'] ?? [];
+        $tables = self::genericTables($appTables, $env['tables'] ?? []);
         $cacheTable = self::table('cache', $setting('cache'));
         $failedJobsTable = self::table('failed-jobs', $setting('failedJobsTable'));
         $protected = $setting('protected');
@@ -175,7 +181,7 @@ final class ConfigResolver
             sources: $sources,
             permissions: [...$appPermissions, ...($env['permissions'] ?? [])],
             domains: $envDomains ?? $appDomains ?? [],
-            dnsProfile: is_string($dns) && $dns !== '' ? $dns : null,
+            dnsProfile: is_string($dns) && $dns !== '' && $dns !== self::CLOUDFLARE ? $dns : null,
             dnsManual: $dns === false,
             certificate: $certificate,
             deployCommands: $envCommands ?? $appCommands ?? [],
@@ -190,6 +196,8 @@ final class ConfigResolver
             cacheTable: $cacheTable,
             failedJobsTable: $failedJobsTable,
             cacheDriver: self::nullableString($setting('cacheDriver')),
+            dnsCloudflare: $dns === self::CLOUDFLARE,
+            tables: $tables,
         );
 
         return $config;
@@ -323,6 +331,26 @@ final class ConfigResolver
             );
         }
         return $storage;
+    }
+
+    /**
+     * App table() entries with the environment's merged over them by name.
+     *
+     * @param array<string, array<string, mixed>|false> $app
+     * @param array<string, array<string, mixed>|false> $env
+     * @return list<GenericTableConfig>
+     */
+    private static function genericTables(array $app, array $env): array
+    {
+        $tables = [];
+        foreach (self::mergeNamed($app, $env) as $name => $o) {
+            $tables[] = new GenericTableConfig(
+                name: (string) $name,
+                ttl: self::nullableString($o['ttl'] ?? null),
+                existing: self::nullableString($o['existing'] ?? null),
+            );
+        }
+        return $tables;
     }
 
     /**

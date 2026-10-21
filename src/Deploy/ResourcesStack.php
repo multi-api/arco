@@ -3,14 +3,15 @@
 namespace Multiapi\Arco\Deploy;
 
 use Multiapi\Arco\Config\AppConfig;
+use Multiapi\Arco\Config\GenericTableConfig;
 use Multiapi\Arco\Config\QueueConfig;
 use Multiapi\Arco\Config\StorageConfig;
 use Multiapi\Arco\Config\TableConfig;
 
 /**
  * The CloudFormation template of an environment's AWS resources other than functions: the SQS
- * queues Arco creates and their dead-letter queues, the S3 buckets of its storage, and the DynamoDB
- * cache and failed-jobs tables. Every queue, bucket and table is retained when it is removed from
+ * queues Arco creates and their dead-letter queues, the S3 buckets of its storage, the DynamoDB
+ * cache and failed-jobs tables, and the app's table() tables. Every queue, bucket and table is retained when it is removed from
  * arco.php or when the stack is deleted, with its messages, files or items (DeletionPolicy
  * RetainExceptOnCreate, UpdateReplacePolicy Retain). It is deleted only when the very operation that
  * created it rolls back: it is then new and unused, since the resources stack deploys before the app
@@ -64,6 +65,21 @@ final class ResourcesStack
     public static function tableLogicalId(string $kind): string
     {
         return 'Table' . str_replace('-', 'X', ucfirst($kind));
+    }
+
+    /**
+     * The logical id of a table() table. "AppTable" starts no other id (queues, storage and Arco's own
+     * tables start with Queue, Storage and Table); the name rules match logicalId().
+     */
+    public static function genericTableLogicalId(string $table): string
+    {
+        return 'AppTable' . str_replace('-', 'X', ucfirst($table));
+    }
+
+    /** @return list<GenericTableConfig> the table() tables Arco creates (not `existing` ones) */
+    public static function createdGenericTables(AppConfig $config): array
+    {
+        return array_values(array_filter($config->tables, static fn (GenericTableConfig $table): bool => $table->existing === null));
     }
 
     /** @return list<QueueConfig> the queues Arco creates (not `existing` ones) */
@@ -134,6 +150,13 @@ final class ResourcesStack
         foreach (self::createdTables($config) as $table) {
             $id = self::tableLogicalId($table->kind);
             $resources[$id] = self::table($config, $table);
+            $outputs["{$id}Name"] = ['Value' => ['Ref' => $id]];
+            $outputs["{$id}Arn"] = ['Value' => ['Fn::GetAtt' => [$id, 'Arn']]];
+        }
+
+        foreach (self::createdGenericTables($config) as $table) {
+            $id = self::genericTableLogicalId($table->name);
+            $resources[$id] = self::genericTable($config, $table);
             $outputs["{$id}Name"] = ['Value' => ['Ref' => $id]];
             $outputs["{$id}Arn"] = ['Value' => ['Fn::GetAtt' => [$id, 'Arn']]];
         }
@@ -316,6 +339,32 @@ final class ResourcesStack
                 'TimeToLiveSpecification' => ['AttributeName' => self::TTL_ATTRIBUTE, 'Enabled' => true],
                 'Tags' => self::tags($config, $table->kind),
             ],
+        ];
+    }
+
+    /**
+     * A single-table layout: string keys PK (partition) and SK (sort), on demand, retained like every
+     * data resource of the stack. TTL only on the attribute table() names.
+     *
+     * @return array<string, mixed>
+     */
+    private static function genericTable(AppConfig $config, GenericTableConfig $table): array
+    {
+        $properties = [
+            'TableName' => $table->tableName($config),
+            'BillingMode' => 'PAY_PER_REQUEST',
+            'AttributeDefinitions' => [['AttributeName' => 'PK', 'AttributeType' => 'S'], ['AttributeName' => 'SK', 'AttributeType' => 'S']],
+            'KeySchema' => [['AttributeName' => 'PK', 'KeyType' => 'HASH'], ['AttributeName' => 'SK', 'KeyType' => 'RANGE']],
+        ];
+        if ($table->ttl !== null) {
+            $properties['TimeToLiveSpecification'] = ['AttributeName' => $table->ttl, 'Enabled' => true];
+        }
+        $properties['Tags'] = self::tags($config, "table:{$table->name}");
+        return [
+            'Type' => 'AWS::DynamoDB::Table',
+            'DeletionPolicy' => self::DELETION_POLICY,
+            'UpdateReplacePolicy' => 'Retain',
+            'Properties' => $properties,
         ];
     }
 

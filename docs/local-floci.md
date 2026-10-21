@@ -66,6 +66,7 @@ dedicated environment keeps that clear:
     ->queue('default')
     ->storage('files')
     ->cache()
+    ->table('state', ttl: 'expires_at')
     ->variables([
         'APP_ENV' => 'production',
         'APP_KEY' => 'base64:...',   // a literal test key: there is no SSM to hold an arco-ssm: reference
@@ -88,6 +89,11 @@ aws --endpoint-url http://localhost:4566 route53 create-hosted-zone \
 ```
 
 Serving the app through CloudFront to a Web Function works in Floci, as long as the hosted zone exists first.
+`dns('cloudflare')` has no emulator: against Floci, use Route 53 (the default) or `dns(false)`; Arco would call
+the real Cloudflare API.
+
+`arco deploy --json` works against Floci as on AWS; Arco's own end-to-end suite deploys `examples/laravel` there
+both ways and checks the NDJSON.
 
 ## Reach the app
 

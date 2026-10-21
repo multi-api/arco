@@ -3,8 +3,8 @@
 namespace Multiapi\Arco\Aws;
 
 use Closure;
-use Multiapi\Arco\Deploy\Domains\Dns;
 use Multiapi\Arco\Deploy\Domains\Hostname;
+use Multiapi\Arco\Deploy\Domains\Route53Dns;
 use Multiapi\Arco\Deploy\Sleeper;
 use Throwable;
 
@@ -49,7 +49,7 @@ final class DnsZoneFinder
     {
         try {
             $clients = ($this->clients)($profile);
-            $dns = new Dns($clients->route53(), new Sleeper());
+            $dns = new Route53Dns($clients->route53(), new Sleeper());
             $zones = [];
             foreach ($domains as $domain) {
                 // The longest public zone; a single-label zone such as "cl." never counts.

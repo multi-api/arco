@@ -17,6 +17,16 @@ abstract class ArcoCommand extends Command
         return $app->translator()->trans($key, $params);
     }
 
+    /**
+     * A UserError with its message translated from $key; the key goes with it for --json output.
+     *
+     * @param array<string, string|int> $params
+     */
+    protected function userError(string $key, array $params = []): UserError
+    {
+        return new UserError($this->t($key, $params), $key);
+    }
+
     /** One expire rule line, with "1 day" in the singular. */
     protected function expireRule(string $prefix, int $days): string
     {

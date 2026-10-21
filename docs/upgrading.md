@@ -6,10 +6,30 @@ Upgrade one minor version at a time when you can, read its section below and the
 `multiapi/arco-laravel` release of the same minor, and from 1.0 any 1.x of one works with any 1.x of the other.
 
 ```bash
-composer require --dev multiapi/arco:^0.9
-composer require multiapi/arco-laravel:^0.9
+composer require --dev multiapi/arco:^0.10
+composer require multiapi/arco-laravel:^0.10
 vendor/bin/arco info --env=staging     # validation runs here: errors and deprecations name the fix
 ```
+
+## Upgrading to 0.10
+
+Nothing is required: 0.10 only adds to the API that 0.9 froze. No `arco.php` method, CLI flag, `--json` key,
+variable, AWS name or tag changes meaning, and the deploy profile needs no new permission for what you already
+use. What is new:
+
+- **Cloudflare DNS**: `->dns('cloudflare')` writes the custom domains' records in Cloudflare with an API token
+  from `CLOUDFLARE_API_TOKEN` or `--cloudflare-token` (Zone → DNS → Edit and Zone → Zone → Read; it needs no AWS
+  permission). See [Cloudflare](configuration.md#cloudflare). **Check one thing:** `'cloudflare'` is now
+  reserved in `dns()`. If you used an AWS profile literally named `cloudflare` for Route 53 (`->dns('cloudflare')`),
+  that line now means Cloudflare: rename the profile and write the new name in `dns()` before you deploy.
+- **`arco deploy --json` and `arco remove --json`** stream NDJSON step events and a final result line
+  ([Deploy and remove with `--json`](getting-started.md#deploy-and-remove-with---json)).
+- **`relations`** on each resource of `arco info --resources --json`, and the keys `dns` and `tables` in
+  `arco info --json`.
+- **`->table('<name>', ttl: ..., existing: ...)`**: DynamoDB tables for your own code, named in `ARCO_TABLES`
+  ([Tables](configuration.md#tables)); `table:add` and `table:remove`. A deploy profile that already has the
+  table actions of [Permissions for storage and tables](getting-started.md#permissions-for-storage-and-tables)
+  on `table/<app>-*` covers them.
 
 ## Upgrading to 0.9
 
@@ -326,25 +346,34 @@ Deprecations print a warning naming the replacement and keep working until 2.0.
 
 - **`arco.php`.** The methods of `App`, `Environment` and `Runtime` documented in the
   [configuration reference](configuration.md), with their defaults and merge rules. Named arguments are covered
-  where the docs use them: `queue()`, `storage()`, `cache()`, `failedJobsTable()`, `console()`, and `Runtime`'s
-  `workers()` and `binary()`; for other methods, only the positional form (see
-  [Named arguments](configuration.md#named-arguments)).
+  where the docs use them: `queue()`, `storage()`, `table()` (`ttl:`, `existing:`), `cache()`,
+  `failedJobsTable()`, `console()`, and `Runtime`'s `workers()` and `binary()`; for other methods, only the
+  positional form (see [Named arguments](configuration.md#named-arguments)). `dns('cloudflare')` means Cloudflare
+  (the name is reserved in `dns()`), with the token read from `CLOUDFLARE_API_TOKEN` or `--cloudflare-token`, the
+  `proxied: false` records and the ownership comments `managed by arco: <app>/<env>` and `managed by arco`
+  described in [Cloudflare](configuration.md#cloudflare).
 - **The CLI.** Every command in `arco list`, its arguments and its documented options, including
   `arco command "<one string>"` as the form of `arco command`.
 - **`--json` and exit codes.** The documents of `info`, `info --resources`, `logs`, `queue:list`, `storage:list`
   and `profile`, versioned by `"schema": 1`: keys may be added, never renamed, removed or retyped within a schema.
+  This includes the 0.10 keys `dns` and `tables` of `info --json` and `relations` of `info --resources --json`
+  (with its `type` values `worker_of`, `dlq_of`, `invokes`, `serves` and `validates`).
+  The NDJSON of `deploy --json` and `remove --json` is API the same way: its line types (`step`, `progress`,
+  `result`), their keys, the `status` and `outcome` values, the progress keys, and each step's and error's `key`
+  with its `params` (a key keeps its meaning; params may gain entries). Not covered: the `message` texts and
+  which steps a run prints in what order.
   Exit codes: 0 success, 1 failure, and the command's own code for `arco command` and a failing deploy command.
 - **Variables.** The ones Arco sets that the [variables table](configuration.md#variables-arco-sets) marks
-  stable (`ARCO`, `ARCO_APP`, `ARCO_ENV`, `ARCO_BUILD`, and for `multiapi/arco-laravel` `ARCO_QUEUES`,
-  `ARCO_STORAGE`, `ARCO_CACHE_TABLE`, `ARCO_FAILED_JOBS_TABLE`), the Laravel variables it sets per feature, the
-  reservation of every `ARCO*` name, and the variables Arco reads on your machine (`ARCO_LANG`,
-  `AWS_ENDPOINT_URL`, `AWS_PROFILE`).
+  stable (`ARCO`, `ARCO_APP`, `ARCO_ENV`, `ARCO_BUILD`, `ARCO_TABLES`, and for `multiapi/arco-laravel`
+  `ARCO_QUEUES`, `ARCO_STORAGE`, `ARCO_CACHE_TABLE`, `ARCO_FAILED_JOBS_TABLE`), the Laravel variables it sets per
+  feature, the reservation of every `ARCO*` name, and the variables Arco reads on your machine (`ARCO_LANG`,
+  `AWS_ENDPOINT_URL`, `AWS_PROFILE`, `CLOUDFLARE_API_TOKEN`).
 - **AWS names and tags.** The web function `<app>-<env>`, the console function `<app>-<env>-console`, the
   workers `<app>-<env>-queue-<queue>`, the execution role `arco-<app>-<env>`, the scheduler rule
   `arco-<app>-<env>-scheduler`, the stacks `arco-<app>-<env>` and `arco-<app>-<env>-resources`, the CloudFront
   function `arco-<app>-<env>-host`, the Resource Group `arco-<app>-<env>`, queues `<app>-<env>-<queue>` and
   `<app>-<env>-<queue>-dlq` (`.fifo` for FIFO), buckets `<app>-<env>-<storage>-<account>`, tables
-  `<app>-<env>-cache` and `<app>-<env>-failed-jobs`, the code bucket `arco-<account>-<region>`, the log groups
+  `<app>-<env>-cache`, `<app>-<env>-failed-jobs` and `<app>-<env>-<table>` (with keys `PK` and `SK`), the code bucket `arco-<account>-<region>`, the log groups
   `/aws/lambda/web/<app>-<env>`, `/aws/lambda/<app>-<env>-console` and `/aws/lambda/<app>-<env>-queue-<queue>`,
   and the tags `arco:app`, `arco:environment`, `arco:region` (execution roles), `arco:resource` (resources-stack
   entries) and `arco:managed` (certificates Arco requested). Renaming any of them would orphan your resources.
@@ -358,7 +387,8 @@ Deprecations print a warning naming the replacement and keep working until 2.0.
 **Not API (may change in any release):**
 
 - Message texts, in any language: what the CLI prints, the warnings, the error wording and their translation
-  keys. Script against `--json` and exit codes instead.
+  keys (except the `key` of `deploy --json` and `remove --json` lines, above). Script against `--json` and exit
+  codes instead.
 - Classes and methods marked `@internal`: `toArray()`, `Runtime::mode()`, and everything outside `arco.php`'s
   fluent API.
 - Framework presets: the interfaces (`FrameworkPreset`, `CachesPaths`, `RunsCommands`, `PresetRegistry`) are
@@ -367,4 +397,5 @@ Deprecations print a warning naming the replacement and keep working until 2.0.
   others the variables table marks internal), the contents of the package zip and of `arco-package.json`, the
   local cache under `~/.arco/` and `.arco/local.php`.
 - What a deploy prints and its order of steps, timings and the IAM actions it needs (new features can need new
-  ones, always documented in the changelog).
+  ones, always documented in the changelog), and the Cloudflare token permissions a new feature may need (also
+  in the changelog).

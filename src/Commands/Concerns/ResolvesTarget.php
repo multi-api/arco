@@ -22,7 +22,7 @@ use Multiapi\Arco\Config\ConfigLoader;
 use Multiapi\Arco\Config\ConfigResolver;
 use Multiapi\Arco\Config\Validator;
 use Multiapi\Arco\Deploy\DeployException;
-use Multiapi\Arco\Deploy\Domains\Dns;
+use Multiapi\Arco\Deploy\Domains\Route53Dns;
 use Multiapi\Arco\Package\PackageTooLarge;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Question\ChoiceQuestion;
@@ -39,14 +39,15 @@ trait ResolvesTarget
     /** The DNS profile, when the command also uses one (Route 53 in another account). */
     protected ?string $dnsCredentialProfile = null;
 
-    protected function loadTarget(InputInterface $input, SymfonyStyle $io): AppConfig
+    /** @param (Closure(string, array<string, string|int>): void)|null $warn gets each config warning instead of $io (--json) */
+    protected function loadTarget(InputInterface $input, SymfonyStyle $io, ?Closure $warn = null): AppConfig
     {
         $raw = (new ConfigLoader())->load($this->projectDir() . '/arco.php');
         $environments = ConfigResolver::environments($raw);
         $environment = $input->getOption('env');
         if (! is_string($environment) || $environment === '') {
             if (count($environments) !== 1) {
-                throw new UserError($this->t('config.choose_environment', ['available' => implode(', ', $environments)]));
+                throw $this->userError('config.choose_environment', ['available' => implode(', ', $environments)]);
             }
             $environment = $environments[0];
         }
@@ -54,10 +55,10 @@ trait ResolvesTarget
         $config = ConfigResolver::resolve($raw, $environment);
         $validation = (new Validator())->validate($config, $this->projectDir());
         foreach ($validation->warnings as $warning) {
-            $io->warning($this->t($warning['key'], $warning['params']));
+            $warn !== null ? $warn($warning['key'], $warning['params']) : $io->warning($this->t($warning['key'], $warning['params']));
         }
         if (! $validation->isValid()) {
-            throw new UserError(implode("\n", array_map(fn (array $e) => '• ' . $this->t($e['key'], $e['params']), $validation->errors)));
+            throw new UserError(implode("\n", array_map(fn (array $e) => '• ' . $this->t($e['key'], $e['params']), $validation->errors)), $validation->errors[0]['key'] ?? null);
         }
         return $config;
     }
@@ -78,7 +79,7 @@ trait ResolvesTarget
         $profile = $choice?->profile;
         if ($choice === null) {
             if (! $input->isInteractive()) {
-                throw new UserError($this->t('aws.no_profile_non_interactive', ['environment' => $config->environment]));
+                throw $this->userError('aws.no_profile_non_interactive', ['environment' => $config->environment]);
             }
             $profile = $this->askProfile($config, $io);
             $state->rememberProfile($config->environment, $profile);
@@ -94,7 +95,7 @@ trait ResolvesTarget
             $account = $clients->accountId();
         } catch (Throwable $e) {
             throw new UserError($this->credentialProblem($e, $profile)
-                ?? $this->t('aws.credentials_failed', ['profile' => $profile ?? 'environment', 'message' => $e->getMessage()]));
+                ?? $this->t('aws.credentials_failed', ['profile' => $profile ?? 'environment', 'message' => $e->getMessage()]), self::credentialProblemKey($e, $profile));
         }
 
         $this->guardAccount($config, $account, $profile);
@@ -107,12 +108,12 @@ trait ResolvesTarget
         try {
             AccountGuard::check($config->account, $account, $profile);
         } catch (AccountMismatch $e) {
-            throw new UserError($this->t('aws.account_mismatch', [
+            throw $this->userError('aws.account_mismatch', [
                 'environment' => $config->environment,
                 'expected' => $e->expected,
                 'actual' => $e->actual,
                 'profile' => $profile ?? 'environment',
-            ]));
+            ]);
         }
     }
 
@@ -137,7 +138,7 @@ trait ResolvesTarget
             return $dns->accountId();
         } catch (Throwable $e) {
             throw new UserError($this->credentialProblem($e, $dns->profile)
-                ?? $this->t('aws.credentials_failed', ['profile' => (string) $dns->profile, 'message' => $e->getMessage()]));
+                ?? $this->t('aws.credentials_failed', ['profile' => (string) $dns->profile, 'message' => $e->getMessage()]), self::credentialProblemKey($e, $dns->profile));
         }
     }
 
@@ -174,7 +175,7 @@ trait ResolvesTarget
         }
         for ($current = $e; $current !== null; $current = $current->getPrevious()) {
             if ($current instanceof AwsException) {
-                return $this->credentialProblem($e, in_array($current->getCommand()->getName(), Dns::OPERATIONS, true) ? $dns : $deploy);
+                return $this->credentialProblem($e, in_array($current->getCommand()->getName(), Route53Dns::OPERATIONS, true) ? $dns : $deploy);
             }
         }
         if (! CredentialError::matches($e) && SsoHint::command($e, $deploy) === null) {
@@ -185,6 +186,15 @@ trait ResolvesTarget
         $commands = array_values(array_filter([CredentialError::loginCommand($e, $deploy), CredentialError::loginCommand($e, $dns)]));
         return $this->t('aws.credentials_expired_either', ['profile' => $deploy ?? 'environment', 'dns' => $dns, 'message' => CredentialError::message($e)])
             . ($commands === [] ? '' : "\n" . $this->t('aws.sso_login_hint', ['commands' => implode(' / ', array_unique($commands))]));
+    }
+
+    /** The message key credentialProblem() translates for $e (aws.credentials_failed when it returns null). */
+    private static function credentialProblemKey(Throwable $e, ?string $profile): string
+    {
+        if (SsoHint::command($e, $profile) === null && ! CredentialError::matches($e)) {
+            return 'aws.credentials_failed';
+        }
+        return CredentialError::loginCommand($e, $profile) !== null ? 'aws.credentials_expired' : 'aws.credentials_expired_generic';
     }
 
     protected function askProfile(AppConfig $config, SymfonyStyle $io): string
@@ -229,6 +239,19 @@ trait ResolvesTarget
                 $e->largest,
             )) . "\n" . $this->t('package.too_large_hint'),
             default => null,
+        };
+    }
+
+    /** The message key behind describeError($e), for --json output; error.unexpected when it has none. */
+    protected function describeErrorKey(Throwable $e): string
+    {
+        return match (true) {
+            $e instanceof UserError => $e->key ?? 'error.user',
+            CredentialError::isCredentialsFailure($e) || CredentialError::matches($e) => self::credentialProblemKey($e, $this->credentialProfile),
+            $e instanceof ConfigException, $e instanceof BuildException, $e instanceof BinaryException, $e instanceof DeployException => $e->key,
+            $e instanceof AwsException => in_array($e->getAwsErrorCode(), ['AccessDenied', 'AccessDeniedException'], true) ? 'aws.access_denied' : 'aws.request_failed',
+            $e instanceof PackageTooLarge => 'package.too_large',
+            default => 'error.unexpected',
         };
     }
 }

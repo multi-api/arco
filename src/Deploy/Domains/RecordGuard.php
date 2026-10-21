@@ -4,7 +4,8 @@ namespace Multiapi\Arco\Deploy\Domains;
 
 /**
  * Decides what may happen to the existing records of a custom domain before Arco writes its aliases,
- * so a live record is never taken over silently.
+ * so a live record is never taken over silently. Route 53's rules (Route53Dns): a record is ours when
+ * it points at the distribution.
  */
 final class RecordGuard
 {

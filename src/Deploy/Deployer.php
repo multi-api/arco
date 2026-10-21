@@ -161,7 +161,7 @@ interface Deployer
      * Every resource of the region tagged for this app and environment (tag:GetResources), sorted by
      * type and name; `retained` says whether `remove()` keeps it.
      *
-     * @return list<array{type: string, name: string, arn: string, retained: bool}>
+     * @return list<array{type: string, name: string, arn: string, retained: bool, relations: list<array{type: string, target: string}>}>
      * @throws \Aws\Exception\AwsException a refused or failed lookup
      */
     public function resources(AppConfig $config): array;

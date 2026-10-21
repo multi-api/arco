@@ -58,17 +58,43 @@ final class StepPrinter
         }
         $this->closeBar();
         $this->printed = 0;
-        $warning = in_array($key, self::WARNINGS, true) && ! in_array($params['reason'] ?? null, self::BULLET_REASONS[$key] ?? [], true);
-        foreach (self::TRANSLATED_PARAMS[$key] ?? [] as $param => $prefix) {
-            if (isset($params[$param])) {
-                $params[$param] = ($this->translate)($prefix . $params[$param], $params);
-            }
-        }
-        if ($warning) {
-            $this->io->warning(($this->translate)($key, $params));
+        $message = self::message($this->translate, $key, $params);
+        if (self::kind($key, $params) === 'warning') {
+            $this->io->warning($message);
             return;
         }
-        $this->io->writeln('  • ' . ($this->translate)($key, $params));
+        $this->io->writeln('  • ' . $message);
+    }
+
+    /**
+     * How a step is shown: `warning` (a warning block), `note` (a WARNINGS key whose reason is a
+     * deliberate choice, printed as a bullet) or `step` (a bullet).
+     *
+     * @param array<string, string|int> $params
+     * @return 'warning'|'note'|'step'
+     */
+    public static function kind(string $key, array $params): string
+    {
+        if (! in_array($key, self::WARNINGS, true)) {
+            return 'step';
+        }
+        return in_array($params['reason'] ?? null, self::BULLET_REASONS[$key] ?? [], true) ? 'note' : 'warning';
+    }
+
+    /**
+     * The step's text, with its TRANSLATED_PARAMS codes translated first.
+     *
+     * @param Closure(string, array<string, string|int>): string $translate
+     * @param array<string, string|int> $params
+     */
+    public static function message(Closure $translate, string $key, array $params): string
+    {
+        foreach (self::TRANSLATED_PARAMS[$key] ?? [] as $param => $prefix) {
+            if (isset($params[$param])) {
+                $params[$param] = $translate($prefix . $params[$param], $params);
+            }
+        }
+        return $translate($key, $params);
     }
 
     private function progress(int $percent): void

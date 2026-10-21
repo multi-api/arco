@@ -50,10 +50,11 @@ vendor/bin/arco deploy --env=production
   `->onQueue('emails')` works without app changes.
 - **Storage, cache and failed jobs.** `->storage('uploads')` creates a private S3 bucket that is a Laravel
   disk (the first one is the default disk, unless every one says `default: false`), with optional public prefixes, expiry rules and CORS;
-  `->cache()` and `->failedJobsTable()` create DynamoDB tables for Laravel's cache and failed jobs. Each can
+  `->cache()` and `->failedJobsTable()` create DynamoDB tables for Laravel's cache and failed jobs, and
+  `->table('state')` one (`PK`/`SK`) for your own code, named in `ARCO_TABLES`. Each can
   point at one you already have (`existing:`), and removed ones stay in AWS with their data.
 - **Custom domains** in one line: certificate, CloudFront and DNS records, with the DNS zone in the
-  same AWS account, another account, or outside AWS.
+  same AWS account, another account, Cloudflare, or outside AWS.
 
 ## Configuring `arco.php`
 
@@ -121,6 +122,7 @@ The main options:
 | `queue(name, ...)` | none | An SQS queue and its worker function; named options `timeout`, `memory`, `maxInstances`, `batchSize`, `tries`, `dlq`, `fifo`, `existing`, `default` |
 | `storage(name, ...)` | none | An S3 bucket used as a Laravel disk; named options `public`, `expire`, `cors`, `existing`, `default` |
 | `cache()` / `failedJobsTable()` | off | DynamoDB tables for Laravel's cache and failed jobs; `existing:` names your own table |
+| `table(name, ...)` | none | A DynamoDB table (`PK`/`SK` strings, on demand) for your code, in `ARCO_TABLES`; named options `ttl`, `existing` |
 | `console(timeout:, memory:)` | 900 s, 2048 MB | Console function timeout in seconds (3–900) and memory in MB (128–10240) |
 | `protected()` | `production` | Ask before `arco tinker`, `arco command`, `arco remove` and `arco queue:dlq --redrive` on this environment (`--yes` answers; required without a terminal) |
 
@@ -132,7 +134,7 @@ Every option, the packaging rules and the Laravel preset are in the
 | Command | What it does |
 |---|---|
 | `arco init` | Create `arco.php` (asks name, region, environments, custom domain) |
-| `arco deploy --env=<env>` | Build, upload, deploy commands, deploy, verify, attach domains; `--migrate` runs migrations first; `--package=<zip>` deploys a prebuilt zip |
+| `arco deploy --env=<env>` | Build, upload, deploy commands, deploy, verify, attach domains; `--migrate` runs migrations first; `--package=<zip>` deploys a prebuilt zip; `--json` streams NDJSON events and a result |
 | `arco console:add --env=<env>` / `console:remove` | Turn the console function on or off in `arco.php` (off deletes it on the next deploy) |
 | `arco command "<args>" --env=<env>` | Run an artisan (or PHP) command, given as one quoted string, on the console function (needs `console()`); exits with its exit code (`--async` to start it and return; `--yes` on a protected environment without a terminal) |
 | `arco tinker --env=<env>` | Tinker on your machine, statements run in Lambda (needs `console()`; `--execute="<code>"` for one statement) |
@@ -147,6 +149,7 @@ Every option, the packaging rules and the Laravel preset are in the
 | `arco storage:public` / `storage:expire` / `storage:cors` | Public prefixes, expiry rules and CORS origins of a storage (`--remove` takes one out) |
 | `arco storage:list --env=<env>` | Each storage's bucket, URL and options, and the retained buckets no longer in `arco.php` (`--json` too) |
 | `arco cache:add --env=<env>` / `cache:remove` | Turn the DynamoDB cache table on (`--existing=<table>`) or off in `arco.php` |
+| `arco table:add <name> --env=<env>` / `table:remove` | Add (`--ttl=<attribute>`, `--existing=<table>`) or remove a `table()` in `arco.php` (removed tables stay in AWS with their items) |
 | `arco logs --env=<env>` | Web, console and queue worker logs merged, filtered and colored (`--follow`, `--since`, `--level`, `--request`, `--filter`, `--queue`) |
 | `arco package --env=<env>` | Build the zip only (for CI: build once, deploy later) |
 | `arco info --env=<env>` | Resolved settings with their source, URL, active revision (`--json` too); `--resources` lists every AWS resource tagged for the environment |
@@ -154,7 +157,7 @@ Every option, the packaging rules and the Laravel preset are in the
 | `arco set <key> <value> --env=<env>` / `arco unset <key>` | Change `concurrency`, `max-instances`, `rate-limit`, `timeout`, `log-level`, `console-timeout`, `console-memory` in `arco.php` |
 | `arco domain:add <host> --env=<env>` / `domain:remove` | Change an environment's domains in `arco.php` |
 | `arco profile --env=<env>` | Show or change the AWS profile remembered for an environment (`--json` too) |
-| `arco remove --env=<env>` | Delete the function, its endpoint, role, workers and domain resources (queues, buckets, tables and log groups are kept); without a terminal it needs `--yes` |
+| `arco remove --env=<env>` | Delete the function, its endpoint, role, workers and domain resources (queues, buckets, tables and log groups are kept); without a terminal it needs `--yes`; `--json` too |
 
 Messages are in English or Spanish (`--lang=es` or `ARCO_LANG=es`).
 

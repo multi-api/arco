@@ -43,9 +43,9 @@ trait ConfirmsProtected
 
     private function protectedNeedsYes(AppConfig $config, string $action): UserError
     {
-        return new UserError($this->t('protected.needs_yes', [
+        return $this->userError('protected.needs_yes', [
             'environment' => $config->environment,
             'action' => $this->t('protected.action.' . $action),
-        ]));
+        ]);
     }
 }

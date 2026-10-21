@@ -19,6 +19,8 @@ trait ConfiguresDeployment
     private array $queues = [];
     /** @var array<string, array<string, mixed>|false> */
     private array $storage = [];
+    /** @var array<string, array<string, mixed>|false> */
+    private array $tables = [];
 
     public function concurrency(int $requests): static { $this->settings['concurrency'] = $requests; return $this; }
     public function timeout(int $seconds): static { $this->settings['timeout'] = $seconds; return $this; }
@@ -45,8 +47,10 @@ trait ConfiguresDeployment
     }
 
     /**
-     * Where the DNS records go: the name of an AWS profile whose Route 53 holds the zones, or false when DNS is
-     * not in Route 53 (Arco prints the records to create). Default: Route 53 in the deploy account.
+     * Where the DNS records go: the name of an AWS profile whose Route 53 holds the zones, 'cloudflare' when
+     * the zones are on Cloudflare (token in CLOUDFLARE_API_TOKEN or --cloudflare-token; a profile named
+     * "cloudflare" cannot be used here), or false when DNS is elsewhere (Arco prints the records to create).
+     * Default: Route 53 in the deploy account.
      */
     public function dns(string|false $dns): static { $this->settings['dns'] = $dns; return $this; }
 
@@ -166,6 +170,31 @@ trait ConfiguresDeployment
     }
 
     /**
+     * A single-table DynamoDB table, named <app>-<env>-<name>: string keys PK (partition) and SK (sort),
+     * on demand, TTL on the `ttl` attribute when given. The app finds it in ARCO_TABLES (name => table).
+     * Repeated calls for a name accumulate; an environment's entry merges over the app's;
+     * `table('name', false)` drops the table there. `cache` and `failed-jobs` are Arco's own tables.
+     *
+     * @param string|null $ttl attribute holding each item's expiry in epoch seconds
+     * @param string|null $existing name or ARN of a table Arco does not manage (used as given)
+     */
+    public function table(
+        string $name,
+        false|null $remove = null,
+        ?string $ttl = null,
+        ?string $existing = null,
+    ): static {
+        if ($remove === false) {
+            $this->tables[$name] = false;
+            return $this;
+        }
+        $options = array_filter(['existing' => $existing, 'ttl' => $ttl], fn (mixed $value): bool => $value !== null);
+        $current = $this->tables[$name] ?? [];
+        $this->tables[$name] = [...(is_array($current) ? $current : []), ...$options];
+        return $this;
+    }
+
+    /**
      * A DynamoDB table for Laravel's cache (<app>-<env>-cache); `existing` names a table Arco does not
      * manage; false turns it off.
      *
@@ -226,7 +255,11 @@ trait ConfiguresDeployment
         return $this;
     }
 
-    /** @return array{settings: array<string, string|int|bool|array<string, string>>, variables: array<string, string>, runtime: array<string, mixed>, permissions: list<array<string, mixed>>, domains: list<string>|null, deployCommands: list<string>|null, queues: array<string, array<string, mixed>|false>, storage: array<string, array<string, mixed>|false>} */
+    /**
+     * `tables` only when table() was called, so configurations without it keep their shape.
+     *
+     * @return array{settings: array<string, string|int|bool|array<string, string>>, variables: array<string, string>, runtime: array<string, mixed>, permissions: list<array<string, mixed>>, domains: list<string>|null, deployCommands: list<string>|null, queues: array<string, array<string, mixed>|false>, storage: array<string, array<string, mixed>|false>, tables?: array<string, array<string, mixed>|false>}
+     */
     protected function deploymentArray(): array
     {
         return [
@@ -238,6 +271,7 @@ trait ConfiguresDeployment
             'deployCommands' => $this->deployCommands,
             'queues' => $this->queues,
             'storage' => $this->storage,
+            ...($this->tables === [] ? [] : ['tables' => $this->tables]),
         ];
     }
 }

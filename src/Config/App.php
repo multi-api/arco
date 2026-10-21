@@ -62,6 +62,7 @@ final class App
             'deployCommands' => $deployment['deployCommands'],
             'queues' => $deployment['queues'],
             'storage' => $deployment['storage'],
+            ...(isset($deployment['tables']) ? ['tables' => $deployment['tables']] : []),
             'environments' => array_map(fn (Environment $e) => $e->toArray(), $this->environments),
         ];
     }

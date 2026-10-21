@@ -7,7 +7,7 @@ use Symfony\Component\Process\Process;
 
 /**
  * @phpstan-type Option int|bool|string|array<array-key, int|string>
- * @phpstan-type Changes array{domains?: list<string>, dns?: string|false|null, settings?: array<string, int|string|bool|array<string, Option>|null>, queues?: array<string, array<string, Option>|false|null>, storage?: array<string, array<string, Option>|false|null>}
+ * @phpstan-type Changes array{domains?: list<string>, dns?: string|false|null, settings?: array<string, int|string|bool|array<string, Option>|null>, queues?: array<string, array<string, Option>|false|null>, storage?: array<string, array<string, Option>|false|null>, tables?: array<string, array<string, Option>|false|null>}
  */
 final class ArcoFileEditor
 {
@@ -25,6 +25,7 @@ final class ArcoFileEditor
     private const NAMED = [
         'queue' => ['key' => 'queues', 'options' => self::QUEUE_OPTIONS],
         'storage' => ['key' => 'storage', 'options' => ['existing', 'default', 'public', 'expire', 'cors']],
+        'table' => ['key' => 'tables', 'options' => ['existing', 'ttl']],
     ];
     /** Settings written as a call without a name: ->cache(), ->cache(false) or ->cache(existing: 'x'). */
     private const SINGLETONS = ['cache', 'failedJobsTable'];
@@ -102,7 +103,7 @@ final class ArcoFileEditor
      * writing, when arco.php has a shape this editor does not understand (such as the same name twice,
      * or a non-literal argument).
      *
-     * @param 'queue'|'storage' $method
+     * @param 'queue'|'storage'|'table' $method
      * @param array<string, Option>|false|null $options
      */
     public static function setNamed(string $arcoPhpPath, ?string $environment, string $method, string $name, array|false|null $options): bool
@@ -111,7 +112,7 @@ final class ArcoFileEditor
     }
 
     /**
-     * @param 'queue'|'storage' $method
+     * @param 'queue'|'storage'|'table' $method
      * @param array<string, Option>|false $options
      */
     public static function namedLine(string $method, string $name, array|false $options): string
@@ -483,6 +484,9 @@ final class ArcoFileEditor
                 $current = is_array($raw[$key] ?? null) ? $raw[$key] : [];
                 $raw[$key] = self::withSettings($current, $entries);
             }
+            if (($raw['tables'] ?? null) === []) {
+                unset($raw['tables']); // without table() calls the app has no `tables` key
+            }
             return $raw;
         }
         /** @var array<string, array<string, mixed>> $environments */
@@ -500,6 +504,9 @@ final class ArcoFileEditor
             /** @var array<string, mixed> $current */
             $current = is_array($env[$key] ?? null) ? $env[$key] : [];
             $env[$key] = self::withSettings($current, $entries);
+        }
+        if (($env['tables'] ?? null) === []) {
+            unset($env['tables']); // without table() calls the level has no `tables` key
         }
         $environments[$environment] = $env;
         $raw['environments'] = $environments;

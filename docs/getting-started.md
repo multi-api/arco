@@ -85,7 +85,7 @@ nothing is checked.
 
 For every environment `init` asks whether to use a custom domain (default: no), then for the
 domains, comma separated, and where their DNS is. It proposes the deploy account (the default),
-each of your local AWS profiles, and "outside AWS". Arco then checks only the profile you picked:
+each of your local AWS profiles, Cloudflare, and "outside AWS". Arco then checks only the place you picked:
 
 ```
 Use a custom domain for production? (yes/no) [no]:
@@ -93,6 +93,7 @@ Domain(s), comma separated: shop.example.com, api.shop.example.com
 Where is the DNS for example.com?
   [@deploy        ] Route 53 in the deploy account
   [dns-account   ] Route 53 in profile dns-account
+  [@cloudflare    ] Cloudflare
   [@manual        ] Outside AWS — I'll create the records myself
 > dns-account
 Checking Route 53 of profile dns-account…
@@ -101,7 +102,10 @@ Checking Route 53 of profile dns-account…
 ```
 
 The result is written into the environment as `->domain([...])` plus `->dns('<profile>')` for a
-profile other than the deploy profile, or `->dns(false)` for DNS outside AWS. If the profile lacks a
+profile other than the deploy profile, `->dns('cloudflare')` for Cloudflare, or `->dns(false)` for DNS outside AWS.
+For Cloudflare, `init` checks the zones when it has an API token (`CLOUDFLARE_API_TOKEN` or
+`--cloudflare-token`), and otherwise says they will be checked at deploy; the token is never written to
+`arco.php` (see [Cloudflare](configuration.md#cloudflare) for the token's permissions). If the profile lacks a
 zone or cannot be used (for example an expired SSO session; Arco prints the
 `aws sso login --profile …` command), `init` says why and asks again, so you can pick another
 profile or the same one after logging in. The deploy profile is `AWS_PROFILE` or the one remembered
@@ -109,7 +113,7 @@ for the environment; when neither is set, choosing the deploy account skips the 
 looks for the zones.
 
 Without questions, use flags: `--domain=<host>` (repeatable; applies to every `--env`),
-`--dns-profile=<profile>` (checked, `init` fails if a zone is missing) or `--dns=manual`. With only
+`--dns-profile=<profile>` (checked, `init` fails if a zone is missing), `--dns=cloudflare` or `--dns=manual`. With only
 `--domain`, the deploy account is used and checked when the deploy profile is known.
 
 ### Adding and removing domains later
@@ -120,9 +124,10 @@ vendor/bin/arco domain:remove shop.example.com --env=production
 ```
 
 `domain:add` validates the hosts, merges them with the environment's list, asks where the DNS is
-the same way as `init` (`--dns-profile` and `--dns=manual` answer it without a question;
+the same way as `init` (`--dns-profile`, `--dns=cloudflare` and `--dns=manual` answer it without a question;
 `--profile` names the deploy profile), and edits `arco.php`. An explicit `->dns(...)` is never
-changed without a flag or your answer: `->dns(false)` stays as is, and `->dns('profile')` is
+changed without a flag or your answer: `->dns(false)` stays as is, `->dns('cloudflare')` stays when the
+Cloudflare zones hold the new domain, and `->dns('profile')` is
 checked in that profile only; if it lacks a zone, `domain:add` asks (with that profile preselected)
 or, with `--no-interaction`, fails and tells you which flag to pass. `domain:remove` takes hosts out of the list and
 removes `->domain()` when it becomes empty (`->dns()` stays; it is harmless). Both print the
@@ -284,7 +289,7 @@ profile of another account.
 nothing, when one belongs to another app or environment. It then deletes the function, the console function, the queue workers and the endpoint and the execution role, and with custom domains the
 CloudFront stack, its DNS aliases and a certificate Arco requested. The shared code bucket,
 your SSM parameters, the SQS queues (with their messages), the storage buckets (with their files) and the
-cache and failed-jobs tables (with their items) are kept; `remove` lists each one it kept.
+DynamoDB tables (cache, failed jobs and `table()`, with their items) are kept; `remove` lists each one it kept.
 
 ## Operating the app
 
@@ -342,6 +347,7 @@ vendor/bin/arco storage:add uploads --env=production      # writes ->storage('up
 vendor/bin/arco storage:public uploads avatars/ --env=production
 vendor/bin/arco cache:add --env=production                # writes ->cache()
 vendor/bin/arco failed-jobs:add --env=production          # writes ->failedJobsTable()
+vendor/bin/arco table:add state --ttl=expires_at --env=production   # writes ->table('state', ttl: 'expires_at')
 vendor/bin/arco deploy --env=production
 vendor/bin/arco storage:list --env=production
 ```
@@ -359,8 +365,10 @@ prefixes, expiry rules and CORS are options of the storage (`storage:public`, `s
 creates `<app>-<env>-failed-jobs` and sends failed jobs there (they expire after about a week). Both need
 `aws/aws-sdk-php`, and the failed-jobs table `multiapi/arco-laravel` 0.6+. The deploy checks the package for
 what each of them needs and stops before any change, naming the `composer require` to run, when a package is
-missing. Every one of them can point at a bucket or table you already have with `existing:`. Removed buckets and tables stay in AWS with their data. Details:
-[Storage](configuration.md#storage) and [Cache and failed-jobs tables](configuration.md#cache-and-failed-jobs-tables).
+missing. `->table('<name>')` creates a DynamoDB table `<app>-<env>-<name>` (`PK`/`SK` strings) for your own code:
+read its name from `ARCO_TABLES` and use the AWS SDK. Every one of them can point at a bucket or table you already have with `existing:`. Removed buckets and tables stay in AWS with their data. Details:
+[Storage](configuration.md#storage), [Cache and failed-jobs tables](configuration.md#cache-and-failed-jobs-tables)
+and [Tables](configuration.md#tables).
 
 ### Commands
 
@@ -511,13 +519,120 @@ vendor/bin/arco remove --env=production --yes --no-interaction
 `--yes` answers every confirmation: creating a new environment, the typed confirmation of `remove`, and the question protected environments (`production` by default) ask before `arco command`, `arco tinker` and `queue:dlq --redrive`. `--force` overrides a safety check instead (`init`, `deploy`, `deploy --force-dns`); `remove --force` and `tinker --force` are deprecated spellings of `--yes`.
 Arco's own real-AWS end-to-end run deploys `examples/laravel` to a dedicated test account this way.
 
-**Scripting.** `info`, `info --resources`, `logs`, `queue:list`, `storage:list` and `profile` take `--json`. Every
-JSON document (each line, for `logs --json`) starts with `"schema": 1`; within schema 1, keys are only ever
+**Scripting.** `info`, `info --resources`, `logs`, `queue:list`, `storage:list` and `profile` take `--json`, and so
+do `deploy` and `remove` ([Deploy and remove with `--json`](#deploy-and-remove-with---json)). Every
+JSON document (each line, for `logs --json`, `deploy --json` and `remove --json`) starts with `"schema": 1`; within schema 1, keys are only ever
 added, never renamed or removed. A failure exits non-zero; with `--json`, `queue:list`, `storage:list` and
 `profile` report it as `{"schema": 1, "error": "..."}`, and `info` adds an `error` key when AWS could not be
 read. Commands exit with 0 on success and 1 on failure, except `arco command` (the exit code of the command it
 ran) and a deploy stopped by a failing deploy command (that command's exit code). Parse `--json` and exit codes,
 never the message texts: those change between releases and depend on the language.
+
+`info --json` also has `dns` (where the DNS records go: `cloudflare`, `route53 (<profile>)`,
+`route53 (deploy account)` or `manual`; `null` without domains) and `tables` (the `table()` tables, a list of
+`{name, table, existing, ttl}`, `[]` without any), both added in 0.10.
+
+**Resource relations.** In `info --resources --json`, each resource has `relations`: a list of
+`{"type": ..., "target": ...}` from that resource to another, `[]` when there is none or Arco cannot tell.
+They are worked out from `arco.php` and the listing itself, with no extra AWS call:
+
+| `type` | On | `target` |
+|---|---|---|
+| `worker_of` | a queue's worker function (`lambda:function`) | the queue's ARN |
+| `dlq_of` | a dead-letter queue (`sqs`) | the ARN of the queue it serves |
+| `invokes` | the scheduler rule (`events:rule`) | the console function's ARN, when it is listed |
+| `serves` | the CloudFront distribution | each custom domain |
+| `validates` | an ACM certificate | each custom domain |
+
+`validates` is set on the certificate of `certificate(arn)`, or, without one, only when exactly one certificate
+is listed: a certificate kept from an earlier set of domains makes two, and then neither gets it. A queue
+Arco manages that is missing from the listing gives no `worker_of`/`dlq_of`; an `existing` queue is named by
+its configured ARN when that ARN names the region and the account (otherwise it gets no relation).
+
+```json
+{"type":"lambda:function","name":"shop-production-queue-emails","arn":"arn:aws:lambda:us-east-1:111111111111:function:shop-production-queue-emails","retained":false,"relations":[{"type":"worker_of","target":"arn:aws:sqs:us-east-1:111111111111:shop-production-emails"}]}
+```
+
+### Deploy and remove with `--json`
+
+`arco deploy --json` and `arco remove --json` print [NDJSON](https://github.com/ndjson/ndjson-spec) on stdout,
+one JSON object per line, for CI systems and dashboards that follow a deploy as it runs:
+
+```bash
+vendor/bin/arco deploy --env=production --yes --json > deploy.ndjson
+```
+
+```
+{"schema":1,"type":"step","key":"deploy.target","status":"note","at":"2026-10-21T14:03:05Z","params":{"app":"shop","environment":"production","account":"222222222222","profile":"acme-prod","region":"us-east-1"},"message":"..."}
+{"schema":1,"type":"step","key":"package.writing","status":"started","at":"2026-10-21T14:03:06Z","params":{},"message":"Writing the zip (hashing and compressing every file)"}
+{"schema":1,"type":"progress","key":"build.zip","percent":37,"at":"2026-10-21T14:03:07Z"}
+{"schema":1,"type":"progress","key":"build.zip","percent":100,"at":"2026-10-21T14:03:09Z"}
+{"schema":1,"type":"step","key":"package.writing","status":"done","at":"2026-10-21T14:03:09Z","params":{},"elapsed_ms":2750,"message":"..."}
+{"schema":1,"type":"step","key":"deploy.prune_versions_failed","status":"warning","at":"2026-10-21T14:03:40Z","params":{"function":"shop-production-console","error":"AccessDenied"},"message":"..."}
+{"schema":1,"type":"result","outcome":"deployed","app":"shop","environment":"production","revision":"rev-2","url":"https://abc.lambda-url.us-east-1.on.aws","domains":["shop.example.com"],"rolled_back":false,"cold_start_ms":800,"error":null}
+```
+
+Every line has `schema` (`1`) and `type`, one of:
+
+- **`step`**: what the human output prints as a line. Keys, in this order: `key` (the step, such as
+  `package.writing` or `deploy.target`), `status`, `at` (UTC time, RFC 3339 to the second, such as
+  `2026-10-21T14:03:05Z`), `params` (an object, `{}` when empty: the step's values as they are, codes not
+  translated), `elapsed_ms` (only on `done`) and `message` (the human text, in the CLI's language).
+  `status` is one of:
+  - `started`: a step began;
+  - `done`: the running step finished, sent when the next step starts or the run succeeds, with `elapsed_ms`;
+    a failing run leaves its last step without `done`;
+  - `warning`: a warning, with its own key (the step that runs stays open);
+  - `note`: an informational line, such as the target (`deploy.target`), where the DNS records go
+    (`deploy.dns_target`, `deploy.dns_cloudflare`), an endpoint override, or what `remove` lists and keeps
+    (`remove.resources`, `remove.resource_kept`).
+- **`progress`**: `key`, `percent` (0 to 100) and `at`. The keys are `build.zip` (writing the package zip) and
+  `binary.download` (downloading the PHP CLI binary of the console function); other keys may be added. Lines
+  of one key come at most once a second, except the last one at `100`, which always comes and may follow the
+  previous line by less than a second. The upload to S3 has no progress line.
+- **`result`**: always the last line, exactly once: `outcome`, `app`, `environment`, `revision`, `url`, `domains`,
+  `rolled_back`, `cold_start_ms` and `error`.
+  - `app` is `null` when `arco.php` could not be loaded (`environment` is then the `--env` value).
+  - `revision` and `url` are the deployed revision and the function URL. After a failed verification they are
+    those of the revision this deploy created, which is no longer live when `rolled_back` is `true`.
+  - `domains` lists the custom domains now serving the app; `cold_start_ms` is the verification request's
+    cold start, or `null`.
+  - `error` is `null` on success, otherwise `{"key": ..., "message": ...}`.
+  - For `remove`, `revision`, `url` and `cold_start_ms` are always `null`, `domains` is `[]` and `rolled_back`
+    is `false`.
+
+`outcome` is one of:
+
+| Outcome | Meaning |
+|---|---|
+| `deployed` | `deploy` finished: the new revision is live. |
+| `removed` | `remove` finished. |
+| `refused` | Arco declined **before changing anything in AWS**: invalid `arco.php`, a confirmation that needs `--yes`, no profile, the `account()` lock, expired credentials, an ownership or other guard, a missing or rejected Cloudflare token or zone, a `--package` zip it does not accept. Fix the cause and run again. For `remove`, anything before its first deletion. |
+| `failed` | Something went wrong: a build error (composer or artisan), an AWS error, a Cloudflare outage or request error (`cloudflare.gave_up`, `cloudflare.request_failed`), a failed verification (`rolled_back` says whether the previous revision is live again), an unexpected error, and any error once AWS changes began, even a guard's. Check the AWS state before retrying. |
+
+`error.key` names the error: a message key such as `aws.account_mismatch`, `deploy.confirm_required`,
+`remove.yes_required`, `cloudflare.token_missing` or `build.command_failed`; for an invalid `arco.php`, the
+key of the first validation error. Two keys are not messages: `error.user` (an error Arco reports with no key
+of its own) and `error.unexpected` (an unexpected exception; `message` is the exception's message).
+`common.aborted` is used when the command stops without a more specific error.
+
+- `--json` never asks: it implies `--no-interaction`, so whatever would ask fails with `refused` instead
+  (pass `--yes` for the first deploy of an environment, for `remove` and on protected environments).
+- stdout carries only the JSON lines. The output of a failing deploy command, its log tail, PHP warnings and an
+  unexpected error's message go to stderr; other human text is not printed.
+- Exit codes do not change: 0, 1, or a failing deploy command's own exit code. An invalid option or missing
+  option value, which the CLI rejects before the command runs, exits 1 with **no** result line: treat a
+  non-zero exit without a result line as such an error (stderr says which).
+- Secret values Arco resolved (`arco-ssm:`, `arco-secret:`), the Cloudflare token, `AWS_SECRET_ACCESS_KEY` and
+  `AWS_SESSION_TOKEN` are replaced with `[redacted]`: a value of 8 characters or more wherever it appears in a
+  line (and in what goes to stderr), a shorter one only where a whole string value (a param, a message, the
+  error message) is exactly that value, so a short secret cannot mangle domains, URLs or messages that merely
+  contain it. A value that is exactly the app name, the environment name or one of the custom domains is kept as
+  it is (so are the result's `app`, `environment` and `domains`).
+- **What is API.** Line types, the keys of each line, `status` and `outcome` values, and each step's and
+  error's `key` with its `params` are covered by the [1.x promise](upgrading.md#the-1x-promise): a key keeps its
+  meaning and its params, which may only gain entries. `message` texts are not API, and neither are which steps
+  a run prints and in what order (a new Arco version can add steps).
 
 ### Minimal IAM permissions
 
@@ -561,7 +676,7 @@ A deploy role (like the one of Arco's own end-to-end run, in a dedicated test ac
 - for the runtime clean-up: `s3:ListBucket` on the code bucket and `s3:GetObject`, `s3:PutObject`,
   `s3:DeleteObject` on `runtime/*`
 - for queues (only when `arco.php` has `queue()`; see [Permissions for queues](#permissions-for-queues))
-- for storage and tables (only when `arco.php` has `storage()`, `cache()` or `failedJobsTable()`; see
+- for storage and tables (only when `arco.php` has `storage()`, `cache()`, `failedJobsTable()` or `table()`; see
   [Permissions for storage and tables](#permissions-for-storage-and-tables))
 
 For your own apps, scope the SSM resource to your parameters and add Secrets Manager read access
@@ -576,7 +691,7 @@ People who only run `arco command`, `arco tinker` or `arco logs` need `lambda:In
 first check that it belongs to the app and environment, and refuse to run anything otherwise) (`arco logs` needs the `logs:` actions above). The function's execution role is separate: for the managed role Arco
 adds `logs:CreateLogGroup`, `logs:CreateLogStream` and `logs:PutLogEvents` on the web, console and queue
 worker log groups, the SQS actions the app and workers need on the queues in `arco.php` (`ArcoQueues`), read
-and write access to the buckets and tables in `arco.php` (`ArcoStorage`, `ArcoStorageList`, `ArcoTables`), `s3:GetObject` on `runtime/*` of the code bucket (the console function only reads it when it
+and write access to the buckets and tables in `arco.php` (`ArcoStorage`, `ArcoStorageList`, `ArcoTables`, `ArcoAppTables`), `s3:GetObject` on `runtime/*` of the code bucket (the console function only reads it when it
 downloads the binary, but the role keeps it: a console version that downloads can be live after a
 rollback), and read access to the
 secrets you reference.
@@ -614,7 +729,7 @@ what to add to your own `role()`) are in [Queue permissions](configuration.md#qu
 
 ### Permissions for storage and tables
 
-With `storage()`, `cache()` or `failedJobsTable()`, the deploy profile also needs:
+With `storage()`, `cache()`, `failedJobsTable()` or `table()`, the deploy profile also needs:
 
 - the CloudFormation actions of [Permissions for queues](#permissions-for-queues) on
   `stack/arco-*-resources/*` (buckets and tables live in the same resources stack)
@@ -637,8 +752,8 @@ With `storage()`, `cache()` or `failedJobsTable()`, the deploy profile also need
 `existing` buckets and tables need nothing from the deploy profile: only the execution role uses them. If
 CloudFormation reports an access denial for another action on a bucket or table, the failed stack event
 names it: add that action to the profile (on the same bucket or table ARNs) and deploy again. The execution
-role's statements (and what to add to your own `role()`) are in [Storage permissions](configuration.md#storage-permissions) and
-[Table permissions](configuration.md#table-permissions).
+role's statements (and what to add to your own `role()`) are in [Storage permissions](configuration.md#storage-permissions),
+[Table permissions](configuration.md#table-permissions) and [Permissions of `table()` tables](configuration.md#permissions-of-table-tables).
 
 ### Permissions for custom domains
 
@@ -654,6 +769,11 @@ With `domain()`, the deploy profile also needs:
 The DNS profile (`dns('profile')` or `--dns-profile`) needs `route53:ListHostedZonesByName`,
 `route53:ListResourceRecordSets`, `route53:ChangeResourceRecordSets` and `route53:GetChange`.
 An expired SSO session of the DNS profile is reported with the `aws sso login` command to run.
+
+With `dns('cloudflare')` no Route 53 permission is used. The Cloudflare API token (`CLOUDFLARE_API_TOKEN` or
+`--cloudflare-token`) needs **Zone → DNS → Edit** and **Zone → Zone → Read** on the zones of your domains;
+create it in the Cloudflare dashboard (Arco never creates or stores tokens). In CI, pass it as a secret
+environment variable.
 
 `arco remove` needs `cloudformation:DescribeStacks` (covered by `cloudformation:*Stack*` above) to
 find the domain stack of the environment. Without it, the custom domain cleanup (CloudFront stack,
