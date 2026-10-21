@@ -10,6 +10,21 @@ namespace Multiapi\Arco\ConsoleRuntime;
 final class PhpIni
 {
     /**
+     * Applied under the app's phpIni(), which can override each key: php.net's interim hardening for
+     * CVE-2026-109618/109619 (2026-10-21). Keep in sync with SECURITY_INI in runtime/lib/caddyfile.js.
+     */
+    public const SECURITY_DEFAULTS = ['session.upload_progress.enabled' => false, 'fatal_error_backtraces' => false];
+
+    /**
+     * @param array<mixed> $settings
+     * @return array<mixed>
+     */
+    public static function withDefaults(array $settings): array
+    {
+        return [...self::SECURITY_DEFAULTS, ...$settings];
+    }
+
+    /**
      * @param array<mixed> $settings
      * @param array<string, string> $env the child's environment, for an existing PHP_INI_SCAN_DIR
      * @return array<string, string> the variables to add to the child's environment

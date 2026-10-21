@@ -11,6 +11,19 @@ composer require multiapi/arco-laravel:^0.10
 vendor/bin/arco info --env=staging     # validation runs here: errors and deprecations name the fix
 ```
 
+## Upgrading to 0.10.1 (security)
+
+Upgrade and redeploy every environment now. PHP 8.5.12 fixes two critical remote code execution vulnerabilities
+(CVE-2026-109618, CVE-2026-109619; [php.net advisory](https://www.php.net/archive/2026.php#2026-10-21-5)) that affect
+FrankenPHP and long-lived workers such as Octane's. The default runtime build becomes `php8.5.12-fp1.13.1-r1`; an
+already deployed environment keeps its old binary until you run `arco deploy`.
+
+- If `arco.php` pins a build (`$r->build(...)`) or a FrankenPHP version (`$r->frankenphp('1.13.0')`), remove the pin
+  or move it to `php8.5.12-fp1.13.1-r1`; otherwise the environment stays on PHP 8.5.11.
+- Arco now sets `session.upload_progress.enabled=0` and `fatal_error_backtraces=0` by default (php.net's interim
+  hardening). If your app needs session upload progress, turn it back on with
+  `->runtime(fn (Runtime $r) => $r->phpIni(['session.upload_progress.enabled' => true]))`.
+
 ## Upgrading to 0.10
 
 Nothing is required: 0.10 only adds to the API that 0.9 froze. No `arco.php` method, CLI flag, `--json` key,

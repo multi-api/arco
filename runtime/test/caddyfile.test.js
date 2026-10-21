@@ -23,6 +23,8 @@ test('worker mode', () => {
     '\tfrankenphp {',
     '\t\tnum_threads 8',
     '\t\tmax_threads 64',
+    '\t\tphp_ini session.upload_progress.enabled "0"',
+    '\t\tphp_ini fatal_error_backtraces "0"',
     '\t\tphp_ini memory_limit "512M"',
     '\t\tphp_ini opcache.enable "1"',
     '\t\tphp_ini date.timezone "America/Santiago"',
@@ -54,4 +56,14 @@ test('classic mode raises max_threads to fit num_threads', () => {
   assert.match(caddyfile, /\t\tnum_threads 80\n\t\tmax_threads 80\n/);
   assert.match(caddyfile, /\n\tphp_server\n}/);
   assert.doesNotMatch(caddyfile, /worker/);
+});
+
+test('security defaults apply unless the app sets the key (CVE-2026-109618/109619 hardening)', () => {
+  const base = { mode: 'proxy', publicDir: 'app/public', workerScript: null, threads: 8, workers: { min: 1, max: 8 } };
+  const ctx = { host: '127.0.0.1', port: 8000, root: '/var/task' };
+  const defaults = buildCaddyfile({ ...base, phpIni: {} }, ctx);
+  assert.match(defaults, /\t\tphp_ini session\.upload_progress\.enabled "0"\n\t\tphp_ini fatal_error_backtraces "0"\n/);
+  const overridden = buildCaddyfile({ ...base, phpIni: { 'session.upload_progress.enabled': true } }, ctx);
+  assert.match(overridden, /php_ini session\.upload_progress\.enabled "1"/);
+  assert.doesNotMatch(overridden, /session\.upload_progress\.enabled "0"/);
 });

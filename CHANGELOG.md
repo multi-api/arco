@@ -3,6 +3,18 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.10.1
+
+**Security release.** PHP 8.5.12 fixes two critical remote code execution vulnerabilities (CVE-2026-109618,
+CVE-2026-109619; [php.net advisory](https://www.php.net/archive/2026.php#2026-10-21-5)) that affect FrankenPHP and
+long-lived workers. Redeploy every environment (`arco deploy`); no `arco.php` change is needed.
+
+- **Security:** the default runtime build is now `php8.5.12-fp1.13.1-r1` (PHP 8.5.12, FrankenPHP 1.13.1). Apps that
+  pin an older build with `->runtime(fn (Runtime $r) => $r->build(...))` keep it: remove the pin or move it to the new
+  build.
+- **Security:** php.net's interim hardening is on by default on the web function, the console and queue workers:
+  `session.upload_progress.enabled=0` and `fatal_error_backtraces=0`. An app's `phpIni()` can still set either key.
+
 ## 0.10.0
 
 Four features (Cloudflare DNS, `deploy`/`remove --json`, resource relations, `table()`) and two `info --json` keys;

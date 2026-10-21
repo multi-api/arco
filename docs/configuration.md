@@ -1117,7 +1117,7 @@ Set with `->runtime(fn (Runtime $r) => ...)`.
 | `workers(int)` | 4 | Octane worker count (>= 1) |
 | `maxThreads(int)` | 64 | FrankenPHP `max_threads`, the ceiling the thread pool grows to (>= `workers`) |
 | `threads(int)` | 8 | FrankenPHP `num_threads` for non-worker requests (>= 1) |
-| `phpIni(array)` | `[]` | `php.ini` overrides, merged by key; applied to web requests and to commands on the console function (`arco command`, deploy commands, tinker) |
+| `phpIni(array)` | `[]` | `php.ini` overrides, merged by key; applied to web requests and to commands on the console function (`arco command`, deploy commands, tinker). Arco sets `session.upload_progress.enabled=0` and `fatal_error_backtraces=0` underneath (php.net's hardening for CVE-2026-109618/109619); `phpIni()` can override them |
 
 The selectors resolve per level: an environment's `build()` or `binary()` replaces the app's `php()` and
 `frankenphp()`, and an environment's `php()` or `frankenphp()` replaces the app's `build()`. Mixing

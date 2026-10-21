@@ -45,7 +45,7 @@ try {
     $tmp = $env['ARCO_TMP'] ?? '/tmp/arco';
     Storage::prepare($tmp);
     $childEnv = [...$env, ...$resolved, 'HOME' => $tmp];
-    $childEnv = [...$childEnv, ...PhpIni::prepare(is_array($config['phpIni'] ?? null) ? $config['phpIni'] : [], "$tmp/php", $childEnv)];
+    $childEnv = [...$childEnv, ...PhpIni::prepare(PhpIni::withDefaults(is_array($config['phpIni'] ?? null) ? $config['phpIni'] : []), "$tmp/php", $childEnv)];
     $binary = $env['ARCO_PHP_BINARY'] ?? "$root/bin/frankenphp";
     // FrankenPHP's php-cli shifts $argv by one; console-cli.php gives scripts PHP's argv back.
     $php = basename($binary) === 'frankenphp' ? [$binary, 'php-cli', __DIR__ . '/console-cli.php'] : [$binary];
