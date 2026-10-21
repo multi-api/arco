@@ -733,11 +733,15 @@ With `storage()`, `cache()`, `failedJobsTable()` or `table()`, the deploy profil
 
 - the CloudFormation actions of [Permissions for queues](#permissions-for-queues) on
   `stack/arco-*-resources/*` (buckets and tables live in the same resources stack)
-- on the buckets Arco creates, by their bucket ARN only (`arn:aws:s3:::<app>-*`, without `/*`, so none of
-  these reaches the files): `s3:Get*` and `s3:Put*` (CloudFormation creates, reads back and updates each
-  bucket setting with the profile's credentials: tags, encryption, Block Public Access, lifecycle, CORS,
-  policy), `s3:CreateBucket`, `s3:DeleteBucketPolicy` (removing the last public prefix), and `s3:DeleteBucket`,
-  used only when the deploy that creates a bucket fails and rolls back
+- on the buckets Arco creates (`arn:aws:s3:::<app>-*`): `s3:Get*` and `s3:Put*` (CloudFormation creates,
+  reads back and updates each bucket setting with the profile's credentials: tags, encryption, Block Public
+  Access, lifecycle, CORS, policy), `s3:CreateBucket`, `s3:DeleteBucketPolicy` (removing the last public
+  prefix), and `s3:DeleteBucket`, used only when the deploy that creates a bucket fails and rolls back. In IAM
+  `*` also matches `/`, so this resource covers the buckets' files too (`arn:aws:s3:::<app>-files-…/key`) and
+  `s3:Get*`/`s3:Put*` let the profile read and write them. The deploy never touches files in these buckets, so
+  you can close that with a deny on the object ARNs:
+  `{"Effect": "Deny", "Action": ["s3:GetObject*", "s3:PutObject*", "s3:DeleteObject*"], "Resource": "arn:aws:s3:::<app>-*/*"}`
+  (the deploy uploads only to the code bucket `arco-<account>-<region>`; skip the deny for an app named `arco`, whose `<app>-*/*` would match that bucket)
 - `s3:ListBucket` on the same buckets: the deploy checks a bucket name before creating it (`HeadBucket`, which
   answers 403 without it, read as "name taken") and whether a kept bucket still has files
 - on the tables Arco creates (`arn:aws:dynamodb:*:*:table/<app>-*`): `dynamodb:CreateTable`,

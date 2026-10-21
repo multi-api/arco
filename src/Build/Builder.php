@@ -3,6 +3,7 @@
 namespace Multiapi\Arco\Build;
 
 use Multiapi\Arco\Config\AppConfig;
+use Symfony\Component\Filesystem\Filesystem;
 
 final class Builder
 {
@@ -50,6 +51,7 @@ final class Builder
         $result = new BuildResult($staging, $appDir, $skipped);
 
         try {
+            $created = self::createBuildDirectories($preset, $appDir);
             if (is_file("$appDir/composer.json")) {
                 self::absolutizePathRepositories($projectDir, $appDir);
                 $step('build.composer', []);
@@ -68,12 +70,46 @@ final class Builder
                 $step('build.step', ['command' => implode(' ', $command)]);
                 $this->runner->run($command, $appDir, ['ARCO_BUILD' => '1']);
             }
+            (new Filesystem())->remove($created);
         } catch (BuildException $e) {
             $result->cleanup();
             throw $e;
         }
 
         return $result;
+    }
+
+    /**
+     * Creates the preset's build directories that the copy left out and returns the topmost directory of each one it
+     * created, so removing them leaves the staged copy as it was copied.
+     *
+     * @return list<string>
+     */
+    private static function createBuildDirectories(FrameworkPreset $preset, string $appDir): array
+    {
+        if (! $preset instanceof StagesDirectories) {
+            return [];
+        }
+        $created = [];
+        foreach ($preset->buildDirectories() as $dir) {
+            if ($dir === '' || str_starts_with($dir, '/') || in_array('..', explode('/', $dir), true)) {
+                throw new \InvalidArgumentException("Build directory must be a relative path inside the app: '$dir'");
+            }
+            $top = $appDir;
+            foreach (explode('/', $dir) as $part) {
+                $top .= "/$part";
+                if (! is_dir($top)) {
+                    break;
+                }
+            }
+            if (! is_dir("$appDir/$dir")) {
+                mkdir("$appDir/$dir", 0777, true);
+                if (! in_array($top, $created, true)) {
+                    $created[] = $top;
+                }
+            }
+        }
+        return $created;
     }
 
     /**

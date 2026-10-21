@@ -3,6 +3,16 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.10.2
+
+- **Fixed:** the Laravel build no longer fails with "Please provide a valid cache path" when a package resolves
+  the Blade compiler at boot (laravel/cashier-paddle, for example). `storage/` is still not packaged, but Arco
+  creates empty `storage/framework/{views,cache/data,sessions}` and `storage/logs` in the staged copy for
+  `composer install` (`package:discover`) and the build steps, and removes them before packaging.
+- **Docs:** the deploy profile's storage permissions on `arn:aws:s3:::<app>-*` also cover the buckets' files,
+  because `*` matches `/`. The docs said the opposite. They now show an optional deny that keeps the deploy
+  profile away from them.
+
 ## 0.10.1
 
 **Security release.** PHP 8.5.12 fixes two critical remote code execution vulnerabilities (CVE-2026-109618,
