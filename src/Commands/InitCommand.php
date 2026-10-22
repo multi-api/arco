@@ -9,7 +9,9 @@ use Multiapi\Arco\Aws\LocalState;
 use Multiapi\Arco\Binary\RuntimeManifest;
 use Multiapi\Arco\Build\AppInspector;
 use Multiapi\Arco\Build\Detection;
+use Multiapi\Arco\Build\FrameworkPreset;
 use Multiapi\Arco\Build\PresetRegistry;
+use Multiapi\Arco\Build\RequiresPackages;
 use Multiapi\Arco\Cli\ArcoCommand;
 use Multiapi\Arco\Cli\UserError;
 use Multiapi\Arco\Commands\Concerns\ChoosesDns;
@@ -151,7 +153,7 @@ final class InitCommand extends ArcoCommand
                 $io->writeln('  vendor/bin/arco ' . $hint);
             }
         }
-        $missing = self::missingPackages($dir, $raw, $environments[0] ?? 'production');
+        $missing = self::missingPackages($dir, $raw, $environments[0] ?? 'production', $preset);
         if ($missing !== []) {
             $io->writeln($this->t('init.needs_packages'));
             $io->writeln('  composer require ' . implode(' ', $missing));
@@ -415,7 +417,7 @@ final class InitCommand extends ArcoCommand
      * @param array<string, mixed> $raw
      * @return list<string> requirements for `composer require`
      */
-    private static function missingPackages(string $dir, array $raw, string $environment): array
+    private static function missingPackages(string $dir, array $raw, string $environment, FrameworkPreset $preset): array
     {
         $lock = is_file("$dir/composer.lock") ? json_decode((string) file_get_contents("$dir/composer.lock"), true) : null;
         if (! is_array($lock)) {
@@ -428,6 +430,11 @@ final class InitCommand extends ArcoCommand
             }
         }
         $missing = [];
+        foreach ($preset instanceof RequiresPackages ? $preset->requiredPackages() : [] as $package) {
+            if (! isset($installed[$package])) {
+                $missing[$package] = true;
+            }
+        }
         foreach (PackageRequirements::forConfig(ConfigResolver::resolve($raw, $environment)) as $requirements) {
             foreach ($requirements as [$requirement]) {
                 if (! isset($installed[explode(':', $requirement)[0]])) {

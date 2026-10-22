@@ -37,6 +37,7 @@ final class Builder
     {
         $step = $onStep ?? static function (string $key, array $params = []): void {
         };
+        self::refuseMissingPackages($preset, $projectDir);
         $staging = sys_get_temp_dir() . '/arco-build-' . bin2hex(random_bytes(6));
         $appDir = "$staging/app";
         mkdir($appDir, 0777, true);
@@ -77,6 +78,25 @@ final class Builder
         }
 
         return $result;
+    }
+
+    /**
+     * Refuses in seconds, before the copy and `composer install`, when composer.json does not require a package the
+     * preset needs; otherwise the build would fail minutes later (Laravel without laravel/octane).
+     *
+     * @throws BuildException build.needs_packages
+     */
+    private static function refuseMissingPackages(FrameworkPreset $preset, string $projectDir): void
+    {
+        if (! $preset instanceof RequiresPackages) {
+            return;
+        }
+        $composer = is_file("$projectDir/composer.json") ? json_decode((string) file_get_contents("$projectDir/composer.json"), true) : null;
+        $require = is_array($composer) && is_array($composer['require'] ?? null) ? $composer['require'] : [];
+        $missing = array_values(array_filter($preset->requiredPackages(), fn (string $package): bool => ! array_key_exists($package, $require)));
+        if ($missing !== []) {
+            throw BuildException::make('build.needs_packages', ['preset' => $preset->name(), 'packages' => implode(' ', $missing)]);
+        }
     }
 
     /**

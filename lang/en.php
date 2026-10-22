@@ -393,6 +393,7 @@ return [
     'info.resources_no_profile' => 'No AWS profile is set for environment "{environment}": set AWS_PROFILE, add profile() in arco.php or run arco profile, then try again.',
     'info.resources_failed' => 'The tagged resources could not be listed ({error}). Allow tag:GetResources in the profile.',
     'secret.tags_not_added' => 'Could not tag {parameter} for this environment ({error}); the secret is saved. Allow ssm:AddTagsToResource in the profile so arco info --resources lists it.',
+    'build.needs_packages' => 'The {preset} preset needs packages that composer.json does not require: {packages}. Nothing was built. Run `composer require {packages}` and try again.',
     'laravel.octane_missing' => 'Arco runs Laravel through Octane. Install it with: composer require laravel/octane',
     'editor.lint_failed' => "The edited {path} would not parse, so it was left unchanged:\n{output}",
     'editor.write_failed' => 'Could not write {path}.',

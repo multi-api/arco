@@ -12,7 +12,7 @@ final class PackageRequirements
      * below find what a feature needs by its files (WorkCommand since 0.5, the storage disks and table wiring
      * since 0.6), so an older install that has them still passes; this is only what `composer require` gets.
      */
-    public const ARCO_LARAVEL = 'multiapi/arco-laravel:^0.9';
+    public const ARCO_LARAVEL = 'multiapi/arco-laravel:^0.11';
 
     private const PROVIDER = 'vendor/multiapi/arco-laravel/src/ArcoServiceProvider.php';
 

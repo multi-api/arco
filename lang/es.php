@@ -393,6 +393,7 @@ return [
     'info.resources_no_profile' => 'No hay un perfil de AWS para el entorno "{environment}": define AWS_PROFILE, agrega profile() en arco.php o ejecuta arco profile, y vuelve a intentarlo.',
     'info.resources_failed' => 'No se pudieron listar los recursos etiquetados ({error}). Permite tag:GetResources en el perfil.',
     'secret.tags_not_added' => 'No se pudo etiquetar {parameter} para este entorno ({error}); el secreto quedó guardado. Permite ssm:AddTagsToResource en el perfil para que arco info --resources lo muestre.',
+    'build.needs_packages' => 'El preset {preset} necesita paquetes que composer.json no incluye: {packages}. No se construyó nada. Ejecuta `composer require {packages}` y vuelve a intentarlo.',
     'laravel.octane_missing' => 'Arco ejecuta Laravel con Octane. Instálalo con: composer require laravel/octane',
     'editor.lint_failed' => "El {path} editado no compilaría, así que no se modificó:\n{output}",
     'editor.write_failed' => 'No se pudo escribir {path}.',

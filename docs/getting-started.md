@@ -75,7 +75,7 @@ does not list under `packages` (`packages-dev` is not deployed), prints one line
 
 ```
 Install the Composer packages these features need before deploying:
-  composer require league/flysystem-aws-s3-v3:^3.0 aws/aws-sdk-php multiapi/arco-laravel:^0.9
+  composer require league/flysystem-aws-s3-v3:^3.0 aws/aws-sdk-php multiapi/arco-laravel:^0.11
 ```
 
 Versions are not compared here; `arco deploy` checks them in the built package. Without a `composer.lock`
