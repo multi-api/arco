@@ -73,19 +73,19 @@ final class WorkerFunctions
     }
 
     /**
-     * Creates or updates the queue's worker with the console zip and publishes a version.
+     * The queue's worker for LambdaFunction::deployAll(), which creates or updates it with the console
+     * zip together with the console and the other workers, and publishes a version.
      *
      * @param array<string, string> $variables deploy variables plus ARCO_BINARY_*
      * @param array<string, string> $tags
-     * @return string the published version
      */
-    public function deploy(AppConfig $config, QueueConfig $queue, string $bucket, string $key, ?string $versionId, string $roleArn, array $variables, array $tags, bool $roleJustCreated = false): string
+    public function request(AppConfig $config, QueueConfig $queue, string $bucket, string $key, ?string $versionId, string $roleArn, array $variables, array $tags, bool $roleJustCreated = false): FunctionDeploy
     {
         $code = ['S3Bucket' => $bucket, 'S3Key' => $key];
         if ($versionId !== null) {
             $code['S3ObjectVersion'] = $versionId;
         }
-        return $this->function->deploy(
+        return $this->function->request(
             $config->workerFunctionName($queue->name),
             self::HANDLER,
             $code,

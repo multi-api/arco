@@ -46,11 +46,23 @@ final class ConsoleFunction
      */
     public function deploy(AppConfig $config, string $bucket, string $key, ?string $versionId, string $roleArn, array $variables, array $tags, bool $roleJustCreated = false): string
     {
+        $request = $this->request($config, $bucket, $key, $versionId, $roleArn, $variables, $tags, $roleJustCreated);
+        return $this->function->deploy($request->name, $request->handler, $request->code, $request->settings, $request->tags, $roleJustCreated);
+    }
+
+    /**
+     * The function's part in LambdaFunction::deployAll(), which updates it together with the workers.
+     *
+     * @param array<string, string> $variables
+     * @param array<string, string> $tags
+     */
+    public function request(AppConfig $config, string $bucket, string $key, ?string $versionId, string $roleArn, array $variables, array $tags, bool $roleJustCreated = false): FunctionDeploy
+    {
         $code = ['S3Bucket' => $bucket, 'S3Key' => $key];
         if ($versionId !== null) {
             $code['S3ObjectVersion'] = $versionId;
         }
-        return $this->function->deploy($config->consoleFunctionName(), 'arco.console', $code, self::settings($config, $roleArn, $variables), $tags, $roleJustCreated);
+        return $this->function->request($config->consoleFunctionName(), 'arco.console', $code, self::settings($config, $roleArn, $variables), $tags, $roleJustCreated);
     }
 
     /**

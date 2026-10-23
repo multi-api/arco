@@ -3,6 +3,18 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.11.3
+
+- **Changed:** `arco deploy` updates the console function and the queue workers together instead of one after
+  another. Each of them runs the same console zip (~185 MB), and Lambda takes a while over each code update: the
+  deploy now starts the code update on every function, waits for all of them, updates every configuration, waits
+  again, then publishes a version of each. With a console and one worker, that stretch takes about half as long
+  (about a third with two workers). Nothing moves earlier: the deploy commands, the live aliases, the traffic shift
+  and the event source mappings still wait until every version is published. The steps `deploy.step_console` and
+  `deploy.step_worker` are printed as before, all of them before the update starts; a failure still names its
+  function (`deploy.console_failed`, `deploy.worker_update_failed`), and `deploy.timeout` lists every function
+  still busy after 600 s. Nothing to change on upgrade. Reported by Arco Cloud.
+
 ## 0.11.2
 
 - **Fixed:** a Laravel app without `laravel/octane` is caught early. `arco init` lists it with the other

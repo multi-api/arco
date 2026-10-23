@@ -209,20 +209,28 @@ final class AwsDeployer implements Deployer
                 $codeBucket->uploadBinary($bucket, $console->download->key, $console->download->path, $console->download->bytes);
             }
             $runtimeVariables = [...$variables, ...self::binaryVariables($bucket, $console)];
+            // The console and the workers are updated together (LambdaFunction::deployAll): each runs the
+            // same ~180 MB zip, and Lambda takes its time over each code update.
+            $requests = [];
             if ($config->consoleEnabled()) {
                 $functions = $this->consoleFunction();
                 $previousConsole = $functions->liveVersion($config->consoleFunctionName());
-                $consoleVersion = $functions->deploy($config, $bucket, $consoleKey, $consoleObject, $roleArn, $runtimeVariables, $tags, $roleCreated);
+                $requests[] = $functions->request($config, $bucket, $consoleKey, $consoleObject, $roleArn, $runtimeVariables, $tags, $roleCreated);
             }
             $workers = $this->workerFunctions();
+            $previousWorkers = [];
             foreach ($config->queues as $queue) {
                 $name = $config->workerFunctionName($queue->name);
                 $step('deploy.step_worker', ['function' => $name, 'queue' => $queue->name]);
-                $previousWorker = $workers->function()->liveVersion($name);
-                $workerVersions[$queue->name] = [
-                    'version' => $workers->deploy($config, $queue, $bucket, $consoleKey, $consoleObject, $roleArn, $runtimeVariables, $tags, $roleCreated),
-                    'previous' => $previousWorker,
-                ];
+                $previousWorkers[$queue->name] = $workers->function()->liveVersion($name);
+                $requests[] = $workers->request($config, $queue, $bucket, $consoleKey, $consoleObject, $roleArn, $runtimeVariables, $tags, $roleCreated);
+            }
+            $versions = LambdaFunction::deployAll($this->sleeper, $requests);
+            if ($config->consoleEnabled()) {
+                $consoleVersion = $versions[$config->consoleFunctionName()];
+            }
+            foreach ($config->queues as $queue) {
+                $workerVersions[$queue->name] = ['version' => $versions[$config->workerFunctionName($queue->name)], 'previous' => $previousWorkers[$queue->name]];
             }
         }
 

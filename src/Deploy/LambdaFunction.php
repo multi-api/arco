@@ -53,55 +53,123 @@ final class LambdaFunction
      */
     public function deploy(string $name, string $handler, array $code, array $settings, array $tags, bool $roleJustCreated = false): string
     {
-        if ($this->get($name) === null) {
-            LambdaHelpers::retryRolePropagation($this->sleeper, $roleJustCreated, self::ROLE_ERRORS, fn () => $this->execute('CreateFunction', [
-                'FunctionName' => $name,
-                'Runtime' => self::RUNTIME,
-                'Architectures' => ['arm64'],
-                // provided.al2023 runs bootstrap; the handler is unused.
-                'Handler' => $handler,
-                'Code' => $code,
-                'Tags' => $tags,
-                ...$settings,
-            ]));
-        } else {
-            $this->wait($name);
-            $this->lambda->updateFunctionCode(['FunctionName' => $name, ...$code]);
-            $this->wait($name);
-            // An empty KMSKeyArn puts back the AWS managed key when kmsKey() was removed from arco.php.
-            LambdaHelpers::retryRolePropagation($this->sleeper, $roleJustCreated, self::ROLE_ERRORS, fn () => $this->execute('UpdateFunctionConfiguration', ['FunctionName' => $name, ...$settings + ['KMSKeyArn' => '']]));
-        }
-        $this->wait($name);
+        return self::deployAll($this->sleeper, [$this->request($name, $handler, $code, $settings, $tags, $roleJustCreated)])[$name];
+    }
 
-        $version = $this->lambda->publishVersion(['FunctionName' => $name])['Version'] ?? null;
-        if (! is_string($version) || $version === '') {
-            throw new \UnexpectedValueException('Lambda returned no version.');
+    /**
+     * What deploy() needs for one function, for deployAll().
+     *
+     * @param array<string, mixed> $settings
+     * @param array{S3Bucket: string, S3Key: string, S3ObjectVersion?: string} $code
+     * @param array<string, string> $tags
+     */
+    public function request(string $name, string $handler, array $code, array $settings, array $tags, bool $roleJustCreated = false): FunctionDeploy
+    {
+        return new FunctionDeploy($this, $name, $handler, $code, $settings, $tags, $roleJustCreated);
+    }
+
+    /**
+     * Deploys several functions phase by phase instead of one after another: Lambda applies each
+     * code and configuration update on its side, so the functions are updated together and the
+     * deploy waits about as long as for the slowest one. Every function gets its code (create or
+     * UpdateFunctionCode), then, once all are ready, its configuration, then, once all are ready
+     * again, its version. A failure names the function it happened to.
+     *
+     * @param list<FunctionDeploy> $deploys
+     * @return array<string, string> the published version by function name
+     */
+    public static function deployAll(Sleeper $sleeper, array $deploys): array
+    {
+        $all = [];
+        $existing = [];
+        foreach ($deploys as $deploy) {
+            $all[$deploy->name] = $deploy->function;
+            if ($deploy->function->get($deploy->name) !== null) {
+                $existing[$deploy->name] = $deploy->function;
+            }
         }
-        return $version;
+
+        self::waitAll($sleeper, $existing);
+        foreach ($deploys as $deploy) {
+            $function = $deploy->function;
+            if (! isset($existing[$deploy->name])) {
+                LambdaHelpers::retryRolePropagation($sleeper, $deploy->roleJustCreated, self::ROLE_ERRORS, fn () => $function->execute('CreateFunction', [
+                    'FunctionName' => $deploy->name,
+                    'Runtime' => self::RUNTIME,
+                    'Architectures' => ['arm64'],
+                    // provided.al2023 runs bootstrap; the handler is unused.
+                    'Handler' => $deploy->handler,
+                    'Code' => $deploy->code,
+                    'Tags' => $deploy->tags,
+                    ...$deploy->settings,
+                ]));
+            } else {
+                $function->lambda->updateFunctionCode(['FunctionName' => $deploy->name, ...$deploy->code]);
+            }
+        }
+        self::waitAll($sleeper, $all);
+
+        foreach ($deploys as $deploy) {
+            if (! isset($existing[$deploy->name])) {
+                continue;
+            }
+            $function = $deploy->function;
+            // An empty KMSKeyArn puts back the AWS managed key when kmsKey() was removed from arco.php.
+            LambdaHelpers::retryRolePropagation($sleeper, $deploy->roleJustCreated, self::ROLE_ERRORS, fn () => $function->execute('UpdateFunctionConfiguration', ['FunctionName' => $deploy->name, ...$deploy->settings + ['KMSKeyArn' => '']]));
+        }
+        self::waitAll($sleeper, $existing);
+
+        $versions = [];
+        foreach ($deploys as $deploy) {
+            $version = $deploy->function->lambda->publishVersion(['FunctionName' => $deploy->name])['Version'] ?? null;
+            if (! is_string($version) || $version === '') {
+                throw new \UnexpectedValueException("Lambda returned no version for $deploy->name.");
+            }
+            $versions[$deploy->name] = $version;
+        }
+        return $versions;
     }
 
     /** Waits until the function is neither being created nor updated. */
     public function wait(string $name, int $timeout = 600): void
     {
-        $deadline = $this->sleeper->now() + $timeout;
+        self::waitAll($this->sleeper, [$name => $this], $timeout);
+    }
+
+    /**
+     * Waits until none of the functions is being created or updated, polling those still busy every
+     * 2 s, so the wait lasts as long as the slowest one.
+     *
+     * @param array<string, self> $functions by function name
+     */
+    private static function waitAll(Sleeper $sleeper, array $functions, int $timeout = 600): void
+    {
+        $deadline = $sleeper->now() + $timeout;
         while (true) {
-            $function = $this->get($name) ?? throw DeployException::make($this->missingKey, ['function' => $name]);
-            $state = $function['State'] ?? null;
-            $update = $function['LastUpdateStatus'] ?? null;
-            if ($state === 'Failed' || $update === 'Failed') {
-                throw DeployException::make($this->failedKey, [
-                    'function' => $name,
-                    'reason' => LambdaHelpers::text($function['LastUpdateStatusReason'] ?? $function['StateReason'] ?? ''),
-                ]);
-            }
-            if ($state !== 'Pending' && $update !== 'InProgress') {
+            $functions = array_filter($functions, fn (self $function, string $name) => ! $function->ready($name), ARRAY_FILTER_USE_BOTH);
+            if ($functions === []) {
                 return;
             }
-            if ($this->sleeper->now() >= $deadline) {
-                throw DeployException::make('deploy.timeout', ['what' => $name]);
+            if ($sleeper->now() >= $deadline) {
+                throw DeployException::make('deploy.timeout', ['what' => implode(', ', array_keys($functions))]);
             }
-            $this->sleeper->sleep(2);
+            $sleeper->sleep(2);
         }
+    }
+
+    /** Whether the function is neither being created nor updated; a missing or failed function stops the deploy. */
+    private function ready(string $name): bool
+    {
+        $function = $this->get($name) ?? throw DeployException::make($this->missingKey, ['function' => $name]);
+        $state = $function['State'] ?? null;
+        $update = $function['LastUpdateStatus'] ?? null;
+        if ($state === 'Failed' || $update === 'Failed') {
+            throw DeployException::make($this->failedKey, [
+                'function' => $name,
+                'reason' => LambdaHelpers::text($function['LastUpdateStatusReason'] ?? $function['StateReason'] ?? ''),
+            ]);
+        }
+        return $state !== 'Pending' && $update !== 'InProgress';
     }
 
     public function liveVersion(string $name): ?string
