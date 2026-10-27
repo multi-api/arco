@@ -3,6 +3,7 @@
 namespace Multiapi\Arco\Deploy;
 
 use Multiapi\Arco\Arco;
+use Multiapi\Arco\Aws\Endpoint;
 use Multiapi\Arco\Config\AppConfig;
 
 final class RevisionFactory
@@ -57,9 +58,27 @@ final class RevisionFactory
         ];
     }
 
+    /**
+     * The auth type the endpoint should end up with. With domain() it is IamAuth whatever auth() says:
+     * only the environment's CloudFront distribution, signing through its origin access control, may
+     * invoke it. An existing endpoint switches only once the distribution signs (CloudFrontAccess).
+     */
     public static function authType(AppConfig $config): string
     {
-        return $config->auth === 'iam' ? 'IamAuth' : 'ApplicationManaged';
+        return $config->auth === 'iam' || self::protectsEndpoint($config) ? 'IamAuth' : 'ApplicationManaged';
+    }
+
+    /**
+     * Whether only the environment's CloudFront may invoke the endpoint (origin access control, policy
+     * statement, IamAuth): with domain(), except behind an emulator endpoint (AWS_ENDPOINT_URL), where
+     * CloudFront has no Lambda Web Function origin access control to sign with. The endpoint then keeps
+     * the configured auth.
+     */
+    public static function protectsEndpoint(AppConfig $config): bool
+    {
+        // Skipped only when the emulator serves every service involved: a per-service override pointing elsewhere
+        // (real AWS, say) keeps the protection. A profile's endpoint_url is not read (see local-floci.md).
+        return $config->domains !== [] && ! Endpoint::servesAll(['lambda', 'lambda_web', 'cloudfront', 'cloudformation']);
     }
 
     /** @return array<string, array<string, int>> */

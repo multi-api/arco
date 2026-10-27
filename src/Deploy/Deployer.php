@@ -82,8 +82,9 @@ interface Deployer
      *
      * @param list<string> $cachedPaths path patterns CloudFront may cache
      * @param (callable(string, array<string, string|int>): void)|null $onStep
+     * @param string $healthPath the preset's health path, requested through CloudFront once the endpoint is locked to it
      */
-    public function attachDomains(AppConfig $config, DeployResult $result, array $cachedPaths, ?callable $onStep = null): DeployResult;
+    public function attachDomains(AppConfig $config, DeployResult $result, array $cachedPaths, ?callable $onStep = null, string $healthPath = '/up'): DeployResult;
 
     /** Whether custom-domain resources (the CloudFront stack, a managed certificate) exist for the environment. */
     public function hasDomainResources(AppConfig $config): bool;

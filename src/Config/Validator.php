@@ -622,9 +622,6 @@ final class Validator
         if (count($config->domains) > self::MAX_DOMAINS) {
             $result->error('validation.domain_count', ['count' => count($config->domains), 'max' => self::MAX_DOMAINS]);
         }
-        if ($config->auth === 'iam') {
-            $result->error('validation.domain_iam');
-        }
         if ($config->certificate !== null && ! preg_match(self::CERTIFICATE, $config->certificate)) {
             $result->error('validation.certificate', ['value' => $config->certificate]);
         }

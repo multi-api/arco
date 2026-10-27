@@ -21,6 +21,8 @@ use Multiapi\Arco\Console\Console;
 use Multiapi\Arco\Console\LambdaConsole;
 use Multiapi\Arco\Deploy\AwsDeployer;
 use Multiapi\Arco\Deploy\AwsVerifier;
+use Multiapi\Arco\Deploy\EndpointSigner;
+use Multiapi\Arco\Deploy\RevisionFactory;
 use Multiapi\Arco\Deploy\ChangeTrackingDeployer;
 use Multiapi\Arco\Deploy\CommandPlan;
 use Multiapi\Arco\Deploy\DeployCommandFailed;
@@ -74,7 +76,7 @@ final class DeployCommand extends ArcoCommand
         $this->awsFactory = $awsFactory ?? fn (?string $profile, string $region) => new AwsClients($profile, $region);
         $this->pipeline = $pipeline ?? DeployPipeline::default();
         $this->deployerFactory = $deployerFactory ?? fn (AwsClients $aws, ?AwsClients $dns = null, bool $forceDns = false, bool $force = false, ?DnsProvider $dnsProvider = null) => new AwsDeployer($aws, new Sleeper(), $dns, $forceDns, $force, $dnsProvider);
-        $this->verifierFactory = $verifierFactory ?? fn (AwsClients $aws) => new AwsVerifier($aws->logs(), new Client(), new Sleeper());
+        $this->verifierFactory = $verifierFactory ?? fn (AwsClients $aws) => new AwsVerifier($aws->logs(), new Client(), new Sleeper(), signer: EndpointSigner::for($aws));
         $this->presets = $presets ?? PresetRegistry::default();
         $this->consoleFactory = $consoleFactory ?? fn (AwsClients $aws, AppConfig $config) => new LambdaConsole($aws->lambda(LambdaConsole::clientOptions($config)));
         $this->cloudflareFactory = $cloudflareFactory;
@@ -266,7 +268,8 @@ final class DeployCommand extends ArcoCommand
             }
 
             $success = $this->t('deploy.success', [
-                'url' => $outcome->result->url(),
+                // With domain() only CloudFront may invoke the endpoint: its URL is shown as such, the domains follow.
+                'url' => $outcome->result->url() . (RevisionFactory::protectsEndpoint($config) ? ' ' . $this->t('deploy.endpoint_cloudfront_only') : ''),
                 'revision' => $outcome->result->revisionId,
                 'cold_start' => $outcome->verification->initDurationMs === null
                     ? $this->t('deploy.cold_start_unknown')

@@ -6,10 +6,49 @@ Upgrade one minor version at a time when you can, read its section below and the
 `multiapi/arco-laravel` release of the same minor, and from 1.0 any 1.x of one works with any 1.x of the other.
 
 ```bash
-composer require --dev multiapi/arco:^0.11
+composer require --dev multiapi/arco:^0.11.4
 composer require multiapi/arco-laravel:^0.11
 vendor/bin/arco info --env=staging     # validation runs here: errors and deprecations name the fix
 ```
+
+## Upgrading to 0.11.4 (security)
+
+Upgrade and redeploy every environment that has `domain()`. Before 0.11.4, the Web Function endpoint of such an
+environment was public: a request sent straight to its `*.lambda-web.<region>.on.aws` URL skipped CloudFront and
+could carry any `X-Forwarded-Host` or `X-Forwarded-For` header, which `arco-laravel` trusts. Environments without
+`domain()` are not changed.
+
+- **Add the new deploy permissions first**, or the deploy stops with an access error (see
+  [Permissions for custom domains](getting-started.md#permissions-for-custom-domains)):
+  `cloudfront:CreateOriginAccessControl`, `cloudfront:GetOriginAccessControl`,
+  `cloudfront:UpdateOriginAccessControl`, `cloudfront:DeleteOriginAccessControl`, and
+  `lambda:GetResourcePolicy`, `lambda:PutResourcePolicy`, `lambda:DeleteResourcePolicy` on
+  `arn:aws:lambda:*:<account>:web-function/<app>-*`. The post-deploy `/up` check is now a signed request, which needs
+  `lambda:InvokeWebFunctionEndpoint`: the minimal permissions' `lambda:*WebFunction*` already grants it. If you
+  scoped the Lambda writes (the account guard), add the four Lambda actions to `ArcoWebFunctionOfTheApp`. A service
+  that deploys for you (Arco Cloud) needs them in its connect template too.
+- **Require `multiapi/arco:^0.11.4` in every deploy path** (CI lock files, teammates, Arco Cloud's runner) before you
+  rely on the protection. A deploy by 0.11.3 or older drops the origin access control and makes the endpoint public
+  again, without a warning.
+- **Nothing to change in `arco.php`.** The first deploy updates the domain stack (a CloudFront origin access
+  control, which takes a few minutes), puts a statement in the Web Function's resource policy, waits for the
+  distribution, and then makes the endpoint `IamAuth`. It then requests the health path through the distribution
+  (retrying for about a minute). If CloudFront cannot reach the app, Arco makes the endpoint public again, the site
+  keeps serving again, and the deploy fails with `deploy.protection_reverted`; deploy again once the cause is fixed.
+  With a correct grant the site stays up during the upgrade. With a wrong one, viewers can get 403 for about 60 to 90
+  seconds, until the automatic revert; run the first upgrade under light traffic. If even the revert fails, the
+  deploy stops with `deploy.protection_revert_failed` and prints the command to run. To make an endpoint public by
+  hand:
+  `aws lambda-web update-web-function-endpoint --function-name <app>-<env> --endpoint-name default --auth-type ApplicationManaged`.
+- **The raw endpoint URL now answers 403** with `domain()`. Your custom domains are unaffected. If something calls
+  the `*.on.aws` URL directly (a health check, a webhook sender), point it at a custom domain.
+- `auth('iam')` together with `domain()` is allowed now. With `domain()`, the post-deploy check still probes `/up`,
+  signed with the deploy credentials. `auth('iam')` without `domain()` still uses the platform init report.
+- Removing `domain()` from an `auth('iam')` environment removes Arco's CloudFront statement too, so the distribution
+  left until `arco remove` can no longer reach the app.
+- `arco info --json` has the new key `endpoint_auth`.
+- Known residual: `request()->ip()` can still be spoofed through CloudFront with an `X-Forwarded-For` header (see
+  [Protecting the endpoint](configuration.md#protecting-the-endpoint)).
 
 ## Upgrading to 0.11
 

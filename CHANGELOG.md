@@ -3,6 +3,82 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.11.4
+
+Security patch. Upgrade and redeploy every environment that has `domain()`
+([Upgrading to 0.11.4](docs/upgrading.md#upgrading-to-0114-security)). Nothing changes in `arco.php`, but the deploy
+profile needs new permissions first.
+
+- **Security:** with `domain()`, the Web Function endpoint stayed `ApplicationManaged`, so anyone who knew its
+  `*.lambda-web.<region>.on.aws` URL could call it directly and skip CloudFront. `arco-laravel` trusts
+  `X-Forwarded-*` from every source, and the `ForwardHost` function that sets `X-Forwarded-Host` runs only on
+  CloudFront, so a direct call could send any `X-Forwarded-Host` (the tenant of a host-resolved multi-tenant app,
+  signed URLs, password reset links) and any `X-Forwarded-For`. Every environment with `domain()` is affected;
+  environments without `domain()` are not changed. Now the endpoint is `IamAuth` and only the environment's own
+  CloudFront distribution may invoke it, so the raw endpoint URL answers 403. Reported by the ferretería project
+  (MultiERP) through Arco Cloud.
+- **Changed:** with `domain()`, the endpoint is `IamAuth`, whatever `auth()` says. The domain stack gains a
+  CloudFront origin access control (`AWS::CloudFront::OriginAccessControl`, type `lambda`, signing behavior
+  `always-amz-auth`, which is the only one Lambda Web Function origins accept) on the origin. After the stack
+  completes, Arco puts a statement `ArcoCloudFront` in the Web Function's resource-based policy (allowing
+  `cloudfront.amazonaws.com` to call `lambda:InvokeWebFunctionEndpoint` on the endpoint, only for that
+  distribution), waits until the distribution is `Deployed`, and only then switches an existing endpoint to
+  `IamAuth`, so an upgrade does not cut the live site. New steps: `deploy.oac_policy`, `deploy.endpoint_protected`,
+  `deploy.endpoint_unprotected` and `deploy.oac_revoked` (only when a statement was removed); warning
+  `deploy.domain_stack_unreadable`; errors `deploy.policy_unreadable`, `deploy.access_arn_invalid` (Arco never writes
+  a policy it cannot read) and the verification reason `deploy.verify_signed_forbidden`. Statements Arco did not write are kept.
+  Removing `domain()` removes the statement first (for `auth('public')` and `auth('iam')`) and, for `auth('public')`,
+  makes the endpoint public again; `arco remove` cleans up as before.
+- **Changed:** `auth('iam')` together with `domain()` is allowed now (`validation.domain_iam` is gone) and means the
+  same as `domain()` alone.
+- **Changed:** with `domain()`, the post-deploy check still probes `/up` on the endpoint, now with a SigV4-signed
+  request (service `lambda`, the deploy credentials, the endpoint's region), with the same success rule as before.
+  This needs `lambda:InvokeWebFunctionEndpoint` on the environment's endpoint ARN; a 403 names that permission and
+  the app's own health route as the two causes (`deploy.verify_signed_forbidden`). `auth('iam')` without `domain()` keeps using the platform init
+  report and needs no new permission.
+- **Changed:** new deploy permissions with `domain()`: `cloudfront:CreateOriginAccessControl`,
+  `cloudfront:GetOriginAccessControl`, `cloudfront:UpdateOriginAccessControl`,
+  `cloudfront:DeleteOriginAccessControl` (CloudFormation uses the deploy credentials), and
+  `lambda:GetResourcePolicy`, `lambda:PutResourcePolicy` (plus `lambda:DeleteResourcePolicy`, only when `domain()`
+  is removed and Arco's statement was the only one) on `web-function/<app>-*`. The existing
+  `cloudfront:*Distribution*` and `lambda:*WebFunction*` do not cover these. The signed `/up` probe also needs
+  `lambda:InvokeWebFunctionEndpoint`, which the minimal permissions' `lambda:*WebFunction*` already grants; add it
+  only to scoped or guarded profiles (`ArcoWebFunctionOfTheApp`). A deploy without them stops with an AWS access
+  error, and says the endpoint is still public (`deploy.endpoint_still_public`).
+  **Arco Cloud's connect template needs the same permissions before it deploys an environment with `domain()` with
+  0.11.4.**
+- **Changed:** after an existing endpoint switches to `IamAuth`, the deploy requests the health path through the
+  distribution's own domain (`deploy.protection_check`), retrying 401, 403 and 5xx for about a minute. If CloudFront
+  still cannot reach the app, Arco sets the endpoint back to `ApplicationManaged` (the site keeps serving through
+  CloudFront, unprotected) and the deploy fails with `deploy.protection_reverted`. The policy statement and the
+  access control stay; the next successful deploy locks the endpoint again. Any other error after the switch also
+  sets the endpoint back first. If that fails three times, the deploy stops with `deploy.protection_revert_failed`,
+  which prints the `aws lambda-web update-web-function-endpoint` command that makes the endpoint public by hand.
+- **Changed:** `auth('iam')` → `auth('public')` without `domain()` makes no resource-policy call: the statement is
+  only removed while a domain stack is left from an earlier `domain()`.
+- **Upgrade every deploy path to 0.11.4:** a deploy by 0.11.3 or older (a CI lock file, a teammate, Arco Cloud's
+  runner) drops the access control and makes a protected endpoint public again, without a warning. Require
+  `multiapi/arco:^0.11.4` everywhere you deploy from.
+- **Changed:** `arco info` shows, for an environment with `domain()`, that the endpoint is `IamAuth` and only
+  CloudFront may invoke it (`info.auth_cloudfront`), and `arco info --json` has the new top-level key
+  `endpoint_auth` (`IamAuth` or `ApplicationManaged`) after `permissions_boundary`. `settings.auth` keeps the
+  configured value; no key is renamed.
+- **Changed:** with `domain()`, `arco deploy` marks the endpoint URL in its summary as CloudFront only
+  (`deploy.endpoint_cloudfront_only`). `--json` results are unchanged. `auth('iam')` deploys without `domain()`
+  make one extra `DescribeStacks` call (to find a leftover CloudFront statement); no new permission. If the profile
+  may not call it, the deploy prints the warning `deploy.domain_stack_unreadable` and goes on.
+- **Changed:** behind an emulator endpoint (`AWS_ENDPOINT_URL`, such as Floci), a `domain()` environment is deployed
+  without this protection: no origin access control, no policy statement, the configured `auth()`, and the plain `/up`
+  probe, with the note `deploy.endpoint_unprotected_emulator`. A service-specific override
+  (`AWS_ENDPOINT_URL_LAMBDA`, `_LAMBDA_WEB`, `_CLOUDFRONT`, `_CLOUDFORMATION`) that points elsewhere keeps the
+  protection. Floci's CloudFront cannot sign for a Lambda Web Function
+  origin (it rejects `always-amz-auth`). Real AWS deploys (the variable unset) always get the protection.
+- **Note (known residual, not fixed here):** closing the endpoint does not stop `X-Forwarded-For` spoofing through
+  CloudFront. CloudFront appends the viewer address to an `X-Forwarded-For` the viewer sent, and because Laravel
+  trusts every proxy (`TrustProxies::at('*')`), `request()->ip()` returns the leftmost address, the one the viewer
+  chose. Do not rely on `request()->ip()` for security decisions. `X-Forwarded-Host` is safe: the `ForwardHost`
+  function overwrites it.
+
 ## 0.11.3
 
 - **Changed:** `arco deploy` updates the console function and the queue workers together instead of one after

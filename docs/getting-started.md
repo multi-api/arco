@@ -215,8 +215,10 @@ CloudWatch Logs up to about 40 seconds late, so the health check alone decides w
 passed, and the cold start is read last, after the custom domains: Arco keeps looking for up to about
 60 seconds from the start of that lookup, however long the domains took (at most 40 CloudWatch Logs calls). If the report has not
 arrived by then, or CloudWatch Logs cannot be read (for example when throttled), the summary says
-`Cold start: not available yet` and the deploy still succeeds. With `->auth('iam')` the report is
-the only health signal, so Arco waits up to about 75 seconds for it before deciding; a missing or
+`Cold start: not available yet` and the deploy still succeeds. With `domain()` (0.11.4) only CloudFront may
+call the endpoint, so the health check is a request signed with the deploy credentials (SigV4, service `lambda`),
+which needs `lambda:InvokeWebFunctionEndpoint`; Lambda's 403 names that permission. With `->auth('iam')` and no
+`domain()` the report is the only health signal, so Arco waits up to about 75 seconds for it before deciding; a missing or
 unreadable report fails verification, with a message that says which of the two happened.
 
 While building, Arco prints each phase (copying the project, `composer install --no-dev`, the
@@ -530,7 +532,8 @@ never the message texts: those change between releases and depend on the languag
 
 `info --json` also has `dns` (where the DNS records go: `cloudflare`, `route53 (<profile>)`,
 `route53 (deploy account)` or `manual`; `null` without domains) and `tables` (the `table()` tables, a list of
-`{name, table, existing, ttl}`, `[]` without any), both added in 0.10.
+`{name, table, existing, ttl}`, `[]` without any), both added in 0.10. 0.11 added `permissions_boundary`, and 0.11.4
+adds `endpoint_auth` (`IamAuth` or `ApplicationManaged`: the endpoint's effective auth, `IamAuth` with `domain()`), last.
 
 **Resource relations.** In `info --resources --json`, each resource has `relations`: a list of
 `{"type": ..., "target": ...}` from that resource to another, `[]` when there is none or Arco cannot tell.
@@ -629,6 +632,16 @@ of its own) and `error.unexpected` (an unexpected exception; `message` is the ex
   error message) is exactly that value, so a short secret cannot mangle domains, URLs or messages that merely
   contain it. A value that is exactly the app name, the environment name or one of the custom domains is kept as
   it is (so are the result's `app`, `environment` and `domains`).
+- **CloudFront-only endpoint keys** (0.11.4, only with `domain()` or when `domain()` was just removed): the steps
+  `deploy.oac_policy` (params `{function, distribution}`), `deploy.endpoint_protected` (`{function}`, the endpoint
+  becomes `IamAuth`), `deploy.endpoint_unprotected` (`{function}`, the endpoint becomes public again) and
+  `deploy.oac_revoked` (`{function}`, only when Arco's statement was removed), the warning
+  `deploy.domain_stack_unreadable` (`{stack, function, error}`), the step `deploy.protection_check` (`{url}`, the
+  health path through the distribution after the switch), the warning `deploy.endpoint_still_public` (`{function}`,
+  a deploy that failed before the switch), the errors `deploy.protection_reverted` (`{function, url, answer}`) and `deploy.protection_revert_failed`
+  (`{function, error, command}`), the note `deploy.endpoint_unprotected_emulator`
+  (`{function}`, only behind an emulator endpoint: see [Try your app locally with Floci](local-floci.md)), the errors `deploy.policy_unreadable` and
+  `deploy.access_arn_invalid`, and the verification reason `deploy.verify_signed_forbidden` (`{function}`).
 - **Permissions boundary keys** (0.11, only when a boundary is configured or the role has one; see
   [Permissions boundary](configuration.md#permissions-boundary)):
   - `deploy.step_role` gains the param `boundary` (the configured policy ARN) next to `role`. Without a boundary
@@ -789,6 +802,15 @@ With `domain()`, the deploy profile also needs:
 - `cloudformation:*Stack*` on `arn:aws:cloudformation:*:*:stack/arco-*`
 - `cloudfront:*Distribution*`, `cloudfront:*Function*`, `cloudfront:TagResource`,
   `cloudfront:UntagResource`, `cloudfront:ListTagsForResource`
+- `cloudfront:CreateOriginAccessControl`, `cloudfront:GetOriginAccessControl`,
+  `cloudfront:UpdateOriginAccessControl`, `cloudfront:DeleteOriginAccessControl` (0.11.4; CloudFormation calls them
+  with the deploy credentials, and `cloudfront:*Distribution*` does not match them)
+- `lambda:GetResourcePolicy`, `lambda:PutResourcePolicy` on `arn:aws:lambda:*:*:web-function/<app>-*` (0.11.4:
+  Arco lets only the environment's CloudFront invoke the endpoint), and `lambda:DeleteResourcePolicy` (only when you
+  remove `domain()` and Arco's statement was the only one). `lambda:*WebFunction*` does not match them
+- `lambda:InvokeWebFunctionEndpoint` (0.11.4: the post-deploy `/up` check is a signed request, since only CloudFront
+  and signed callers may invoke the endpoint). The minimal permissions' `lambda:*WebFunction*` already grants it; a
+  scoped profile needs it on `arn:aws:lambda:*:*:web-function/<app>-*/endpoint/*`
 - the Route 53 permissions below when the deploy account also hosts the DNS zones
 
 The DNS profile (`dns('profile')` or `--dns-profile`) needs `route53:ListHostedZonesByName`,
@@ -882,6 +904,11 @@ exactly as the deploy passes it):
   It passes no role to CloudFormation (no `RoleARN`) or to EventBridge, and the role it creates trusts only
   `lambda.amazonaws.com`. If a deploy with the condition fails with a `iam:PassRole` denial, check in CloudTrail
   which service the call named and adjust the value.
+- **`lambda:PutResourcePolicy` lets the profile grant others access to the app's Web Function.** Arco only writes
+  its `ArcoCloudFront` statement, but the action itself accepts any policy, so the profile holder could let another
+  account invoke an `auth('iam')` endpoint or manage the function. This stays within the app's own functions. If
+  that matters to you, condition the action (for example deny it outside your deploy pipeline's role) or watch
+  the policy with IAM Access Analyzer, which reports Web Function policies that grant access outside your account.
 - **The trust policy of a new role is not constrained.** No IAM condition key limits the
   `AssumeRolePolicyDocument` of `iam:CreateRole`, so the profile can create a bounded `arco-*` role that another
   AWS account can assume. That account then has lasting access to everything the boundary allows, and with one
@@ -935,7 +962,9 @@ deploys several apps, list one resource per app.
     "Action": [
       "lambda:CreateWebFunction", "lambda:CreateWebFunctionRevision", "lambda:UpdateWebFunctionEndpoint",
       "lambda:DeleteWebFunction", "lambda:GetWebFunction", "lambda:GetWebFunctionEndpoint",
-      "lambda:GetWebFunctionRevision", "lambda:ListTags", "lambda:TagResource"
+      "lambda:GetWebFunctionRevision", "lambda:ListTags", "lambda:TagResource",
+      "lambda:GetResourcePolicy", "lambda:PutResourcePolicy", "lambda:DeleteResourcePolicy",
+      "lambda:InvokeWebFunctionEndpoint"
     ],
     "Resource": "arn:aws:lambda:*:<account>:web-function/<app>-*"
   },

@@ -38,6 +38,27 @@ final class Endpoint
         return is_string($value) && in_array(strtolower($value), ['true', 'on', '1'], true);
     }
 
+    /**
+     * Whether override() also serves these services: no service-specific AWS_ENDPOINT_URL_<SERVICE> (which the SDK
+     * prefers) points elsewhere. $services are the SDK's service identifiers, such as lambda_web (AWS_ENDPOINT_URL_LAMBDA_WEB).
+     *
+     * @param list<string> $services
+     */
+    public static function servesAll(array $services): bool
+    {
+        $override = self::override();
+        if ($override === null) {
+            return false;
+        }
+        foreach ($services as $service) {
+            $value = getenv('AWS_ENDPOINT_URL_' . strtoupper($service));
+            if (is_string($value) && $value !== '' && rtrim($value, '/') !== $override) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     public static function scheme(): string
     {
         $override = self::override();

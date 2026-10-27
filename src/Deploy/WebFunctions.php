@@ -99,19 +99,84 @@ final class WebFunctions
         }
     }
 
-    /** Retries ConflictException (endpoint still busy with a previous update) a bounded number of times. */
-    public function route(string $function, string $revisionId, AppConfig $config): void
+    /**
+     * Retries ConflictException (endpoint still busy with a previous update) a bounded number of times.
+     *
+     * @param string|null $authType the endpoint's auth type; default: the one the config asks for
+     */
+    public function route(string $function, string $revisionId, AppConfig $config, ?string $authType = null): void
+    {
+        $this->updateEndpoint([
+            'functionName' => $function,
+            'endpointName' => self::ENDPOINT,
+            'authType' => $authType ?? RevisionFactory::authType($config),
+            'autoDeploymentMode' => 'Disabled',
+            'revisionWeights' => [['revisionId' => $revisionId, 'weight' => 100]],
+            ...RevisionFactory::limits($config),
+        ]);
+    }
+
+    /** Changes only the endpoint's auth type (UpdateWebFunctionEndpoint is a partial update). */
+    public function setAuth(string $function, string $authType): void
+    {
+        $this->updateEndpoint(['functionName' => $function, 'endpointName' => self::ENDPOINT, 'authType' => $authType]);
+    }
+
+    /**
+     * The Web Function's resource-based policy, decoded, and its revision; null when it has none.
+     *
+     * @return array{policy: array<string, mixed>, revisionId: string}|null
+     */
+    public function policy(string $functionArn): ?array
+    {
+        try {
+            $result = $this->call('GetResourcePolicy', ['resourceArn' => $functionArn]);
+        } catch (LambdaWebException $e) {
+            if ($e->getAwsErrorCode() === 'ResourceNotFoundException') {
+                return null;
+            }
+            throw $e;
+        }
+        // Never read as empty: a policy written back from a misread one would drop statements Arco did not write.
+        try {
+            $policy = json_decode(self::text($result['policy'] ?? null), true, 512, JSON_THROW_ON_ERROR);
+        } catch (\JsonException) {
+            $policy = null;
+        }
+        if (! is_array($policy) || ($policy !== [] && array_is_list($policy))) {
+            throw DeployException::make('deploy.policy_unreadable', ['arn' => $functionArn]);
+        }
+        $decoded = [];
+        foreach ($policy as $key => $value) {
+            $decoded[(string) $key] = $value;
+        }
+        return ['policy' => $decoded, 'revisionId' => self::text($result['revisionId'] ?? null)];
+    }
+
+    /**
+     * @param array<string, mixed> $policy
+     * @param string|null $revisionId the revision read; null when the function had no policy
+     */
+    public function putPolicy(string $functionArn, array $policy, ?string $revisionId): void
+    {
+        $this->call('PutResourcePolicy', [
+            'resourceArn' => $functionArn,
+            'policy' => json_encode($policy, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+            ...($revisionId === null ? [] : ['revisionId' => $revisionId]),
+        ]);
+    }
+
+    public function deletePolicy(string $functionArn, string $revisionId): void
+    {
+        $this->call('DeleteResourcePolicy', ['resourceArn' => $functionArn, 'revisionId' => $revisionId]);
+    }
+
+    /** @param array<string, mixed> $args */
+    private function updateEndpoint(array $args): void
     {
         for ($attempt = 1; ; $attempt++) {
             try {
-                $this->call('UpdateWebFunctionEndpoint', [
-                    'functionName' => $function,
-                    'endpointName' => self::ENDPOINT,
-                    'authType' => RevisionFactory::authType($config),
-                    'autoDeploymentMode' => 'Disabled',
-                    'revisionWeights' => [['revisionId' => $revisionId, 'weight' => 100]],
-                    ...RevisionFactory::limits($config),
-                ]);
+                $this->call('UpdateWebFunctionEndpoint', $args);
                 return;
             } catch (LambdaWebException $e) {
                 if ($e->getAwsErrorCode() !== 'ConflictException' || $attempt >= self::CONFLICT_RETRIES) {

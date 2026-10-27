@@ -47,6 +47,13 @@ recognised endpoint is set, `arco deploy` prints a note naming it (before it loa
 - builds URLs with `http` (an `https://` endpoint keeps `https`),
 - uses path-style bucket URLs (`<endpoint>/<bucket>`) and sets `AWS_USE_PATH_STYLE_ENDPOINT=true` in the app
   (a value you set in `variables()` wins).
+- deploys a `domain()` environment without the CloudFront protection of 0.11.4: no origin access control in the
+  domain stack, no resource-policy statement, and the endpoint keeps the auth `auth()` configures (public by default),
+  checked with the plain `/up` probe. The deploy says so in one line. On AWS only CloudFront may invoke that endpoint.
+  A service-specific variable (`AWS_ENDPOINT_URL_LAMBDA`, `AWS_ENDPOINT_URL_LAMBDA_WEB`, `AWS_ENDPOINT_URL_CLOUDFRONT`
+  or `AWS_ENDPOINT_URL_CLOUDFORMATION`) that points elsewhere keeps the protection. Arco does not read `endpoint_url`
+  in a profile: a profile that sends those services to real AWS while `AWS_ENDPOINT_URL` points at an emulator
+  deploys without the protection, so keep such profiles out of real deploys.
 
 Nothing changes on real AWS when the variable is unset.
 
@@ -113,6 +120,12 @@ available yet": Floci does not report the Lambda init metric to CloudWatch Logs.
 
 - **IAM is not enforced like AWS.** A deploy that works here can still fail on AWS because of a missing
   permission. Check [Minimal IAM permissions](getting-started.md#minimal-iam-permissions) before the real deploy.
+- **No init report, so no `auth('iam')` deploy passes verification.** An `IamAuth` endpoint cannot be probed without
+  a signature, so Arco waits for the Lambda init report in CloudWatch Logs, and Floci does not write it.
+- **No CloudFront protection for `domain()`.** Floci's CloudFront does not know the signing behavior
+  `always-amz-auth`, the only one AWS accepts for Lambda Web Function origins, so it cannot sign requests to the
+  endpoint. Arco therefore skips the protection behind an emulator endpoint (see above). Test the protection itself
+  (the custom domain answers, the endpoint URL answers 403) against a real account.
 - **No real DNS or TLS.** Custom domains do not resolve outside the emulator, and nothing is served over HTTPS.
 
 ## Clean up

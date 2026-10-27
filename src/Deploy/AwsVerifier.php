@@ -6,6 +6,7 @@ use Aws\CloudWatchLogs\CloudWatchLogsClient;
 use Aws\Exception\AwsException;
 use GuzzleHttp\ClientInterface;
 use GuzzleHttp\Exception\GuzzleException;
+use GuzzleHttp\Psr7\Request;
 use Multiapi\Arco\Config\AppConfig;
 
 final class AwsVerifier implements Verifier
@@ -35,6 +36,7 @@ final class AwsVerifier implements Verifier
         private readonly int $coldStartSeconds = 60,
         private readonly int $iamReportSeconds = 75,
         private readonly int $callBudget = 40,
+        private readonly ?EndpointSigner $signer = null,
     ) {
     }
 
@@ -42,7 +44,7 @@ final class AwsVerifier implements Verifier
     {
         $reason = null;
         $reasonParams = [];
-        if ($config->auth === 'iam') {
+        if ($config->auth === 'iam' && ! RevisionFactory::protectsEndpoint($config)) {
             // An unsigned probe always gets 403 from an IAM-authenticated endpoint, so the
             // platform init report is the only signal: it must exist and say success.
             [$status, $error] = [null, null];
@@ -59,8 +61,15 @@ final class AwsVerifier implements Verifier
         } else {
             // The probe alone decides: the cold start is read at the end of the deploy (coldStart()),
             // since platform events reach CloudWatch Logs up to ~40 s late.
-            [$status, $error] = $this->probe($result->url() . $healthPath);
+            // With domain() only CloudFront may invoke the endpoint (IamAuth), so the probe is signed with the
+            // deploy credentials (lambda:InvokeWebFunctionEndpoint). Signing an endpoint that is still public
+            // during an upgrade changes nothing for it.
+            $signed = RevisionFactory::protectsEndpoint($config);
+            [$status, $error] = $this->probe($result->url() . $healthPath, $signed ? (string) $config->region : null);
             $ok = $status !== null && $status >= 200 && $status < 300;
+            if ($signed && $status === 403) {
+                [$reason, $reasonParams] = ['deploy.verify_signed_forbidden', ['function' => $config->functionName()]];
+            }
             $report = null;
             if (! $ok) {
                 // One look, without waiting, for an init error to explain the failure.
@@ -99,13 +108,23 @@ final class AwsVerifier implements Verifier
             : $verification->withInit($report['status'], $report['errorType'], $report['durationMs']);
     }
 
-    /** @return array{0: ?int, 1: ?string} */
-    private function probe(string $url): array
+    /**
+     * @param string|null $signFor the endpoint's region when the request must be SigV4-signed
+     * @return array{0: ?int, 1: ?string}
+     */
+    private function probe(string $url, ?string $signFor = null): array
     {
+        $options = ['http_errors' => false, 'allow_redirects' => false, 'timeout' => 30, 'version' => '1.1'];
         $last = [null, null];
         for ($attempt = 1; $attempt <= $this->attempts; $attempt++) {
             try {
-                $status = $this->http->request('GET', $url, ['http_errors' => false, 'allow_redirects' => false, 'timeout' => 30, 'version' => '1.1'])->getStatusCode();
+                if ($signFor === null) {
+                    $status = $this->http->request('GET', $url, $options)->getStatusCode();
+                } else {
+                    // Signed again on each attempt: the signature carries its time.
+                    $signer = $this->signer ?? throw new \LogicException('A domain() environment is verified with a signed probe: AwsVerifier needs an EndpointSigner.');
+                    $status = $this->http->send($signer->sign(new Request('GET', $url), $signFor), $options)->getStatusCode();
+                }
                 if ($status < 500) {
                     return [$status, null];
                 }

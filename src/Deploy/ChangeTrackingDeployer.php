@@ -80,10 +80,10 @@ final class ChangeTrackingDeployer implements Deployer
         $this->inner->syncWorkers($config, $workerVersions, $onStep);
     }
 
-    public function attachDomains(AppConfig $config, DeployResult $result, array $cachedPaths, ?callable $onStep = null): DeployResult
+    public function attachDomains(AppConfig $config, DeployResult $result, array $cachedPaths, ?callable $onStep = null, string $healthPath = '/up'): DeployResult
     {
         $this->change();
-        return $this->inner->attachDomains($config, $result, $cachedPaths, $onStep);
+        return $this->inner->attachDomains($config, $result, $cachedPaths, $onStep, $healthPath);
     }
 
     public function hasDomainResources(AppConfig $config): bool

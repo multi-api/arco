@@ -1152,9 +1152,37 @@ you created are never deleted. Certificate validation `CNAME`s (`_….<domain>`)
 are harmless, and ACM reuses the same record for any certificate of that name in any region of the
 account. Delete them yourself if no certificate needs them.
 
+### Protecting the endpoint
+
+With `domain()`, only the environment's CloudFront distribution can call the Web Function endpoint (0.11.4). Arco:
+
+- sets the endpoint to `IamAuth`, whatever `auth()` says (`auth('iam')` with `domain()` is allowed and means the same);
+- gives the distribution an origin access control that signs each request to the origin (SigV4);
+- adds one statement, `ArcoCloudFront`, to the Web Function's resource-based policy: `cloudfront.amazonaws.com` may call
+  `lambda:InvokeWebFunctionEndpoint` on the endpoint when `aws:SourceArn` is this distribution. Statements you added
+  to that policy are left alone.
+
+A request sent directly to the `*.lambda-web.<region>.on.aws` URL has no valid signature and answers 403. That is why
+`arco-laravel`'s `TrustProxies::at('*')` is safe for `X-Forwarded-Host` with `domain()`: the header can only come from
+CloudFront, and the `ForwardHost` function overwrites whatever the viewer sent. Without `domain()` the endpoint is
+public, so do not use `X-Forwarded-Host` for security decisions there.
+
+On an existing environment the deploy adds the access control, then the policy, waits until the distribution is
+`Deployed`, and only then switches the endpoint to `IamAuth`. Removing `domain()` from `arco.php` removes the statement
+first and, with `auth('public')`, makes the endpoint public again. `arco info` shows the effective endpoint auth, and
+`arco info --json` has the key `endpoint_auth`. The deploy needs extra permissions (see
+[Permissions for custom domains](getting-started.md#permissions-for-custom-domains)).
+
+Because an unsigned request gets 403, the post-deploy check probes `/up` with a request signed with the deploy
+credentials (SigV4, service `lambda`), so the deploy profile needs `lambda:InvokeWebFunctionEndpoint` on the endpoint.
+`auth('iam')` without `domain()` keeps using the platform init report.
+
+**Known residual.** CloudFront appends the viewer's address to an `X-Forwarded-For` the viewer sent, and Laravel (with
+every proxy trusted) takes the leftmost address as `request()->ip()`. A viewer can therefore still choose the IP your
+app sees. Do not rely on `request()->ip()` for rate limiting, audit logs or allowlists in security-sensitive code.
+
 ### Limits
 
-- `auth('iam')` cannot be combined with `domain()` (CloudFront would have to sign requests).
 - The origin read timeout is `timeout() + 2` seconds, at most 60 (CloudFront's default limit).
 - One distribution per environment; no WAF, no apex redirects.
 

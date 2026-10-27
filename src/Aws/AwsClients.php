@@ -4,6 +4,7 @@ namespace Multiapi\Arco\Aws;
 
 use Aws\Acm\AcmClient;
 use Aws\CloudFormation\CloudFormationClient;
+use Aws\CloudFront\CloudFrontClient;
 use Aws\CloudWatchLogs\CloudWatchLogsClient;
 use Aws\DynamoDb\DynamoDbClient;
 use Aws\EventBridge\EventBridgeClient;
@@ -211,6 +212,8 @@ final class AwsClients
     public function eventBridge(): EventBridgeClient { return $this->sdk->createEventBridge(); }
     /** CloudFront only uses certificates from us-east-1, whatever the app region. */
     public function acm(): AcmClient { return $this->sdk->createAcm(['region' => 'us-east-1']); }
+    /** CloudFront is a global service, signed for us-east-1. */
+    public function cloudFront(): CloudFrontClient { return $this->sdk->createCloudFront(['region' => 'us-east-1']); }
     public function cloudFormation(): CloudFormationClient { return $this->sdk->createCloudFormation(); }
     public function sqs(): SqsClient { return $this->sdk->createSqs(); }
     public function dynamoDb(): DynamoDbClient { return $this->sdk->createDynamoDb(); }

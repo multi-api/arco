@@ -57,9 +57,6 @@ final class DomainAddCommand extends ArcoCommand
             $added = $this->parseDomains($hosts);
             $flagDns = $this->dnsFromFlags($input);
             $config = $this->loadTarget($input, $io);
-            if ($config->auth === 'iam') {
-                throw new UserError($this->t('validation.domain_iam'));
-            }
 
             $domains = array_values(array_unique([...$config->domains, ...$added]));
             if (count($domains) > Validator::MAX_DOMAINS) {

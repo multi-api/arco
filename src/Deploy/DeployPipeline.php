@@ -494,7 +494,7 @@ final class DeployPipeline
             }
             // Custom domains only once the endpoint is known to work; the origin is the endpoint domain.
             if ($verification->ok && $config->domains !== []) {
-                $result = $deployer->attachDomains($config, $result, $preset instanceof CachesPaths ? $preset->cachedPaths() : [], $onStep);
+                $result = $deployer->attachDomains($config, $result, $preset instanceof CachesPaths ? $preset->cachedPaths() : [], $onStep, $preset->healthPath());
             }
             if ($verification->ok) {
                 try {

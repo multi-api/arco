@@ -15,6 +15,7 @@ use Multiapi\Arco\Cli\UserError;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
 use Multiapi\Arco\Config\AppConfig;
 use Multiapi\Arco\Config\GenericTableConfig;
+use Multiapi\Arco\Deploy\RevisionFactory;
 use Multiapi\Arco\Config\PermissionsBoundary;
 use Multiapi\Arco\Config\StorageConfig;
 use Multiapi\Arco\Config\TableConfig;
@@ -111,6 +112,8 @@ final class InfoCommand extends ArcoCommand
                 ], $config->tables),
                 // Additive (0.11), last: the execution role's boundary after the deploy-host override; null without one.
                 'permissions_boundary' => $config->permissionsBoundary,
+                // Additive (0.11.4), last: the endpoint's auth type, IamAuth with domain() whatever auth says.
+                'endpoint_auth' => RevisionFactory::authType($config),
             ] + ($remoteError !== null ? ['error' => $remoteError] : []), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
             return $remoteError === null ? self::SUCCESS : self::FAILURE;
         }
@@ -118,7 +121,12 @@ final class InfoCommand extends ArcoCommand
         $io->title($config->functionName());
         $rows = [];
         foreach ($settings as $key => $row) {
-            $rows[] = [$key, $this->display($key, $row[0], $status), $row[1]];
+            $value = $this->display($key, $row[0], $status);
+            if ($key === 'auth' && RevisionFactory::protectsEndpoint($config)) {
+                // domain() makes the endpoint IamAuth whatever auth() says: only CloudFront may invoke it.
+                $value = $this->t('info.auth_cloudfront', ['auth' => $value]);
+            }
+            $rows[] = [$key, $value, $row[1]];
             if ($key === 'dns' && ($provider = self::dnsProvider($config)) !== null) {
                 $rows[] = ['dns.provider', $provider, $row[1]];
             }
