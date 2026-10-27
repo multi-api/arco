@@ -159,14 +159,14 @@ final class AwsDeployer implements Deployer
         $region = (string) $config->region;
         $web = new WebFunctions($this->aws->lambdaWeb(), $this->sleeper);
         $bucket = CodeBucket::name($account, $region);
-        $codeBucket = new CodeBucket($this->aws->s3());
+        $codeBucket = new CodeBucket($this->aws->s3(), $this->sleeper);
 
         $step('deploy.step_bucket', ['bucket' => $bucket]);
         $codeBucket->ensure($bucket, $region, $account);
 
         $key = self::prefix($config) . "{$package->hash}.zip";
         $step('deploy.step_upload', ['size' => (int) round($package->bytes / 1048576)]);
-        $versionId = $codeBucket->upload($bucket, $key, $package->path);
+        $versionId = $codeBucket->upload($bucket, $key, $package->path, $step);
 
         $tags = self::tags($config);
         $roleCreated = false;
@@ -209,9 +209,9 @@ final class AwsDeployer implements Deployer
                 $step('deploy.step_console', ['function' => $config->consoleFunctionName()]);
             }
             $consoleKey = self::consolePrefix($config) . "{$console->package->hash}.zip";
-            $consoleObject = $codeBucket->upload($bucket, $consoleKey, $console->package->path);
+            $consoleObject = $codeBucket->upload($bucket, $consoleKey, $console->package->path, $step);
             if ($console->download !== null) {
-                $codeBucket->uploadBinary($bucket, $console->download->key, $console->download->path, $console->download->bytes);
+                $codeBucket->uploadBinary($bucket, $console->download->key, $console->download->path, $console->download->bytes, $step);
             }
             $runtimeVariables = [...$variables, ...self::binaryVariables($bucket, $console)];
             // The console and the workers are updated together (LambdaFunction::deployAll): each runs the

@@ -2,14 +2,21 @@
 
 namespace Multiapi\Arco\Deploy;
 
+use Aws\Exception\AwsException;
 use Aws\ResultInterface;
 use Aws\S3\Exception\S3Exception;
+use Aws\S3\MultipartUploader;
 use Aws\S3\ObjectUploader;
 use Aws\S3\S3Client;
 
 final class CodeBucket
 {
-    public function __construct(private readonly S3Client $s3)
+    /** Seconds before the one retry of a failed upload: the SDK's own quick retries have already failed. */
+    public const RETRY_DELAY = 5;
+    // 'private' is rejected by S3-compatible emulators (Floci); this ACL is valid on AWS too.
+    private const ACL = 'bucket-owner-full-control';
+
+    public function __construct(private readonly S3Client $s3, private readonly Sleeper $sleeper = new Sleeper())
     {
     }
 
@@ -92,7 +99,8 @@ final class CodeBucket
         ];
     }
 
-    public function upload(string $bucket, string $key, string $path): ?string
+    /** @param (callable(string, array<string, string|int>): void)|null $onStep receives deploy.upload_retry */
+    public function upload(string $bucket, string $key, string $path, ?callable $onStep = null): ?string
     {
         try {
             $head = $this->s3->headObject(['Bucket' => $bucket, 'Key' => $key]);
@@ -102,7 +110,7 @@ final class CodeBucket
                 throw $e;
             }
         }
-        return $this->put($bucket, $key, $path);
+        return $this->put($bucket, $key, $path, $onStep);
     }
 
     /**
@@ -112,8 +120,10 @@ final class CodeBucket
      * RuntimeBinaries::prune(): another app's deploy may prune before this deploy publishes the version
      * that references it. No version id is returned: the key is immutable and the console checks the bytes against
      * their SHA-256, so the bootstrap never pins an S3 version (noncurrent versions expire).
+     *
+     * @param (callable(string, array<string, string|int>): void)|null $onStep receives deploy.upload_retry
      */
-    public function uploadBinary(string $bucket, string $key, string $path, int $bytes): void
+    public function uploadBinary(string $bucket, string $key, string $path, int $bytes, ?callable $onStep = null): void
     {
         try {
             $head = $this->s3->headObject(['Bucket' => $bucket, 'Key' => $key]);
@@ -139,23 +149,97 @@ final class CodeBucket
                 throw $e;
             }
         }
-        $this->put($bucket, $key, $path);
+        $this->put($bucket, $key, $path, $onStep);
     }
 
-    private function put(string $bucket, string $key, string $path): ?string
+    /**
+     * A failure the network or S3 caused (connection reset, timeout, 5xx) is retried once, after the
+     * SDK's own retries: a multipart upload resumes with the parts already uploaded. A multipart upload
+     * that still fails is aborted so no parts are left behind.
+     *
+     * @param (callable(string, array<string, string|int>): void)|null $onStep
+     */
+    private function put(string $bucket, string $key, string $path, ?callable $onStep): ?string
     {
         $body = fopen($path, 'rb');
         if ($body === false) {
             throw DeployException::make('deploy.read_package_failed', ['path' => $path]);
         }
         try {
-            $result = (new ObjectUploader($this->s3, $bucket, $key, $body, 'bucket-owner-full-control'))->upload();
+            try {
+                $result = $this->send($bucket, $key, $body);
+            } catch (AwsException|PartUploadException $e) {
+                $reason = self::transientReason($e);
+                if ($reason === null) {
+                    $this->abort($e);
+                    throw $e;
+                }
+                if ($onStep !== null) {
+                    $onStep('deploy.upload_retry', ['key' => $key, 'error' => $reason, 'seconds' => self::RETRY_DELAY]);
+                }
+                $this->sleeper->sleep(self::RETRY_DELAY);
+                rewind($body);
+                try {
+                    $result = $e instanceof PartUploadException && $e->getState()->isInitiated()
+                        ? (new MultipartUploader($this->s3, $body, ['state' => $e->getState(), 'acl' => self::ACL, 'exception_class' => PartUploadException::class]))->upload()
+                        : $this->send($bucket, $key, $body);
+                } catch (PartUploadException $again) {
+                    $this->abort($again);
+                    throw $again;
+                }
+            }
         } finally {
             if (is_resource($body)) {
                 fclose($body);
             }
         }
         return self::version($result instanceof ResultInterface ? $result->get('VersionId') : null);
+    }
+
+    /** @param resource $body */
+    private function send(string $bucket, string $key, $body): mixed
+    {
+        return (new ObjectUploader($this->s3, $bucket, $key, $body, self::ACL, ['exception_class' => PartUploadException::class]))->upload();
+    }
+
+    /** What went wrong, when every error is one a retry can fix; null otherwise. */
+    private static function transientReason(AwsException|PartUploadException $e): ?string
+    {
+        $errors = $e instanceof AwsException ? [$e] : ($e->partErrors !== [] ? $e->partErrors : array_filter([$e->error]));
+        if ($errors === []) {
+            return null;
+        }
+        $reasons = [];
+        foreach ($errors as $part => $error) {
+            $transient = $error->isConnectionError()
+                || ($error->getStatusCode() ?? 0) >= 500
+                || in_array($error->getAwsErrorCode(), ['RequestTimeout', 'SlowDown'], true);
+            if (! $transient) {
+                return null;
+            }
+            $message = $error->getAwsErrorMessage();
+            $message = is_string($message) && $message !== '' ? $message : $error->getMessage();
+            $reasons[] = ($e instanceof PartUploadException && $e->partErrors !== [] ? "part $part: " : '') . $message;
+        }
+        return implode('; ', $reasons);
+    }
+
+    /** Best effort: the bucket's lifecycle rule aborts what is left after a day anyway. */
+    private function abort(\Throwable $e): void
+    {
+        if (! $e instanceof PartUploadException) {
+            return;
+        }
+        $state = $e->getState();
+        if (! $state->isInitiated() || $state->isCompleted()) {
+            return;
+        }
+        /** @var array{Bucket: string, Key: string, UploadId: string} $id */
+        $id = $state->getId();
+        try {
+            $this->s3->abortMultipartUpload($id);
+        } catch (AwsException) {
+        }
     }
 
     /**

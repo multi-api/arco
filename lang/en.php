@@ -107,6 +107,7 @@ return [
     'package.ready' => 'Package ready: {size} MB',
     'deploy.step_bucket' => 'Preparing code bucket {bucket}',
     'deploy.step_upload' => 'Uploading package ({size} MB)',
+    'deploy.upload_retry' => 'Uploading {key} failed ({error}); retrying once in {seconds} s.',
     'deploy.policy_too_large' => 'The execution role policy is {size} characters; IAM allows {max}. Use wildcards or fewer statements in permissions().',
     'deploy.step_role' => 'Updating execution role {role}',
     'deploy.step_function' => 'Creating Web Function {function}',

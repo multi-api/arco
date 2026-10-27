@@ -107,6 +107,7 @@ return [
     'package.ready' => 'Paquete listo: {size} MB',
     'deploy.step_bucket' => 'Preparando el bucket de código {bucket}',
     'deploy.step_upload' => 'Subiendo el paquete ({size} MB)',
+    'deploy.upload_retry' => 'Falló la subida de {key} ({error}); se reintenta una vez en {seconds} s.',
     'deploy.policy_too_large' => 'La policy del rol de ejecución tiene {size} caracteres; IAM permite {max}. Usa comodines o menos statements en permissions().',
     'deploy.step_role' => 'Actualizando el rol de ejecución {role}',
     'deploy.step_function' => 'Creando la Web Function {function}',

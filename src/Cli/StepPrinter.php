@@ -21,7 +21,7 @@ final class StepPrinter
      * Informational lines that are not a step of their own: printed as bullets, streamed by `--json` as
      * `note` (they do not end the running step).
      */
-    public const NOTES = ['deploy.boundary_kept', 'deploy.endpoint_unprotected_emulator'];
+    public const NOTES = ['deploy.boundary_kept', 'deploy.endpoint_unprotected_emulator', 'deploy.upload_retry'];
     /** Codes of a WARNINGS step's `reason` that are a deliberate choice with nothing to act on: printed as bullets. */
     private const BULLET_REASONS = ['deploy.console_downloads_binary' => ['custom_binary']];
     private const MARKS = [25, 50, 75, 100];

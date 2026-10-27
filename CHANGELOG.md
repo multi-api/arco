@@ -3,6 +3,20 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.11.5
+
+Nothing changes in `arco.php` or in the deploy permissions.
+
+- **Fixed:** a network blip while uploading the package to S3 failed the whole deploy. A deploy from GitHub Actions
+  failed with `cURL error 56: Recv failure: Connection reset by peer` on one `UploadPart`, after the AWS SDK's own
+  quick retries, and the same job passed when it was run again. Now an upload that fails on the network or on S3
+  (a connection reset or timeout, a 5xx, `RequestTimeout`, `SlowDown`) is retried once, 5 seconds later: a
+  multipart upload resumes with the parts already uploaded instead of starting over. A note says so
+  (`deploy.upload_retry`, a `note` event in `--json`). An upload that fails again, or that S3 rejected (for
+  example `AccessDenied`), fails the deploy as before with the same error, and its multipart upload is aborted so
+  no parts are left behind. This covers the web package, the console package and the runtime binary. Reported by
+  Arco Cloud.
+
 ## 0.11.4
 
 Security patch. Upgrade and redeploy every environment that has `domain()`
