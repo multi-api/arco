@@ -17,6 +17,7 @@ final class ConfigResolver
         'role' => null,
         'kmsKey' => null,
         'permissionsBoundary' => null,
+        'vpc' => null,
         'profile' => null,
         'account' => null,
         'dns' => null,
@@ -161,6 +162,7 @@ final class ConfigResolver
         $scheduler = $setting('scheduler');
         $logRetention = $setting('logRetention');
         $permissionsBoundary = $setting('permissionsBoundary');
+        $vpc = self::vpc($setting('vpc'));
 
         $config = new AppConfig(
             app: self::nullableString($raw['name'] ?? null) ?? '',
@@ -201,9 +203,20 @@ final class ConfigResolver
             dnsCloudflare: $dns === self::CLOUDFLARE,
             tables: $tables,
             permissionsBoundary: $permissionsBoundary === false ? null : self::nullableString($permissionsBoundary),
+            vpc: $vpc,
         );
 
         return $config;
+    }
+
+    /** The vpc() setting as stored by ConfiguresDeployment::vpc(); false or unset: no VPC. */
+    private static function vpc(mixed $value): ?VpcConfig
+    {
+        if (! is_array($value)) {
+            return null;
+        }
+        $strings = static fn (mixed $list): array => is_array($list) ? array_values(array_filter($list, 'is_string')) : [];
+        return new VpcConfig($strings($value['subnets'] ?? []), $strings($value['securityGroups'] ?? []));
     }
 
     /**

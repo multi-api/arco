@@ -4,7 +4,7 @@ namespace Multiapi\Arco\Config;
 
 trait ConfiguresDeployment
 {
-    /** @var array<string, string|int|bool|array<string, string>> */
+    /** @var array<string, string|int|bool|array<string, string|list<string>>> */
     private array $settings = [];
     /** @var array<string, string> */
     private array $variables = [];
@@ -40,6 +40,20 @@ trait ConfiguresDeployment
      * `--permissions-boundary`, overrides it. Not with role(): Arco then creates no role to bound.
      */
     public function permissionsBoundary(string|false $policyArn): static { $this->settings['permissionsBoundary'] = $policyArn; return $this; }
+
+    /**
+     * Runs the functions inside a VPC: 1-16 subnets (`subnet-...`) and 1-5 security groups (`sg-...`), attached
+     * through one Lambda network connector Arco manages. An environment's call replaces the app's as a whole;
+     * false at the environment level clears the app's.
+     *
+     * @param list<string>|false $subnets
+     * @param list<string> $securityGroups
+     */
+    public function vpc(array|false $subnets, array $securityGroups = []): static
+    {
+        $this->settings['vpc'] = $subnets === false ? false : ['subnets' => $subnets, 'securityGroups' => $securityGroups];
+        return $this;
+    }
 
     /**
      * Custom domains served through CloudFront. Calls add to the list; an environment's list
@@ -265,7 +279,7 @@ trait ConfiguresDeployment
     /**
      * `tables` only when table() was called, so configurations without it keep their shape.
      *
-     * @return array{settings: array<string, string|int|bool|array<string, string>>, variables: array<string, string>, runtime: array<string, mixed>, permissions: list<array<string, mixed>>, domains: list<string>|null, deployCommands: list<string>|null, queues: array<string, array<string, mixed>|false>, storage: array<string, array<string, mixed>|false>, tables?: array<string, array<string, mixed>|false>}
+     * @return array{settings: array<string, string|int|bool|array<string, string|list<string>>>, variables: array<string, string>, runtime: array<string, mixed>, permissions: list<array<string, mixed>>, domains: list<string>|null, deployCommands: list<string>|null, queues: array<string, array<string, mixed>|false>, storage: array<string, array<string, mixed>|false>, tables?: array<string, array<string, mixed>|false>}
      */
     protected function deploymentArray(): array
     {

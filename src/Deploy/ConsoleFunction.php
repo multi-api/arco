@@ -44,9 +44,9 @@ final class ConsoleFunction
      * @param array<string, string> $tags
      * @return string the published version
      */
-    public function deploy(AppConfig $config, string $bucket, string $key, ?string $versionId, string $roleArn, array $variables, array $tags, bool $roleJustCreated = false): string
+    public function deploy(AppConfig $config, string $bucket, string $key, ?string $versionId, string $roleArn, array $variables, array $tags, bool $roleJustCreated = false, bool $detachVpc = false): string
     {
-        $request = $this->request($config, $bucket, $key, $versionId, $roleArn, $variables, $tags, $roleJustCreated);
+        $request = $this->request($config, $bucket, $key, $versionId, $roleArn, $variables, $tags, $roleJustCreated, $detachVpc);
         return $this->function->deploy($request->name, $request->handler, $request->code, $request->settings, $request->tags, $roleJustCreated);
     }
 
@@ -56,20 +56,21 @@ final class ConsoleFunction
      * @param array<string, string> $variables
      * @param array<string, string> $tags
      */
-    public function request(AppConfig $config, string $bucket, string $key, ?string $versionId, string $roleArn, array $variables, array $tags, bool $roleJustCreated = false): FunctionDeploy
+    public function request(AppConfig $config, string $bucket, string $key, ?string $versionId, string $roleArn, array $variables, array $tags, bool $roleJustCreated = false, bool $detachVpc = false): FunctionDeploy
     {
         $code = ['S3Bucket' => $bucket, 'S3Key' => $key];
         if ($versionId !== null) {
             $code['S3ObjectVersion'] = $versionId;
         }
-        return $this->function->request($config->consoleFunctionName(), 'arco.console', $code, self::settings($config, $roleArn, $variables), $tags, $roleJustCreated);
+        return $this->function->request($config->consoleFunctionName(), 'arco.console', $code, self::settings($config, $roleArn, $variables, $detachVpc), $tags, $roleJustCreated);
     }
 
     /**
      * @param array<string, string> $variables
+     * @param bool $detachVpc send an empty VpcConfig (a removal deploy takes the function out of the VPC)
      * @return array<string, mixed>
      */
-    public static function settings(AppConfig $config, string $roleArn, array $variables): array
+    public static function settings(AppConfig $config, string $roleArn, array $variables, bool $detachVpc = false): array
     {
         $settings = [
             'Role' => $roleArn,
@@ -82,6 +83,12 @@ final class ConsoleFunction
         ];
         if ($config->kmsKey !== null) {
             $settings['KMSKeyArn'] = $config->kmsKey;
+        }
+        if (RevisionFactory::usesVpc($config) && $config->vpc !== null) {
+            $settings['VpcConfig'] = ['SubnetIds' => $config->vpc->subnets, 'SecurityGroupIds' => $config->vpc->securityGroups];
+        } elseif ($detachVpc) {
+            // Empty lists take a function out of the VPC; an update without the key would leave it there.
+            $settings['VpcConfig'] = ['SubnetIds' => [], 'SecurityGroupIds' => []];
         }
         return $settings;
     }

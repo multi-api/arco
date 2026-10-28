@@ -23,7 +23,7 @@ final class PolicyBuilder
      * @param list<string> $genericTableArns the table() tables (created and existing)
      * @return array{Version: string, Statement: list<array<string, mixed>>}
      */
-    public static function document(string $region, string $account, string $function, array $references, array $permissions = [], ?string $codeBucket = null, array $queueArns = [], array $workerFunctions = [], array $bucketArns = [], array $tableArns = [], array $genericTableArns = []): array
+    public static function document(string $region, string $account, string $function, array $references, array $permissions = [], ?string $codeBucket = null, array $queueArns = [], array $workerFunctions = [], array $bucketArns = [], array $tableArns = [], array $genericTableArns = [], bool $vpcAccess = false): array
     {
         // Web Functions log to /aws/lambda/web/<function> and also to a "<group>.local" group; the
         // console function to the classic /aws/lambda/<function>-console group.
@@ -36,6 +36,18 @@ final class PolicyBuilder
             'Action' => ['logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents'],
             'Resource' => ["$group:*", "$group.local:*", "$console:*", ...$workerGroups],
         ]];
+        if ($vpcAccess) {
+            // Classic functions in a VPC (console, workers) create their network interfaces with the execution role.
+            $statements[] = [
+                'Sid' => 'ArcoVpcAccess',
+                'Effect' => 'Allow',
+                'Action' => [
+                    'ec2:CreateNetworkInterface', 'ec2:DescribeNetworkInterfaces', 'ec2:DescribeSubnets',
+                    'ec2:DeleteNetworkInterface', 'ec2:AssignPrivateIpAddresses', 'ec2:UnassignPrivateIpAddresses',
+                ],
+                'Resource' => '*',
+            ];
+        }
         if ($queueArns !== []) {
             $statements[] = [
                 'Sid' => 'ArcoQueues',

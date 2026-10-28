@@ -231,6 +231,7 @@ trait ResolvesTarget
         return match (true) {
             $e instanceof UserError => $e->getMessage(),
             CredentialError::isCredentialsFailure($e) || CredentialError::matches($e) => (string) $this->commandCredentialProblem($e),
+            $e instanceof DeployException && $e->key === 'deploy.network_failed' => $this->t($e->key, $this->networkReason($e->params)),
             $e instanceof ConfigException, $e instanceof BuildException, $e instanceof BinaryException, $e instanceof DeployException
                 => $this->t($e->key, $e->params),
             $e instanceof AwsException => $this->t(in_array($e->getAwsErrorCode(), ['AccessDenied', 'AccessDeniedException'], true) ? 'aws.access_denied' : 'aws.request_failed', [
@@ -248,6 +249,19 @@ trait ResolvesTarget
             )) . "\n" . $this->t('package.too_large_hint'),
             default => null,
         };
+    }
+
+    /**
+     * A failed network connector names AWS's reason code: its own text when Arco has one, else AWS's.
+     *
+     * @param array<string, string|int> $params
+     * @return array<string, string|int>
+     */
+    private function networkReason(array $params): array
+    {
+        $key = 'deploy.network_reason.' . ($params['code'] ?? '');
+        $text = $this->t($key, $params);
+        return $text === $key ? $params : [...$params, 'reason' => $text];
     }
 
     /** The message key behind describeError($e), for --json output; error.unexpected when it has none. */

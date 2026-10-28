@@ -224,6 +224,8 @@ final class TaggedResources
     {
         $domainStack = DomainStack::stackName($config);
         return match (true) {
+            // Its ARN carries the id, not the name; remove deletes the environment's connector.
+            $type === 'lambda:network-connector' => true,
             str_starts_with($type, 'lambda:') => $name === $config->functionName() || $name === $config->consoleFunctionName()
                 || str_starts_with($name, $config->functionName() . '-queue-'),
             $type === 'events:rule' => $name === SchedulerRule::name($config),

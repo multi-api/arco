@@ -254,6 +254,52 @@ final class LambdaFunction
         return $deleted;
     }
 
+    /**
+     * The versions ($LATEST included) whose VpcConfig names subnets, with those subnets and their security groups
+     * (sorted). A missing function has none.
+     *
+     * @return array<string, array{subnets: list<string>, groups: list<string>}> by version
+     */
+    public function vpcVersions(string $name): array
+    {
+        $versions = [];
+        $marker = null;
+        try {
+            do {
+                $page = $this->lambda->listVersionsByFunction(['FunctionName' => $name, ...($marker !== null ? ['Marker' => $marker] : [])]);
+                $listed = $page['Versions'] ?? [];
+                foreach (is_array($listed) ? $listed : [] as $version) {
+                    $number = is_array($version) ? ($version['Version'] ?? null) : null;
+                    $vpc = is_array($version) && is_array($version['VpcConfig'] ?? null) ? $version['VpcConfig'] : [];
+                    $subnets = array_values(array_filter(is_array($vpc['SubnetIds'] ?? null) ? $vpc['SubnetIds'] : [], 'is_string'));
+                    $groups = array_values(array_filter(is_array($vpc['SecurityGroupIds'] ?? null) ? $vpc['SecurityGroupIds'] : [], 'is_string'));
+                    sort($groups);
+                    if (is_string($number) && $subnets !== []) {
+                        $versions[$number] = ['subnets' => $subnets, 'groups' => $groups];
+                    }
+                }
+                $marker = is_string($page['NextMarker'] ?? null) && $page['NextMarker'] !== '' ? $page['NextMarker'] : null;
+            } while ($marker !== null);
+        } catch (LambdaException $e) {
+            if ($e->getAwsErrorCode() !== 'ResourceNotFoundException') {
+                throw $e;
+            }
+        }
+        return $versions;
+    }
+
+    /** Deletes one published version; one already gone is not an error. */
+    public function deleteVersion(string $name, string $version): void
+    {
+        try {
+            $this->lambda->deleteFunction(['FunctionName' => $name, 'Qualifier' => $version]);
+        } catch (LambdaException $e) {
+            if ($e->getAwsErrorCode() !== 'ResourceNotFoundException') {
+                throw $e;
+            }
+        }
+    }
+
     public function delete(string $name): void
     {
         try {

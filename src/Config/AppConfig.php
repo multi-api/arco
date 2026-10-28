@@ -71,6 +71,8 @@ final readonly class AppConfig
          * (--permissions-boundary, then ARCO_PERMISSIONS_BOUNDARY, then arco.php); null: none
          */
         public ?string $permissionsBoundary = null,
+        /** null: no VPC */
+        public ?VpcConfig $vpc = null,
     ) {
     }
 
@@ -131,6 +133,7 @@ final readonly class AppConfig
             dnsCloudflare: $this->dnsCloudflare,
             tables: $this->tables,
             permissionsBoundary: $permissionsBoundary,
+            vpc: $this->vpc,
         );
     }
 

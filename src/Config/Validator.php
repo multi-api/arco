@@ -210,6 +210,7 @@ final class Validator
             }
         }
 
+        self::validateVpc($config, $result);
         self::validateDomains($config, $result);
         self::validateQueues($config, $result);
         self::validateStorage($config, $result);
@@ -597,6 +598,30 @@ final class Validator
                 }
             }
             $taken[$arn] = "table('{$name}')";
+        }
+    }
+
+    private static function validateVpc(AppConfig $config, ValidationResult $result): void
+    {
+        if ($config->vpc === null) {
+            return;
+        }
+        $groups = [
+            ['validation.vpc_subnets_count', $config->vpc->subnets, 16, '/^subnet-[0-9a-z]+$/D'],
+            ['validation.vpc_security_groups_count', $config->vpc->securityGroups, 5, '/^sg-[0-9a-zA-Z]+$/D'],
+        ];
+        foreach ($groups as [$countKey, $ids, $max, $pattern]) {
+            if ($ids === [] || count($ids) > $max) {
+                $result->error($countKey, ['count' => count($ids)]);
+            }
+            foreach ($ids as $id) {
+                if (preg_match($pattern, $id) !== 1) {
+                    $result->error('validation.vpc_id', ['value' => $id]);
+                }
+            }
+            foreach (array_keys(array_filter(array_count_values($ids), fn (int $times) => $times > 1)) as $duplicate) {
+                $result->error('validation.vpc_duplicate', ['value' => (string) $duplicate]);
+            }
         }
     }
 

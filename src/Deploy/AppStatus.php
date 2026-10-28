@@ -28,6 +28,8 @@ final readonly class AppStatus
         public array $queues = [],
         /** account the app runs in, read only when arco.php has none and a queue or created storage needs it for its URL or bucket */
         public ?string $account = null,
+        /** @var array{connector: string, version: int, state: string}|null the network connector with vpc(); null without one or when unreadable */
+        public ?array $vpc = null,
     ) {
     }
 }

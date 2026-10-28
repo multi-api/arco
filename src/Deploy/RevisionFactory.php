@@ -12,9 +12,10 @@ final class RevisionFactory
      * Shape shared by CreateWebFunction.revisionConfig and CreateWebFunctionRevision (top level).
      *
      * @param array<string, string> $variables
+     * @param string|null $networkConnectorArn the connector version the revision pins for its egress (vpc())
      * @return array<string, mixed>
      */
-    public static function revision(AppConfig $config, string $bucket, string $key, ?string $versionId, string $roleArn, array $variables): array
+    public static function revision(AppConfig $config, string $bucket, string $key, ?string $versionId, string $roleArn, array $variables, ?string $networkConnectorArn = null): array
     {
         $s3Object = ['bucket' => $bucket, 'key' => $key];
         if ($versionId !== null) {
@@ -42,6 +43,9 @@ final class RevisionFactory
         if ($config->concurrency !== null) {
             // Only an upper bound: Lambda also applies its own dynamic per-instance limit.
             $revision['serviceConfig']['maxConcurrencyPerEnvironment'] = $config->concurrency;
+        }
+        if ($networkConnectorArn !== null) {
+            $revision['serviceConfig']['egressNetworkConnectorArn'] = $networkConnectorArn;
         }
         return $revision;
     }
@@ -79,6 +83,22 @@ final class RevisionFactory
         // Skipped only when the emulator serves every service involved: a per-service override pointing elsewhere
         // (real AWS, say) keeps the protection. A profile's endpoint_url is not read (see local-floci.md).
         return $config->domains !== [] && ! Endpoint::servesAll(['lambda', 'lambda_web', 'cloudfront', 'cloudformation']);
+    }
+
+    /**
+     * Whether the environment runs in the VPC: vpc() is set, except behind an emulator endpoint (AWS_ENDPOINT_URL),
+     * which has no network connectors. Skipped only when the emulator serves every service involved, like
+     * protectsEndpoint(): a per-service override pointing elsewhere keeps the VPC.
+     */
+    public static function usesVpc(AppConfig $config): bool
+    {
+        return $config->vpc !== null && self::servesNetworkConnectors();
+    }
+
+    /** False behind an emulator: it has no network connectors, so Arco neither creates nor looks for one. */
+    public static function servesNetworkConnectors(): bool
+    {
+        return ! Endpoint::servesAll(['lambda', 'lambda_web', 'lambda_core']);
     }
 
     /** @return array<string, array<string, int>> */

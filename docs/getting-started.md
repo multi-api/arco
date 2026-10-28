@@ -75,7 +75,7 @@ does not list under `packages` (`packages-dev` is not deployed), prints one line
 
 ```
 Install the Composer packages these features need before deploying:
-  composer require league/flysystem-aws-s3-v3:^3.0 aws/aws-sdk-php multiapi/arco-laravel:^0.11
+  composer require league/flysystem-aws-s3-v3:^3.0 aws/aws-sdk-php multiapi/arco-laravel:^0.12
 ```
 
 Versions are not compared here; `arco deploy` checks them in the built package. Without a `composer.lock`
@@ -371,6 +371,32 @@ missing. `->table('<name>')` creates a DynamoDB table `<app>-<env>-<name>` (`PK`
 read its name from `ARCO_TABLES` and use the AWS SDK. Every one of them can point at a bucket or table you already have with `existing:`. Removed buckets and tables stay in AWS with their data. Details:
 [Storage](configuration.md#storage), [Cache and failed-jobs tables](configuration.md#cache-and-failed-jobs-tables)
 and [Tables](configuration.md#tables).
+
+### Running in a VPC
+
+To let the app reach private resources (a database in a private subnet, ElastiCache, an internal API), add
+`vpc()` to the app or an environment:
+
+```php
+Environment::make('staging')
+    ->vpc(subnets: ['subnet-0abc1234', 'subnet-0def5678'], securityGroups: ['sg-0abc1234']);
+```
+
+Before you deploy:
+
+1. **Give the subnets a way out.** A function in a VPC has no internet access; the subnets need a NAT gateway or
+   NAT instance, or the AWS calls fail. Arco calls SSM and Secrets Manager (`arco-ssm:` / `arco-secret:`
+   references), SQS (jobs), S3 and DynamoDB (gateway endpoints are enough for these two), and a console or worker
+   without `bin/php` downloads the runtime binary from the code bucket (S3). See
+   [The VPC needs a NAT](configuration.md#the-vpc-needs-a-nat). Gateway endpoints for S3 and DynamoDB created by
+   Arco are planned for a later release.
+2. **Pick a security group** that allows the egress you need (to the database port, and 443 for the AWS APIs).
+3. **Add the deploy permissions** ([Permissions for VPC](#permissions-for-vpc)).
+
+The first deploy creates the connector and waits for it (about 4 minutes, with a progress line); later deploys
+change it only when the subnets or groups change. One subnet works; use two Availability Zones in production.
+`arco info --env=staging` shows the connector. To leave the VPC, remove `vpc()` and deploy: Arco deletes the
+connector after the deploy is verified ([details](configuration.md#changing-and-removing-vpc)).
 
 ### Commands
 
@@ -829,6 +855,58 @@ DNS aliases, certificate) is skipped.
 The zone check of `init` and `domain:add` calls only the profile you choose and needs
 `route53:ListHostedZonesByName` and `sts:GetCallerIdentity` there.
 
+### Permissions for VPC
+
+With `vpc()` (0.12), the deploy profile also needs:
+
+- `lambda:CreateNetworkConnector`, `lambda:GetNetworkConnector`, `lambda:UpdateNetworkConnector`,
+  `lambda:DeleteNetworkConnector`, `lambda:ListNetworkConnectorVersions` and `lambda:PassNetworkConnector`.
+  `lambda:*WebFunction*` does not match them. Their resource is
+  `arn:aws:lambda:<region>:<account>:network-connector:*`: the ARN holds the connector's id, not its name, so it
+  cannot be scoped to one app. `lambda:PassNetworkConnector` is checked when a Web Function revision pins the
+  connector.
+- `iam:PassRole` on the operator role, `arn:aws:iam::<account>:role/arco-<app>-*-network`, with
+  `iam:PassedToService` = `lambda.amazonaws.com`. Arco creates, tags and deletes that role with the same
+  `iam:CreateRole`, `iam:PutRolePolicy`, `iam:DeleteRolePolicy`, `iam:DeleteRole`, `iam:GetRole`, `iam:TagRole`
+  actions the minimal permissions already grant on `arn:aws:iam::*:role/arco-*`, so a profile that follows
+  them needs nothing more there (a scoped profile must include `arco-<app>-*-network`).
+- `ec2:DescribeSubnets`, `ec2:DescribeSecurityGroups`, `ec2:DescribeVpcs` (resource `*`): classic `VpcConfig` of the
+  console and the workers needs them. `ec2:DescribeNetworkInterfaces` and `lambda:ListFunctions` (resource `*`): `arco remove` and the deploy that
+  leaves the VPC wait until Lambda has deleted the console's and the workers' network interfaces, except one that
+  another function still uses.
+
+```json
+[
+  {
+    "Sid": "ArcoNetworkConnectors",
+    "Effect": "Allow",
+    "Action": [
+      "lambda:CreateNetworkConnector", "lambda:GetNetworkConnector", "lambda:UpdateNetworkConnector",
+      "lambda:DeleteNetworkConnector", "lambda:ListNetworkConnectorVersions", "lambda:PassNetworkConnector"
+    ],
+    "Resource": "arn:aws:lambda:<region>:<account>:network-connector:*"
+  },
+  {
+    "Sid": "ArcoPassNetworkOperatorRole",
+    "Effect": "Allow",
+    "Action": "iam:PassRole",
+    "Resource": "arn:aws:iam::<account>:role/arco-<app>-*-network",
+    "Condition": {"StringEquals": {"iam:PassedToService": "lambda.amazonaws.com"}}
+  },
+  {
+    "Sid": "ArcoVpcDescribe",
+    "Effect": "Allow",
+    "Action": ["ec2:DescribeSubnets", "ec2:DescribeSecurityGroups", "ec2:DescribeVpcs", "ec2:DescribeNetworkInterfaces", "lambda:ListFunctions"],
+    "Resource": "*"
+  }
+]
+```
+
+`arco remove` of an environment that uses `vpc()` needs the connector delete and the IAM role actions too. A service
+that deploys for you (Arco Cloud) needs these in its connect template. Without them the deploy stops with an AWS
+access error that names the denied operation. In a profile with a permissions boundary, add the same statements to the
+guarded Lambda and IAM scoping as well ([Enforcing a permissions boundary](#enforcing-a-permissions-boundary)).
+
 ### Enforcing a permissions boundary
 
 This part is for account owners who hand a deploy profile to someone else: a CI, a team, or a service such as
@@ -1162,6 +1240,15 @@ to `arn:aws-cn:` or `arn:aws-us-gov:`.
       "Condition": {"StringLike": {"kms:ViaService": ["ssm.*.amazonaws.com", "secretsmanager.*.amazonaws.com"]}}
     },
     {
+      "Sid": "ArcoVpcAccess",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateNetworkInterface", "ec2:DescribeNetworkInterfaces", "ec2:DescribeSubnets", "ec2:DeleteNetworkInterface",
+        "ec2:AssignPrivateIpAddresses", "ec2:UnassignPrivateIpAddresses", "ec2:DescribeSecurityGroups", "ec2:CreateTags"
+      ],
+      "Resource": "*"
+    },
+    {
       "Sid": "AppPermissions",
       "Effect": "Allow",
       "Action": ["<the actions of the app's permissions()>"],
@@ -1187,6 +1274,13 @@ to `arn:aws-cn:` or `arn:aws-us-gov:`.
   and every `arco-secret:` (Secrets Manager) reference, have the names you gave them: change the `parameter/` and
   `secret:` resources to cover them (a Secrets Manager name gets a `-??????` suffix, so end the pattern with `*`).
   Without any reference, these three statements and `ArcoDecrypt` are never used.
+- **ArcoVpcAccess** is needed only with `vpc()`; without it, leave it out. The boundary caps two roles there: the
+  execution role (its `ArcoVpcAccess` statement: the first six actions, for the console and the workers) and the
+  network connector's operator role `arco-<app>-<env>-network`, which carries the same boundary (it adds
+  `ec2:DescribeSecurityGroups` and `ec2:CreateTags`; its inline policy limits `ec2:CreateTags` to
+  `ec2:ManagedResourceOperator` = `network-connectors.lambda.amazonaws.com`). Without these
+  actions in the boundary the connector ends `FAILED` (`InsufficientRolePermissions`) or the console and workers
+  cannot start in the VPC.
 - **No Lambda statement.** The execution role needs no `lambda:InvokeFunction`: the scheduler rule invokes the
   console through the function's resource policy, people and the deploy invoke it with their own credentials, and
   queue jobs reach the workers through SQS.

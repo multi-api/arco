@@ -86,6 +86,23 @@ final class WebFunctions
         }
     }
 
+    /** The network connector version the revision pins (serviceConfig.egressNetworkConnectorArn); null without one. */
+    public function connectorArn(string $function, string $revisionId): ?string
+    {
+        $revision = $this->call('GetWebFunctionRevision', ['functionName' => $function, 'revisionId' => $revisionId]);
+        $service = $revision['serviceConfig'] ?? null;
+        $arn = self::text(is_array($service) ? $service['egressNetworkConnectorArn'] ?? null : null);
+        return $arn === '' ? null : $arn;
+    }
+
+    /** The connector version the live revision pins; null without a function, a live revision or a connector. */
+    public function liveConnectorArn(string $function): ?string
+    {
+        $endpoint = $this->endpoint($function);
+        $revision = $endpoint === null ? null : self::activeRevision($endpoint);
+        return $revision === null ? null : $this->connectorArn($function, $revision);
+    }
+
     /** @return array<string, mixed>|null */
     public function endpoint(string $function): ?array
     {

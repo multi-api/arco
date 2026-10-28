@@ -17,6 +17,7 @@ use Multiapi\Arco\Config\AppConfig;
 use Multiapi\Arco\Config\GenericTableConfig;
 use Multiapi\Arco\Deploy\RevisionFactory;
 use Multiapi\Arco\Config\PermissionsBoundary;
+use Multiapi\Arco\Config\VpcConfig;
 use Multiapi\Arco\Config\StorageConfig;
 use Multiapi\Arco\Config\TableConfig;
 use Multiapi\Arco\Deploy\AppStatus;
@@ -114,6 +115,9 @@ final class InfoCommand extends ArcoCommand
                 'permissions_boundary' => $config->permissionsBoundary,
                 // Additive (0.11.4), last: the endpoint's auth type, IamAuth with domain() whatever auth says.
                 'endpoint_auth' => RevisionFactory::authType($config),
+                // Additive (0.12), last: the vpc() subnets and security groups; null without vpc().
+                // With a deploy, also the network connector: its id, latest version and state.
+                'vpc' => $config->vpc === null ? null : ['subnets' => $config->vpc->subnets, 'security_groups' => $config->vpc->securityGroups] + ($status->vpc ?? []),
             ] + ($remoteError !== null ? ['error' => $remoteError] : []), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
             return $remoteError === null ? self::SUCCESS : self::FAILURE;
         }
@@ -126,7 +130,7 @@ final class InfoCommand extends ArcoCommand
                 // domain() makes the endpoint IamAuth whatever auth() says: only CloudFront may invoke it.
                 $value = $this->t('info.auth_cloudfront', ['auth' => $value]);
             }
-            $rows[] = [$key, $value, $row[1]];
+            $rows[] = [$key === 'vpc' ? 'VPC' : $key, $value, $row[1]];
             if ($key === 'dns' && ($provider = self::dnsProvider($config)) !== null) {
                 $rows[] = ['dns.provider', $provider, $row[1]];
             }
@@ -424,6 +428,7 @@ final class InfoCommand extends ArcoCommand
             'deployCommands' => [$config->deployCommands === [] ? null : implode('; ', $config->deployCommands), $s['deployCommands']],
             'permissions' => [count($config->permissions), $config->permissions === [] ? 'default' : 'app/environment'],
             'permissionsBoundary' => [$config->permissionsBoundary, $s['permissionsBoundary']],
+            'vpc' => [$config->vpc, $s['vpc']],
             'domains' => [$config->domains === [] ? null : implode(', ', $config->domains), $s['domains']],
             'dns' => [$config->domains === [] ? null : $this->dnsLabel($config), $s['dns']],
             'certificate' => [$config->certificate, $s['certificate']],
@@ -469,7 +474,7 @@ final class InfoCommand extends ArcoCommand
         $json = [];
         foreach ($settings as $key => $row) {
             // The top-level permissions_boundary carries it, so `settings` keeps the keys it had.
-            if ($key === 'permissionsBoundary') {
+            if ($key === 'permissionsBoundary' || $key === 'vpc') {
                 continue;
             }
             $json[$key] = $row[0];
@@ -496,6 +501,11 @@ final class InfoCommand extends ArcoCommand
                 $value === 1 => $this->t('logs.retention_one_day'),
                 default => $this->t('logs.retention_days', ['days' => is_int($value) ? $value : 0]),
             },
+            $key === 'vpc' && $value instanceof VpcConfig && $status?->vpc !== null => $this->t('info.vpc_connector', [
+                'vpc' => $this->t('info.vpc', ['subnets' => implode(', ', $value->subnets), 'groups' => implode(', ', $value->securityGroups)]),
+                ...$status->vpc,
+            ]),
+            $key === 'vpc' && $value instanceof VpcConfig => $this->t('info.vpc', ['subnets' => implode(', ', $value->subnets), 'groups' => implode(', ', $value->securityGroups)]),
             is_bool($value) => $this->t($value ? 'common.yes' : 'common.no'),
             is_scalar($value) => (string) $value,
             default => '-',

@@ -149,12 +149,7 @@ final class OwnershipGuard
      */
     public function claim(AppConfig $config, array $resources, bool $force, callable $step): void
     {
-        foreach ($resources as $resource) {
-            if ($resource->unreadable !== null && ! $force) {
-                throw DeployException::make('deploy.tags_unreadable', ['resource' => $resource->name, ...$resource->unreadable]);
-            }
-            Ownership::check($resource->tags, $config, $resource->name, $force, $resource->arcoMade);
-        }
+        $this->check($config, $resources, $force);
         foreach ($resources as $resource) {
             if ($resource->unreadable !== null) {
                 $step('deploy.ownership_forced', ['resource' => $resource->name, 'app' => $config->app, 'environment' => $config->environment]);
@@ -177,6 +172,22 @@ final class OwnershipGuard
             if (! $foreign) {
                 $step('deploy.tags_added', ['resource' => $resource->name, 'app' => $config->app, 'environment' => $config->environment]);
             }
+        }
+    }
+
+    /**
+     * claim()'s refusals alone: nothing is tagged. Lets a deploy refuse before it reads further.
+     *
+     * @param list<NamedResource> $resources
+     * @throws DeployException deploy.not_owned, deploy.untagged_resource, deploy.tags_unreadable
+     */
+    public function check(AppConfig $config, array $resources, bool $force): void
+    {
+        foreach ($resources as $resource) {
+            if ($resource->unreadable !== null && ! $force) {
+                throw DeployException::make('deploy.tags_unreadable', ['resource' => $resource->name, ...$resource->unreadable]);
+            }
+            Ownership::check($resource->tags, $config, $resource->name, $force, $resource->arcoMade);
         }
     }
 

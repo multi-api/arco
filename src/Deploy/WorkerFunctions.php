@@ -56,7 +56,7 @@ final class WorkerFunctions
      * @param array<string, string> $variables
      * @return array<string, mixed>
      */
-    public static function settings(AppConfig $config, QueueConfig $queue, string $roleArn, array $variables): array
+    public static function settings(AppConfig $config, QueueConfig $queue, string $roleArn, array $variables, bool $detachVpc = false): array
     {
         $settings = [
             'Role' => $roleArn,
@@ -69,6 +69,12 @@ final class WorkerFunctions
         if ($config->kmsKey !== null) {
             $settings['KMSKeyArn'] = $config->kmsKey;
         }
+        if (RevisionFactory::usesVpc($config) && $config->vpc !== null) {
+            $settings['VpcConfig'] = ['SubnetIds' => $config->vpc->subnets, 'SecurityGroupIds' => $config->vpc->securityGroups];
+        } elseif ($detachVpc) {
+            // Empty lists take a function out of the VPC; an update without the key would leave it there.
+            $settings['VpcConfig'] = ['SubnetIds' => [], 'SecurityGroupIds' => []];
+        }
         return $settings;
     }
 
@@ -79,7 +85,7 @@ final class WorkerFunctions
      * @param array<string, string> $variables deploy variables plus ARCO_BINARY_*
      * @param array<string, string> $tags
      */
-    public function request(AppConfig $config, QueueConfig $queue, string $bucket, string $key, ?string $versionId, string $roleArn, array $variables, array $tags, bool $roleJustCreated = false): FunctionDeploy
+    public function request(AppConfig $config, QueueConfig $queue, string $bucket, string $key, ?string $versionId, string $roleArn, array $variables, array $tags, bool $roleJustCreated = false, bool $detachVpc = false): FunctionDeploy
     {
         $code = ['S3Bucket' => $bucket, 'S3Key' => $key];
         if ($versionId !== null) {
@@ -89,7 +95,7 @@ final class WorkerFunctions
             $config->workerFunctionName($queue->name),
             self::HANDLER,
             $code,
-            self::settings($config, $queue, $roleArn, self::environment($queue, $variables)),
+            self::settings($config, $queue, $roleArn, self::environment($queue, $variables), $detachVpc),
             $tags,
             $roleJustCreated,
         );
