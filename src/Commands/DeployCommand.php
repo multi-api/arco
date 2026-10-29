@@ -15,6 +15,7 @@ use Multiapi\Arco\Commands\Concerns\StreamsJson;
 use Multiapi\Arco\Commands\Concerns\UsesCloudflare;
 use Multiapi\Arco\Config\AppConfig;
 use Multiapi\Arco\Config\ArcoFileEditor;
+use Multiapi\Arco\Config\ConfigLayer;
 use Multiapi\Arco\Config\PermissionsBoundary;
 use Multiapi\Arco\Console\CommandResult;
 use Multiapi\Arco\Console\Console;
@@ -100,7 +101,8 @@ final class DeployCommand extends ArcoCommand
             ->addOption('migrate', null, InputOption::VALUE_NONE, 'Run "migrate --force" before traffic moves (added to the deploy commands)')
             ->addOption('no-deploy-commands', null, InputOption::VALUE_NONE, 'Skip the deploy commands of arco.php')
             ->addOption('json', null, InputOption::VALUE_NONE, 'Print NDJSON step events and a final result line on stdout (never asks: implies --no-interaction)')
-            ->addOption(PermissionsBoundary::OPTION, null, InputOption::VALUE_REQUIRED, 'IAM policy ARN for the execution role\'s permissions boundary (overrides ARCO_PERMISSIONS_BOUNDARY and arco.php)');
+            ->addOption(PermissionsBoundary::OPTION, null, InputOption::VALUE_REQUIRED, 'IAM policy ARN for the execution role\'s permissions boundary (overrides ARCO_PERMISSIONS_BOUNDARY and arco.php)')
+            ->addOption(ConfigLayer::OPTION, null, InputOption::VALUE_REQUIRED, ConfigLayer::DESCRIPTION);
         $this->addCloudflareTokenOption();
     }
 
@@ -289,8 +291,9 @@ final class DeployCommand extends ArcoCommand
             $stream?->result('deployed', $config->app, $config->environment, $outcome->result->revisionId, $outcome->result->url(),
                 $outcome->result->domains, false, $outcome->verification->initDurationMs);
 
-            // Behind an endpoint override the account is the emulator's (Floci: 000000000000), not one to lock.
-            if ($config->account === null && $input->isInteractive() && Endpoint::override() === null
+            // Behind an endpoint override the account is the emulator's (Floci: 000000000000), not one to lock;
+            // without arco.php (a config layer alone) there is no file to lock it in.
+            if ($config->account === null && $config->hasArcoPhp && $input->isInteractive() && Endpoint::override() === null
                 && $io->confirm($this->t('aws.add_account_lock', ['environment' => $config->environment, 'account' => $aws->accountId()]), true)) {
                 $params = ['environment' => $config->environment, 'account' => $aws->accountId()];
                 ArcoFileEditor::addAccount($this->projectDir() . '/arco.php', $config->environment, $aws->accountId())

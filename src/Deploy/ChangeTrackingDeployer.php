@@ -43,6 +43,12 @@ final class ChangeTrackingDeployer implements Deployer
         $this->inner->checkOwnership($config, $onStep);
     }
 
+    /** Read-only: not a change. */
+    public function checkAdoptions(AppConfig $config, Closure $onStep): void
+    {
+        $this->inner->checkAdoptions($config, $onStep);
+    }
+
     public function prepare(AppConfig $config, Package $package, ?ConsoleArtifacts $console, array $variables, ?callable $onStep = null): PreparedDeploy
     {
         $this->change();

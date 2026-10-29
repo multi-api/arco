@@ -399,6 +399,8 @@ final class DeployPipeline
 
             // Before any AWS change: resources addressed by name must belong to this app and environment.
             $deployer->checkOwnership($config, $onStep(...));
+            // Read-only too: a layer entry with `adopt` whose resource is not provably this environment's.
+            $deployer->checkAdoptions($config, $onStep(...));
             // Queues exist before any code that could use them; a failure stops the deploy before traffic moves.
             $deployer->deployResources($config, $onStep(...));
 

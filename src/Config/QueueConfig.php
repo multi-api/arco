@@ -27,6 +27,8 @@ final readonly class QueueConfig
         public bool $deprecatedConcurrency = false,
         /** both concurrency and maxInstances are set (the validator refuses it) */
         public bool $conflictingConcurrency = false,
+        /** a config layer entry with `adopt: true`: a deploy may import the existing queue (and its DLQ) */
+        public bool $adopt = false,
     ) {
     }
 

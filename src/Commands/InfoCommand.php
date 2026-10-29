@@ -14,6 +14,8 @@ use Multiapi\Arco\Cli\ArcoCommand;
 use Multiapi\Arco\Cli\UserError;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
 use Multiapi\Arco\Config\AppConfig;
+use Multiapi\Arco\Config\ConfigItems;
+use Multiapi\Arco\Config\ConfigLayer;
 use Multiapi\Arco\Config\GenericTableConfig;
 use Multiapi\Arco\Deploy\RevisionFactory;
 use Multiapi\Arco\Config\PermissionsBoundary;
@@ -55,7 +57,8 @@ final class InfoCommand extends ArcoCommand
             ->addOption('profile', 'p', InputOption::VALUE_REQUIRED, 'AWS profile to use')
             ->addOption('json', null, InputOption::VALUE_NONE, 'Print JSON')
             ->addOption('resources', null, InputOption::VALUE_NONE, 'List every AWS resource tagged for the environment')
-            ->addOption(PermissionsBoundary::OPTION, null, InputOption::VALUE_REQUIRED, 'Show the permissions boundary as deploy would use it with this flag');
+            ->addOption(PermissionsBoundary::OPTION, null, InputOption::VALUE_REQUIRED, 'Show the permissions boundary as deploy would use it with this flag')
+            ->addOption(ConfigLayer::OPTION, null, InputOption::VALUE_REQUIRED, ConfigLayer::DESCRIPTION);
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -190,6 +193,9 @@ final class InfoCommand extends ArcoCommand
                 'environment' => $config->environment,
                 'group' => $group,
                 'resources' => $resources,
+                // Names and sources only: a variable's value is never printed here.
+                'variables' => ConfigItems::variables($config),
+                'config' => ConfigItems::list($config),
             ] + ($error !== null ? ['error' => $error] : []), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
             return $error === null ? self::SUCCESS : self::FAILURE;
         }
@@ -214,7 +220,7 @@ final class InfoCommand extends ArcoCommand
      * The tagged resources, or the error to show: no profile resolves without prompting, the
      * credentials are missing or expired, or AWS refused the lookup (tag:GetResources).
      *
-     * @return array{0: list<array{type: string, name: string, arn: string, retained: bool, relations: list<array{type: string, target: string}>}>, 1: ?string}
+     * @return array{0: list<array{type: string, name: string, arn: string, retained: bool, relations: list<array{type: string, target: string}>, source: ?string, options: ?array<string, mixed>}>, 1: ?string}
      */
     private function taggedResources(AppConfig $config, ?string $profileFlag): array
     {
@@ -415,7 +421,7 @@ final class InfoCommand extends ArcoCommand
     {
         $s = $config->sources;
         return [
-            'region' => [$config->region, 'app'],
+            'region' => [$config->region, $s['region'] ?? 'app'],
             'account' => [$config->account, $s['account']],
             'profile' => [$config->profile, $s['profile']],
             'concurrency' => [$config->concurrency, $s['concurrency']],
@@ -431,7 +437,7 @@ final class InfoCommand extends ArcoCommand
             'consoleTimeout' => [$config->consoleTimeout, $s['consoleTimeout']],
             'protected' => [$config->isProtected(), $s['protected']],
             'deployCommands' => [$config->deployCommands === [] ? null : implode('; ', $config->deployCommands), $s['deployCommands']],
-            'permissions' => [count($config->permissions), $config->permissions === [] ? 'default' : 'app/environment'],
+            'permissions' => [count($config->permissions), $config->permissions === [] ? 'default' : ($s['permissions'] ?? 'app/environment')],
             'permissionsBoundary' => [$config->permissionsBoundary, $s['permissionsBoundary']],
             'vpc' => [$config->vpc, $s['vpc']],
             'domains' => [$config->domains === [] ? null : implode(', ', $config->domains), $s['domains']],

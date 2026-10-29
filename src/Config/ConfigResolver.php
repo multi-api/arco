@@ -46,20 +46,56 @@ final class ConfigResolver
     ];
 
     /**
+     * The environments arco.php declares, and the config layer's when arco.php does not.
+     *
      * @param array<string, mixed> $raw
      * @return list<string>
      */
-    public static function environments(array $raw): array
+    public static function environments(array $raw, ?ConfigLayer $layer = null): array
     {
         $environments = $raw['environments'] ?? [];
-        return is_array($environments) ? array_map('strval', array_keys($environments)) : [];
+        $names = is_array($environments) ? array_map('strval', array_keys($environments)) : [];
+        if ($layer !== null && ! in_array($layer->environment, $names, true)) {
+            $names[] = $layer->environment;
+        }
+        return $names;
     }
 
-    /** @param array<string, mixed> $raw */
-    public static function resolve(array $raw, string $environment): AppConfig
+    /**
+     * What arco.php would hold for a config layer used without one: the app and the layer's environment,
+     * everything else Arco's defaults. Both name and region must be in the layer; resolve() takes the region from it.
+     *
+     * @return array<string, mixed>
+     */
+    public static function layerOnly(ConfigLayer $layer): array
+    {
+        if ($layer->name === null) {
+            throw ConfigException::make('config.layer_missing', ['key' => 'name']);
+        }
+        if ($layer->region === null) {
+            throw ConfigException::make('config.layer_missing', ['key' => 'region']);
+        }
+        // The region is left to the layer, so it is reported as the layer's (source cloud).
+        return App::make($layer->name)->environment($layer->environment)->toArray();
+    }
+
+    /**
+     * The configuration of one environment: Arco's defaults, then arco.php's app level, its environment
+     * level, then the config layer, which may only add to what arco.php resolves to (LayerConflicts).
+     *
+     * @param array<string, mixed> $raw arco.php's array; [] when there is none
+     */
+    public static function resolve(array $raw, string $environment, ?ConfigLayer $layer = null): AppConfig
     {
         /** @var array<string, array{settings: array<string, mixed>, variables: array<string, string>, runtime: array<string, mixed>, permissions?: list<array<string, mixed>>, domains?: list<string>|null, deployCommands?: list<string>|null, queues?: array<string, array<string, mixed>|false>, storage?: array<string, array<string, mixed>|false>, tables?: array<string, array<string, mixed>|false>}> $environments */
         $environments = $raw['environments'] ?? [];
+        if ($layer !== null) {
+            if ($layer->environment !== $environment) {
+                throw ConfigException::make('config.layer_environment', ['layer' => $layer->environment, 'environment' => $environment]);
+            }
+            // An environment arco.php does not declare is added, as if it had ->environment('<env>') with nothing in it.
+            $environments[$environment] ??= (new Environment())->toArray();
+        }
         if (! isset($environments[$environment])) {
             throw ConfigException::make('config.unknown_environment', [
                 'environment' => $environment,
@@ -78,9 +114,16 @@ final class ConfigResolver
         /** @var list<array<string, mixed>> $appPermissions */
         $appPermissions = $raw['permissions'] ?? [];
 
+        $cloud = $layer->entry ?? [];
+        $cloudSettings = $cloud['settings'] ?? [];
+        /** @var array<string, list<array{key: string, params: array<string, string>}>> $conflicts by kind, reported in this order */
+        $conflicts = ['name' => [], 'region' => [], 'setting' => [], 'variable' => [], 'queue' => [], 'storage' => [], 'table' => []];
+        /** @var list<array{key: string, params: array<string, string|int>}> $notes */
+        $notes = [];
+
         $sources = [];
         /** @var \Closure(string): mixed $setting */
-        $setting = static function (string $key) use ($appSettings, $env, &$sources): mixed {
+        $setting = static function (string $key) use ($appSettings, $env, $cloudSettings, &$sources): mixed {
             if (array_key_exists($key, $env['settings'])) {
                 $sources[$key] = 'environment';
                 return $env['settings'][$key];
@@ -89,9 +132,24 @@ final class ConfigResolver
                 $sources[$key] = 'app';
                 return $appSettings[$key];
             }
+            if (array_key_exists($key, $cloudSettings)) {
+                $sources[$key] = 'cloud';
+                return $cloudSettings[$key];
+            }
             $sources[$key] = 'default';
             return self::DEFAULTS[$key];
         };
+        foreach ($cloudSettings as $key => $value) {
+            $key = (string) $key;
+            $declared = array_key_exists($key, $env['settings']) ? [$env['settings'][$key]]
+                : (array_key_exists($key, $appSettings) ? [$appSettings[$key]] : []);
+            if ($declared !== [] && ! self::sameValue($declared[0], $value)) {
+                $conflicts['setting'][] = self::conflict('setting', $key);
+            }
+        }
+
+        [$name, $region] = self::layerNameAndRegion($raw, $layer, $sources, $conflicts);
+        $variables = self::layerVariables($appVariables, $env['variables'], $cloud['variables'] ?? [], $sources, $conflicts);
         /** @var \Closure(string): (string|int|null) $runtimeValue */
         $runtimeValue = static function (string $key) use ($appRuntime, $env, &$sources): mixed {
             if (array_key_exists($key, $env['runtime'])) {
@@ -135,6 +193,20 @@ final class ConfigResolver
         $appDomains = $raw['domains'] ?? null;
         $envDomains = $env['domains'] ?? null;
         $sources['domains'] = $envDomains !== null ? 'environment' : ($appDomains !== null ? 'app' : 'default');
+        $domains = $envDomains ?? $appDomains ?? [];
+        foreach ($domains as $domain) {
+            $sources["domain:$domain"] = $envDomains !== null ? 'environment' : 'app';
+        }
+        foreach ($cloud['domains'] ?? [] as $domain) {
+            // A domain in both lists is arco.php's: listed once, where arco.php has it.
+            if (! in_array($domain, $domains, true)) {
+                $domains[] = $domain;
+                $sources["domain:$domain"] = 'cloud';
+            }
+        }
+        if ($sources['domains'] === 'default' && $domains !== []) {
+            $sources['domains'] = 'cloud';
+        }
         $dns = $setting('dns');
         $certificate = self::nullableString($setting('certificate'));
 
@@ -144,15 +216,21 @@ final class ConfigResolver
         $sources['deployCommands'] = $envCommands !== null ? 'environment' : ($appCommands !== null ? 'app' : 'default');
         /** @var array<string, array<string, mixed>|false> $appQueues */
         $appQueues = $raw['queues'] ?? [];
-        $queues = self::queues($appQueues, $env['queues'] ?? []);
-        $sources['queues'] = ($env['queues'] ?? []) !== [] ? 'environment' : ($appQueues !== [] ? 'app' : 'default');
+        $envQueues = self::normalizedQueues($env['queues'] ?? []);
+        [$mergedQueues, $adoptedQueues] = self::layerNamed('queue', self::mergeNamed(self::normalizedQueues($appQueues), $envQueues), $envQueues, $cloud['queues'] ?? [], $sources, $conflicts, $notes);
+        $queues = self::queues($mergedQueues, $adoptedQueues);
+        $sources['queues'] = ($env['queues'] ?? []) !== [] ? 'environment' : ($appQueues !== [] ? 'app' : (($cloud['queues'] ?? []) !== [] ? 'cloud' : 'default'));
         /** @var array<string, array<string, mixed>|false> $appStorage */
         $appStorage = $raw['storage'] ?? [];
-        $storage = self::storage($appStorage, $env['storage'] ?? []);
-        $sources['storage'] = ($env['storage'] ?? []) !== [] ? 'environment' : ($appStorage !== [] ? 'app' : 'default');
+        $envStorage = $env['storage'] ?? [];
+        [$mergedStorage, $adoptedStorage] = self::layerNamed('storage', self::mergeNamed($appStorage, $envStorage), $envStorage, $cloud['storage'] ?? [], $sources, $conflicts, $notes);
+        $storage = self::storage($mergedStorage, $adoptedStorage);
+        $sources['storage'] = ($env['storage'] ?? []) !== [] ? 'environment' : ($appStorage !== [] ? 'app' : (($cloud['storage'] ?? []) !== [] ? 'cloud' : 'default'));
         /** @var array<string, array<string, mixed>|false> $appTables */
         $appTables = $raw['tables'] ?? [];
-        $tables = self::genericTables($appTables, $env['tables'] ?? []);
+        $envTables = $env['tables'] ?? [];
+        [$mergedTables, $adoptedTables] = self::layerNamed('table', self::mergeNamed($appTables, $envTables), $envTables, $cloud['tables'] ?? [], $sources, $conflicts, $notes);
+        $tables = self::genericTables($mergedTables, $adoptedTables);
         $cacheTable = self::table('cache', $setting('cache'));
         $failedJobsTable = self::table('failed-jobs', $setting('failedJobsTable'));
         $protected = $setting('protected');
@@ -164,10 +242,20 @@ final class ConfigResolver
         $permissionsBoundary = $setting('permissionsBoundary');
         $vpc = self::vpc($setting('vpc'));
 
+        if ([...$appPermissions, ...($env['permissions'] ?? [])] === [] && ($cloud['permissions'] ?? []) !== []) {
+            // Only when the layer alone has statements: info shows arco.php's as app/environment.
+            $sources['permissions'] = 'cloud';
+        }
+
+        $errors = array_merge(...array_values($conflicts));
+        if ($errors !== []) {
+            throw new LayerConflicts($errors);
+        }
+
         $config = new AppConfig(
-            app: self::nullableString($raw['name'] ?? null) ?? '',
+            app: $name,
             environment: $environment,
-            region: self::nullableString($raw['region'] ?? null),
+            region: $region,
             concurrency: self::nullableInt($setting('concurrency')),
             timeout: self::nullableInt($setting('timeout')) ?? 0,
             maxInstances: self::nullableInt($setting('maxInstances')),
@@ -179,12 +267,12 @@ final class ConfigResolver
             profile: self::nullableString($setting('profile')),
             account: self::nullableString($setting('account')),
             runtime: $runtime,
-            variables: [...$appVariables, ...$env['variables']],
+            variables: $variables,
             exclude: $exclude,
             include: $include,
             sources: $sources,
-            permissions: [...$appPermissions, ...($env['permissions'] ?? [])],
-            domains: $envDomains ?? $appDomains ?? [],
+            permissions: [...$appPermissions, ...($env['permissions'] ?? []), ...($cloud['permissions'] ?? [])],
+            domains: $domains,
             dnsProfile: is_string($dns) && $dns !== '' && $dns !== self::CLOUDFLARE ? $dns : null,
             dnsManual: $dns === false,
             certificate: $certificate,
@@ -204,6 +292,7 @@ final class ConfigResolver
             tables: $tables,
             permissionsBoundary: $permissionsBoundary === false ? null : self::nullableString($permissionsBoundary),
             vpc: $vpc,
+            notes: $notes,
         );
 
         return $config;
@@ -295,15 +384,142 @@ final class ConfigResolver
     }
 
     /**
-     * App queues with the environment's merged over them by name. The first queue is the default unless one asks for it.
+     * The config layer's named entries of one kind added after arco.php's resolved ones. A name arco.php
+     * declares is a conflict, except for an `adopt` entry, which waits (a note) until arco.php lets it go.
+     * `adopt` never reaches the options: the names to adopt are returned apart. Also records each name's source.
      *
-     * @param array<string, array<string, mixed>|false> $app
-     * @param array<string, array<string, mixed>|false> $env
+     * @param 'queue'|'storage'|'table' $kind
+     * @param array<string, array<string, mixed>> $merged arco.php's entries, environment level merged over the app's
+     * @param array<string, array<string, mixed>|false> $envLevel arco.php's environment level, for the sources
+     * @param array<string, array<string, mixed>> $layerEntries
+     * @param array<string, string> $sources
+     * @param array<string, list<array{key: string, params: array<string, string>}>> $conflicts
+     * @param list<array{key: string, params: array<string, string|int>}> $notes
+     * @return array{array<string, array<string, mixed>>, list<string>} the entries, and the names to adopt
+     */
+    private static function layerNamed(string $kind, array $merged, array $envLevel, array $layerEntries, array &$sources, array &$conflicts, array &$notes): array
+    {
+        foreach (array_keys($merged) as $name) {
+            $sources["$kind:$name"] = is_array($envLevel[$name] ?? null) ? 'environment' : 'app';
+        }
+        $adopted = [];
+        foreach ($layerEntries as $name => $options) {
+            $name = (string) $name;
+            $adopt = ($options['adopt'] ?? false) === true;
+            unset($options['adopt']);
+            if (array_key_exists($name, $merged)) {
+                if ($adopt) {
+                    $notes[] = ['key' => 'config.layer_adopt_waiting', 'params' => ['kind' => $kind, 'name' => $name]];
+                } else {
+                    $conflicts[$kind][] = self::conflict($kind, $name);
+                }
+                continue;
+            }
+            $merged[$name] = $options;
+            $sources["$kind:$name"] = 'cloud';
+            if ($adopt) {
+                $adopted[] = $name;
+            }
+        }
+        return [$merged, $adopted];
+    }
+
+    /**
+     * The app name and region: arco.php's, else the layer's; a layer value that differs from arco.php's is a
+     * conflict. Also records the region's source.
+     *
+     * @param array<string, mixed> $raw
+     * @param array<string, string> $sources
+     * @param array<string, list<array{key: string, params: array<string, string>}>> $conflicts
+     * @return array{string, ?string}
+     */
+    private static function layerNameAndRegion(array $raw, ?ConfigLayer $layer, array &$sources, array &$conflicts): array
+    {
+        $name = self::nullableString($raw['name'] ?? null) ?? '';
+        $region = self::nullableString($raw['region'] ?? null);
+        if ($layer?->name !== null) {
+            if ($name !== '' && $name !== $layer->name) {
+                $conflicts['name'][] = self::conflict('name', $layer->name);
+            }
+            $name = $name !== '' ? $name : $layer->name;
+        }
+        if ($layer?->region !== null) {
+            if ($region !== null && $region !== $layer->region) {
+                $conflicts['region'][] = self::conflict('region', $layer->region);
+            }
+            $region ??= $layer->region;
+        }
+        // Only the layer set it (also without arco.php: layerOnly() leaves the region to the layer).
+        $sources['region'] = $region !== null && ! isset($raw['region']) ? 'cloud' : 'app';
+
+        return [$name, $region];
+    }
+
+    /**
+     * The variables: the app's, the environment's over them, then the layer's new names; a layer value that
+     * differs from what arco.php resolves to is a conflict. Also records each variable's source.
+     *
+     * @param array<string, string> $app
+     * @param array<string, string> $env
+     * @param array<string, string> $layer
+     * @param array<string, string> $sources
+     * @param array<string, list<array{key: string, params: array<string, string>}>> $conflicts
+     * @return array<string, string>
+     */
+    private static function layerVariables(array $app, array $env, array $layer, array &$sources, array &$conflicts): array
+    {
+        $variables = [...$app, ...$env];
+        foreach (array_keys($variables) as $key) {
+            $sources["variable:$key"] = array_key_exists($key, $env) ? 'environment' : 'app';
+        }
+        foreach ($layer as $key => $value) {
+            if (! array_key_exists($key, $variables)) {
+                $variables[$key] = $value;
+                $sources["variable:$key"] = 'cloud';
+            } elseif ($variables[$key] !== $value) {
+                $conflicts['variable'][] = self::conflict('variable', (string) $key);
+            }
+        }
+
+        return $variables;
+    }
+
+    /** @return array{key: string, params: array<string, string>} */
+    private static function conflict(string $kind, string $name): array
+    {
+        return ['key' => 'config.layer_conflict', 'params' => ['kind' => $kind, 'name' => $name]];
+    }
+
+    /** Whether two setting values are JSON-equal: maps compared whatever their key order, lists in order, 1 and 1.0 apart. */
+    private static function sameValue(mixed $a, mixed $b): bool
+    {
+        return self::canonical($a) === self::canonical($b);
+    }
+
+    private static function canonical(mixed $value): string
+    {
+        $sorted = static function (mixed $value) use (&$sorted): mixed {
+            if (! is_array($value)) {
+                return $value;
+            }
+            if (! array_is_list($value)) {
+                ksort($value, SORT_STRING);
+            }
+            return array_map($sorted, $value);
+        };
+        $json = json_encode($sorted($value), JSON_PRESERVE_ZERO_FRACTION | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        return $json === false ? serialize($value) : $json;
+    }
+
+    /**
+     * The resolved queues, in order. The first queue is the default unless one asks for it.
+     *
+     * @param array<string, array<string, mixed>> $merged
+     * @param list<string> $adopted names of the config layer's entries with `adopt: true`
      * @return list<QueueConfig>
      */
-    private static function queues(array $app, array $env): array
+    private static function queues(array $merged, array $adopted): array
     {
-        $merged = self::mergeNamed(self::normalizedQueues($app), self::normalizedQueues($env));
         $firstIsDefault = self::firstIsDefault($merged);
         $queues = [];
         foreach ($merged as $name => $o) {
@@ -321,22 +537,22 @@ final class ConfigResolver
                 default: $firstIsDefault ? $queues === [] : ($o['default'] ?? false) === true,
                 deprecatedConcurrency: isset($o['_deprecated']),
                 conflictingConcurrency: isset($o['_conflict']),
+                adopt: in_array((string) $name, $adopted, true),
             );
         }
         return $queues;
     }
 
     /**
-     * App buckets with the environment's merged over them by name. The first bucket is the default unless one asks for it
-     * or every bucket sets `default: false`, which leaves the app without a default disk.
+     * The resolved buckets, in order. The first bucket is the default unless one asks for it or every bucket
+     * sets `default: false`, which leaves the app without a default disk.
      *
-     * @param array<string, array<string, mixed>|false> $app
-     * @param array<string, array<string, mixed>|false> $env
+     * @param array<string, array<string, mixed>> $merged
+     * @param list<string> $adopted names of the config layer's entries with `adopt: true`
      * @return list<StorageConfig>
      */
-    private static function storage(array $app, array $env): array
+    private static function storage(array $merged, array $adopted): array
     {
-        $merged = self::mergeNamed($app, $env);
         $firstIsDefault = self::firstIsDefault($merged) && ! self::allOptOutOfDefault($merged);
         $storage = [];
         foreach ($merged as $name => $o) {
@@ -351,26 +567,28 @@ final class ConfigResolver
                 cors: self::stringList($o['cors'] ?? null),
                 existing: isset($o['existing']) && is_scalar($o['existing']) ? (string) $o['existing'] : null,
                 default: $firstIsDefault ? $storage === [] : ($o['default'] ?? false) === true,
+                adopt: in_array((string) $name, $adopted, true),
             );
         }
         return $storage;
     }
 
     /**
-     * App table() entries with the environment's merged over them by name.
+     * The resolved table() entries, in order.
      *
-     * @param array<string, array<string, mixed>|false> $app
-     * @param array<string, array<string, mixed>|false> $env
+     * @param array<string, array<string, mixed>> $merged
+     * @param list<string> $adopted names of the config layer's entries with `adopt: true`
      * @return list<GenericTableConfig>
      */
-    private static function genericTables(array $app, array $env): array
+    private static function genericTables(array $merged, array $adopted): array
     {
         $tables = [];
-        foreach (self::mergeNamed($app, $env) as $name => $o) {
+        foreach ($merged as $name => $o) {
             $tables[] = new GenericTableConfig(
                 name: (string) $name,
                 ttl: self::nullableString($o['ttl'] ?? null),
                 existing: self::nullableString($o['existing'] ?? null),
+                adopt: in_array((string) $name, $adopted, true),
             );
         }
         return $tables;

@@ -15,6 +15,7 @@ final readonly class AppConfig
      * @param list<QueueConfig> $queues
      * @param list<StorageConfig> $storage
      * @param list<GenericTableConfig> $tables
+     * @param list<array{key: string, params: array<string, string|int>}> $notes
      */
     public function __construct(
         public string $app,
@@ -73,6 +74,10 @@ final readonly class AppConfig
         public ?string $permissionsBoundary = null,
         /** null: no VPC */
         public ?VpcConfig $vpc = null,
+        /** warning-channel messages from resolving the config (config.layer_adopt_waiting) */
+        public array $notes = [],
+        /** false: the config comes from a config layer alone, there is no arco.php */
+        public bool $hasArcoPhp = true,
     ) {
     }
 
@@ -80,6 +85,12 @@ final readonly class AppConfig
     public function withAccount(string $account): self
     {
         return $this->copy($account, $this->permissionsBoundary, $this->sources);
+    }
+
+    /** The same configuration, marked as resolved from a config layer alone (there is no arco.php). */
+    public function withoutArcoPhp(): self
+    {
+        return $this->copy($this->account, $this->permissionsBoundary, $this->sources, false);
     }
 
     /**
@@ -92,7 +103,7 @@ final readonly class AppConfig
     }
 
     /** @param array<string, string> $sources */
-    private function copy(?string $account, ?string $permissionsBoundary, array $sources): self
+    private function copy(?string $account, ?string $permissionsBoundary, array $sources, ?bool $hasArcoPhp = null): self
     {
         return new self(
             app: $this->app,
@@ -134,6 +145,8 @@ final readonly class AppConfig
             tables: $this->tables,
             permissionsBoundary: $permissionsBoundary,
             vpc: $this->vpc,
+            notes: $this->notes,
+            hasArcoPhp: $hasArcoPhp ?? $this->hasArcoPhp,
         );
     }
 

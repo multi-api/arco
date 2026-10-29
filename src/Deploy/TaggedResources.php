@@ -5,6 +5,7 @@ namespace Multiapi\Arco\Deploy;
 use Aws\Exception\AwsException;
 use Aws\ResourceGroupsTaggingAPI\ResourceGroupsTaggingAPIClient;
 use Multiapi\Arco\Config\AppConfig;
+use Multiapi\Arco\Config\ConfigItems;
 use Multiapi\Arco\Config\QueueConfig;
 use Multiapi\Arco\Deploy\Domains\Aws;
 use Multiapi\Arco\Deploy\Domains\DomainStack;
@@ -26,9 +27,10 @@ final class TaggedResources
 
     /**
      * Sorted by type, then name. `retained` is true for what `arco remove` keeps (queues, buckets,
-     * tables, SSM parameters, log groups, anything Arco does not delete).
+     * tables, SSM parameters, log groups, anything Arco does not delete). `source` and `options` are those
+     * of the config item the resource belongs to (ConfigItems::forResource()).
      *
-     * @return list<array{type: string, name: string, arn: string, retained: bool, relations: list<array{type: string, target: string}>}>
+     * @return list<array{type: string, name: string, arn: string, retained: bool, relations: list<array{type: string, target: string}>, source: ?string, options: ?array<string, mixed>}>
      * @throws \Aws\Exception\AwsException a refused or failed lookup
      */
     public function list(AppConfig $config): array
@@ -58,7 +60,14 @@ final class TaggedResources
                     continue;
                 }
                 [$type, $name] = self::parse($arn);
-                $resources[] = ['type' => $type, 'name' => $name, 'arn' => $arn, 'retained' => ! self::removed($config, $type, $name, $tags), 'relations' => []];
+                $resources[] = [
+                    'type' => $type,
+                    'name' => $name,
+                    'arn' => $arn,
+                    'retained' => ! self::removed($config, $type, $name, $tags),
+                    'relations' => [],
+                    ...ConfigItems::forResource($config, $type, $name, $tags, SchedulerRule::name($config), DomainStack::functionName($config)),
+                ];
             }
             $token = Aws::string($page['PaginationToken'] ?? null);
             $token = $token === '' ? null : $token;
@@ -76,7 +85,7 @@ final class TaggedResources
      * The execution role Arco manages, when it exists and is this environment's. Informational: a role
      * that is missing, unreadable or denied is simply not listed.
      *
-     * @return array{type: string, name: string, arn: string, retained: bool, relations: list<array{type: string, target: string}>}|null
+     * @return array{type: string, name: string, arn: string, retained: bool, relations: list<array{type: string, target: string}>, source: ?string, options: ?array<string, mixed>}|null
      */
     private function executionRole(AppConfig $config): ?array
     {
@@ -92,7 +101,7 @@ final class TaggedResources
         if ($role === null || ! Ownership::tagged($role->tags, $config)) {
             return null;
         }
-        return ['type' => 'iam:role', 'name' => $name, 'arn' => $role->fullArn ?? $name, 'retained' => false, 'relations' => []];
+        return ['type' => 'iam:role', 'name' => $name, 'arn' => $role->fullArn ?? $name, 'retained' => false, 'relations' => [], 'source' => 'default', 'options' => null];
     }
 
     /**
@@ -101,8 +110,8 @@ final class TaggedResources
      * the scheduler rule `invokes` the console function, the distribution `serves` and a certificate
      * `validates` each configured domain. A target that cannot be resolved is left out, never guessed.
      *
-     * @param list<array{type: string, name: string, arn: string, retained: bool, relations: list<array{type: string, target: string}>}> $resources
-     * @return list<array{type: string, name: string, arn: string, retained: bool, relations: list<array{type: string, target: string}>}>
+     * @param list<array{type: string, name: string, arn: string, retained: bool, relations: list<array{type: string, target: string}>, source: ?string, options: ?array<string, mixed>}> $resources
+     * @return list<array{type: string, name: string, arn: string, retained: bool, relations: list<array{type: string, target: string}>, source: ?string, options: ?array<string, mixed>}>
      */
     private static function withRelations(AppConfig $config, array $resources): array
     {

@@ -9,6 +9,7 @@ use Multiapi\Arco\Cli\ArcoCommand;
 use Multiapi\Arco\Cli\UserError;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
 use Multiapi\Arco\Config\AppConfig;
+use Multiapi\Arco\Config\ConfigLayer;
 use Multiapi\Arco\Deploy\Sleeper;
 use Multiapi\Arco\Logs\FallbackFollower;
 use Multiapi\Arco\Logs\Follower;
@@ -81,7 +82,8 @@ final class LogsCommand extends ArcoCommand
             ->addOption('console', null, InputOption::VALUE_NONE, 'Only the console function (same as --source=console)')
             ->addOption('queue', null, InputOption::VALUE_REQUIRED, 'Only the worker of this queue')
             ->addOption('platform', null, InputOption::VALUE_NONE, 'Show every Lambda platform event')
-            ->addOption('json', null, InputOption::VALUE_NONE, 'Print raw events as JSON, one per line');
+            ->addOption('json', null, InputOption::VALUE_NONE, 'Print raw events as JSON, one per line')
+            ->addOption(ConfigLayer::OPTION, null, InputOption::VALUE_REQUIRED, ConfigLayer::DESCRIPTION);
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int

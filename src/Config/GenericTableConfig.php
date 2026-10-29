@@ -16,6 +16,8 @@ final readonly class GenericTableConfig
         public ?string $ttl = null,
         /** name or ARN of a table Arco does not manage, used as given */
         public ?string $existing = null,
+        /** a config layer entry with `adopt: true`: a deploy may import the existing table */
+        public bool $adopt = false,
     ) {
     }
 

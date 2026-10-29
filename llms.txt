@@ -15,6 +15,7 @@ project these files are under `vendor/multiapi/arco/`.
 - [Arco for coding agents](docs/agents.md): ground rules, non-interactive use, command and `arco.php` reference, workflows, error keys
 - [Getting started](docs/getting-started.md): install, `arco init`, AWS profiles, secrets, deploys, CI and `--json`, IAM permissions
 - [Configuration reference](docs/configuration.md): every `arco.php` method with defaults, merge rules, queues, storage, tables, domains, VPC, runtime
+- [Config layer](docs/config-layer.md): the JSON document merged over `arco.php` (`--config-layer`, `ARCO_CONFIG_LAYER`): keys, merge and conflicts, `adopt`, inventory additions
 - [Try your app locally with Floci](docs/local-floci.md): deploy to a local AWS emulator with `AWS_ENDPOINT_URL`
 - [Upgrading](docs/upgrading.md): breaking changes per version and what 1.x keeps stable
 

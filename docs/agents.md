@@ -142,14 +142,24 @@ Flags shared by many commands:
 
 | Command | What it does | Options |
 |---|---|---|
-| `deploy` | Build, upload, run deploy commands, deploy, verify (rollback on failure), then workers, scheduler, domains | `--env`, `--profile`, `-y/--yes` (create a new environment), `--json`, `--package=<zip>` (deploy a prebuilt zip), `--migrate` (add `migrate --force` to this deploy's deploy commands; Laravel only), `--no-deploy-commands` (not with `--migrate`), `--dns-profile=<p>`, `--cloudflare-token=<t>`, `--permissions-boundary=<arn>`, `--force` (dangerous, see ground rules), `--force-dns` (dangerous) |
-| `package` | Build the zip only (`.arco/build/arco-<app>-<env>.zip`) | `--env`, `-o/--output=<path>` |
-| `info` | Resolved settings with their source, URL, live revision; validation | `--env`, `--profile`, `--json`, `--resources` (every AWS resource tagged for the environment; `tag:GetResources`), `--permissions-boundary=<arn>` |
-| `remove` | Delete the web function, endpoint, console, workers, execution role, scheduler rule, network connector and the domain stack, DNS aliases and an Arco-requested certificate. Keeps queues, buckets, tables, SSM parameters, log groups and the code bucket | `--env`, `--profile`, `-y/--yes`, `--json`, `--dns-profile`, `--cloudflare-token`, `--force` (deprecated spelling of `--yes`) |
-| `logs` | Web, console and worker logs merged | `--env`, `--profile`, `-f/--follow`, `--since=10m` (`30s`, `10m`, `2h`, `1d` or a date; bare numbers are rejected), `--until` (not with `--follow`), `--level=debug\|info\|warning\|error`, `--request=<id>`, `--filter=<text>`, `--source=all\|web\|console\|queues`, `--console`, `--queue=<name>`, `--platform`, `--json` |
+| `deploy` | Build, upload, run deploy commands, deploy, verify (rollback on failure), then workers, scheduler, domains | `--env`, `--profile`, `-y/--yes` (create a new environment), `--json`, `--package=<zip>` (deploy a prebuilt zip), `--migrate` (add `migrate --force` to this deploy's deploy commands; Laravel only), `--no-deploy-commands` (not with `--migrate`), `--dns-profile=<p>`, `--cloudflare-token=<t>`, `--permissions-boundary=<arn>`, `--config-layer=<path>`, `--force` (dangerous, see ground rules), `--force-dns` (dangerous) |
+| `package` | Build the zip only (`.arco/build/arco-<app>-<env>.zip`) | `--env`, `-o/--output=<path>`, `--config-layer=<path>` |
+| `info` | Resolved settings with their source, URL, live revision; validation | `--env`, `--profile`, `--json`, `--resources` (every AWS resource tagged for the environment, each with `source` and `options`, plus `variables` and `config`; `tag:GetResources`), `--permissions-boundary=<arn>`, `--config-layer=<path>` |
+| `remove` | Delete the web function, endpoint, console, workers, execution role, scheduler rule, network connector and the domain stack, DNS aliases and an Arco-requested certificate. Keeps queues, buckets, tables, SSM parameters, log groups and the code bucket | `--env`, `--profile`, `-y/--yes`, `--json`, `--dns-profile`, `--cloudflare-token`, `--config-layer=<path>`, `--force` (deprecated spelling of `--yes`) |
+| `logs` | Web, console and worker logs merged | `--env`, `--profile`, `-f/--follow`, `--since=10m` (`30s`, `10m`, `2h`, `1d` or a date; bare numbers are rejected), `--until` (not with `--follow`), `--level=debug\|info\|warning\|error`, `--request=<id>`, `--filter=<text>`, `--source=all\|web\|console\|queues`, `--console`, `--queue=<name>`, `--platform`, `--config-layer=<path>`, `--json` |
 | `profile` | Show or change the remembered profile per environment (`.arco/local.php`) | `--env`, `--set=<profile>`, `--json` (not with `--set`) |
 
 `--follow` never ends by itself: do not run it in a foreground tool call. Use `--since`/`--until` to read a window.
+
+#### Config layer
+
+`--config-layer=<path>` (or `ARCO_CONFIG_LAYER`, the flag wins; empty or blank means the other one) on `deploy`,
+`package`, `info`, `remove` and `logs` merges a JSON file over `arco.php`, or replaces a missing `arco.php`. It adds queues,
+buckets, tables, variables, domains and settings and never overrides `arco.php`: a different value is
+`config.layer_conflict` before any AWS call. Every other command ignores the flag and the variable, so do not expect
+`queue:list` or the editing commands to see layer entries. A layer queue, storage or table with `adopt: true` imports
+a retained resource of this app and environment. `--json` errors carry `error.params` when the key has params
+(`config.layer_conflict`: `{kind, name}`). Format, merge rules and adoption: [Config layer](config-layer.md).
 
 ### Run code on the console function
 
@@ -529,6 +539,12 @@ not. The most common ones:
 | `config.failed`, `config.invalid_return` | `arco.php` threw, or does not return the `App` | Fix the PHP error shown; end the file with `return App::make(...)...;` |
 | `config.choose_environment` | Several environments and no `--env` | Pass `--env=<env>` |
 | `config.unknown_environment` | `--env` names no environment | Use one of the names listed |
+| `config.layer_not_found` | `--config-layer` or `ARCO_CONFIG_LAYER` points to a file that is not there | Fix the path |
+| `config.layer_schema`, `config.layer_invalid` | The layer has no `schema: 1`, or an unknown key, a wrong type or bad JSON (`path` is a JSON pointer) | Fix the layer at `path` ([Config layer](config-layer.md)) |
+| `config.layer_missing` | No `arco.php` and the layer lacks `name` or `region` | Add the key to the layer |
+| `config.layer_environment` | `--env` is not the layer's environment | Drop `--env` or use the layer's |
+| `config.layer_conflict` | The layer sets differently something `arco.php` sets (`kind`: `name`, `region`, `setting`, `variable`, `queue`, `storage`, `table`) | Remove it from one of them; every conflict is listed |
+| `config.layer_adopt_waiting` (note) | A layer `adopt: true` entry waits because `arco.php` still declares the name | Remove the name from `arco.php` |
 | `config.removed_*`, `config.changed_*` | API removed or renamed in 0.9 | Apply the replacement the message gives ([Upgrading](upgrading.md)) |
 | `validation.*` | A value out of range or a bad name (`validation.region`, `validation.timeout`, `validation.queue_name`, `validation.bucket_name_length`, `validation.vpc_id`, ...) | The message names the rule; fix the value in `arco.php`. Name length errors need a shorter app, environment or resource name |
 | `validation.reserved_arco_variable` | A variable named `ARCO*` | Rename it |
@@ -589,6 +605,7 @@ not. The most common ones:
 | `deploy.verify_iam_no_report` | `auth('iam')` without a domain: no init report in time | Check the logs; Floci never writes it |
 | `deploy.verify_signed_forbidden` | With `domain()`, the signed `/up` probe got 403 | Allow `lambda:InvokeWebFunctionEndpoint` in the deploy profile |
 | `deploy.queue_retained`, `deploy.queue_dlq_retained`, `deploy.storage_retained`, `deploy.table_retained`, `deploy.generic_table_retained` | A kept queue, bucket or table already has the name | Attach it with the `existing:` line the message prints, or choose another name. Do not delete the kept resource without the user |
+| `deploy.import_failed` | CloudFormation could not import a retained resource adopted with a layer's `adopt: true`; it rolled the import back and the resource is untouched | Read the reason, fix it, deploy again. Reason `cloudformation:GetTemplate`: refused before any change because the running template cannot be read; allow it. Steps `deploy.step_import` (`deploy.step_import_one` for one resource), `deploy.queue_adopted`, `deploy.queue_dlq_adopted` (an imported dead-letter queue, after its queue's step), `deploy.storage_adopted` and `deploy.generic_table_adopted` are the import's progress, not errors |
 | `deploy.queue_replaced`, `deploy.resource_replaced` | A change CloudFormation would do by replacement (FIFO on/off, ...) | Undo it; add a new queue or resource under another name |
 | `deploy.bucket_taken` | S3 bucket name taken in another account or region (or missing `s3:ListBucket`) | Shorter/other storage name, or allow `s3:ListBucket` |
 | `deploy.public_blocked`, `deploy.public_policy_denied` | Account-level S3 Block Public Access refuses public prefixes | The user turns off `BlockPublicPolicy` for the account, or drop `public:` |

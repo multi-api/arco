@@ -116,6 +116,7 @@ trait StreamsJson
             rolledBack: $this->jsonRolledBack(),
             errorKey: $key,
             errorMessage: $message,
+            errorParams: $e instanceof UserError ? $e->params : [],
         );
     }
 

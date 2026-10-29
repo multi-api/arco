@@ -134,7 +134,7 @@ Every option, the packaging rules and the Laravel preset are in the
 | Command | What it does |
 |---|---|
 | `arco init` | Create `arco.php` (asks name, region, environments, custom domain) |
-| `arco deploy --env=<env>` | Build, upload, deploy commands, deploy, verify, attach domains; `--migrate` runs migrations first; `--package=<zip>` deploys a prebuilt zip; `--json` streams NDJSON events and a result |
+| `arco deploy --env=<env>` | Build, upload, deploy commands, deploy, verify, attach domains; `--migrate` runs migrations first; `--package=<zip>` deploys a prebuilt zip; `--config-layer=<path>` merges a [JSON config layer](docs/config-layer.md) over `arco.php` (also on `package`, `info`, `remove`, `logs`); `--json` streams NDJSON events and a result |
 | `arco console:add --env=<env>` / `console:remove` | Turn the console function on or off in `arco.php` (off deletes it on the next deploy) |
 | `arco command "<args>" --env=<env>` | Run an artisan (or PHP) command, given as one quoted string, on the console function (needs `console()`); exits with its exit code (`--async` to start it and return; `--yes` on a protected environment without a terminal) |
 | `arco tinker --env=<env>` | Tinker on your machine, statements run in Lambda (needs `console()`; `--execute="<code>"` for one statement) |
@@ -165,6 +165,7 @@ Messages are in English or Spanish (`--lang=es` or `ARCO_LANG=es`).
 
 - [Getting started](docs/getting-started.md)
 - [Configuration reference](docs/configuration.md)
+- [Config layer](docs/config-layer.md)
 - [Upgrading](docs/upgrading.md): every breaking change per version, and what 1.x keeps stable
 - [Try it locally with Floci](docs/local-floci.md)
 - [Arco for coding agents](docs/agents.md): for Claude Code, Codex and other agents working in your app (also

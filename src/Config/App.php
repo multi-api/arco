@@ -42,7 +42,9 @@ final class App
     }
 
     /**
-     * @internal Read by Arco's config loader; its shape is not part of the API.
+     * Read by Arco's config loader. The shape of one environment (an entry of `environments`, as
+     * Environment::toArray() gives it) minus `runtime` and `deployCommands` is the public contract of the
+     * config layer (docs/config-layer.md, "Config layer"); the rest of this array is internal and may change.
      *
      * @return array<string, mixed>
      */

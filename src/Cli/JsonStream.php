@@ -151,6 +151,7 @@ final class JsonStream
      *
      * @param 'deployed'|'removed'|'failed'|'refused' $outcome
      * @param list<string> $domains
+     * @param array<string, string|int> $errorParams the error key's params; `error.params` is only written when not empty
      */
     public function result(
         string $outcome,
@@ -163,6 +164,7 @@ final class JsonStream
         ?int $coldStartMs = null,
         ?string $errorKey = null,
         ?string $errorMessage = null,
+        array $errorParams = [],
     ): void {
         if ($this->result) {
             return;
@@ -181,7 +183,7 @@ final class JsonStream
             'domains' => $domains,
             'rolled_back' => $rolledBack,
             'cold_start_ms' => $coldStartMs,
-            'error' => $errorKey === null ? null : ['key' => $errorKey, 'message' => (string) $errorMessage],
+            'error' => $errorKey === null ? null : ['key' => $errorKey, 'message' => (string) $errorMessage] + ($errorParams === [] ? [] : ['params' => $errorParams]),
         ], ['app' => $app, 'environment' => $environment]);
         $this->result = true;
     }

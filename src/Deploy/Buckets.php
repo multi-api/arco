@@ -37,6 +37,16 @@ final class Buckets
         }
     }
 
+    /**
+     * The tags of the bucket. Throws on any failure, a bucket without tags included (NoSuchTagSet).
+     *
+     * @return array<string, string>
+     */
+    public function tags(string $bucket): array
+    {
+        return Aws::tagMap(Aws::call($this->s3, 'GetBucketTagging', ['Bucket' => $bucket])['TagSet'] ?? []);
+    }
+
     /** Whether the bucket holds any object, or null when it cannot be read: only ever shown in warnings. */
     public function hasObjects(string $name): ?bool
     {

@@ -48,4 +48,20 @@ final class Aws
     {
         return is_string($value) && $value !== '' ? $value : null;
     }
+
+    /**
+     * A tag list ([{Key, Value}, ...]) as a map.
+     *
+     * @return array<string, string>
+     */
+    public static function tagMap(mixed $value): array
+    {
+        $tags = [];
+        foreach (self::maps($value) as $tag) {
+            if (is_string($tag['Key'] ?? null) && is_string($tag['Value'] ?? null)) {
+                $tags[$tag['Key']] = $tag['Value'];
+            }
+        }
+        return $tags;
+    }
 }

@@ -3,6 +3,36 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.13.0
+
+- **Added:** the config layer, a JSON document merged over `arco.php` (or used alone when there is no `arco.php`),
+  for tools that manage queues, buckets, tables, variables and domains outside your code. `--config-layer=<path>` and
+  `ARCO_CONFIG_LAYER` on `deploy`, `package`, `info`, `remove` and `logs` (the flag wins; an empty or blank value falls
+  back to the variable; every other command ignores both). Schema 1, strict: unknown keys and wrong types are refused. The
+  layer never overrides `arco.php`: a different value is an error before any AWS call, every conflict listed. New
+  keys: errors `config.layer_not_found` (`{path}`), `config.layer_schema` (`{schema}`), `config.layer_invalid`
+  (`{path, reason}`), `config.layer_missing` (`{key}`), `config.layer_environment` (`{layer, environment}`) and
+  `config.layer_conflict` (`{kind, name}`, `kind` being `name`, `region`, `setting`, `variable`, `queue`, `storage`
+  or `table`); the note `config.layer_adopt_waiting` (`{kind, name}`). `arco info` shows `cloud` as the source of
+  what the layer set ([Config layer](docs/config-layer.md)).
+- **Added:** the `error` object of `--json` and NDJSON results gains `params` when the error key has params (today
+  `config.layer_conflict`: `{kind, name}`). Errors without params are unchanged.
+- **Added:** `adopt: true` on a config layer queue, storage or table takes back a retained resource of this app and
+  environment: it waits (`config.layer_adopt_waiting`) while `arco.php` declares the name; otherwise a retained,
+  correctly tagged (`arco:app`, `arco:environment`) queue, bucket or table is imported into the resources stack with
+  a CloudFormation `IMPORT` change set, after checks that run before any change. New steps `deploy.step_import`
+  (`{stack, count}`; `deploy.step_import_one` with the same params for one resource), `deploy.queue_adopted`,
+  `deploy.queue_dlq_adopted` (`{queue, name}`, an imported dead-letter queue, after its queue's step),
+  `deploy.storage_adopted` and `deploy.generic_table_adopted`; new error
+  `deploy.import_failed` (`{stack, reason}`). New deploy permissions: `cloudformation:CreateChangeSet`,
+  `DescribeChangeSet`, `ExecuteChangeSet`, `DeleteChangeSet` on `stack/arco-*` (and the tag and describe reads in
+  [Permissions](docs/getting-started.md#permissions-for-queues)); nothing is needed without `adopt`. A resources
+  stack left in `REVIEW_IN_PROGRESS` by an interrupted import is deleted and created again by the next deploy, after
+  the ownership check (it holds no resources).
+- **Added:** `arco info --resources --json` gives every resource `source` (`arco.php`, `cloud`, `default` or `null`)
+  and `options` (the resolved options of its queue, bucket, table or setting, `null` when none), and gains the top-level
+  keys `variables` (`[{name, source}]`, never values) and `config` (`[{kind, name, source, options}]` for everything
+  the configuration declares, deployed or not). They are present with or without a layer.
 ## 0.12.1
 
 - **Added:** the package uploads to S3 show their progress: a bar with the megabytes sent (`48 / 180 MB`) in a

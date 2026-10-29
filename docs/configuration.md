@@ -82,6 +82,13 @@ Settings, `variables()`, `permissions()`, `runtime()` and the custom domain meth
 like the others (an environment's call replaces the app's, and `cache(false)` turns it off there).
 `region()`, `exclude()` and `include()` exist only at app level; `account()` only on an environment.
 
+## Config layer
+
+`deploy`, `package`, `info`, `remove` and `logs` also accept a JSON config layer (`--config-layer=<path>` or
+`ARCO_CONFIG_LAYER`) that adds queues, buckets, tables, variables, domains and settings on top of `arco.php`, or
+replaces it when there is none. It never overrides `arco.php`: a different value is an error. The format, the merge
+rules and `adopt` are in [Config layer](config-layer.md).
+
 ## Settings
 
 | Method | Default | Maps to |

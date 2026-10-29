@@ -22,6 +22,19 @@ interface Deployer
     public function checkOwnership(AppConfig $config, Closure $onStep): void;
 
     /**
+     * Right after checkOwnership() and before any change, read-only: checks each queue, bucket and table()
+     * table of a config layer entry with `adopt: true` that the resources stack does not own. One whose
+     * resource exists under its name must be tagged for this app and environment, or the deploy is refused
+     * like one without `adopt`; deployResources() then imports it into the stack (an IMPORT change set) before
+     * the update. Nothing is read without such entries.
+     *
+     * @param Closure(string, array<string, string|int>): void $onStep
+     * @throws DeployException deploy.queue_retained, deploy.queue_dlq_retained, deploy.storage_retained,
+     *         deploy.bucket_taken, deploy.generic_table_retained, deploy.lookup_denied
+     */
+    public function checkAdoptions(AppConfig $config, Closure $onStep): void;
+
+    /**
      * Uploads the package and puts the code in place without moving traffic: execution role, a new
      * web revision, and (with $console) the console zip and runtime binary uploaded, the console
      * function (when the console is on) and one worker per queue updated with a published version.
@@ -147,7 +160,11 @@ interface Deployer
      *         deploy.bucket_taken when another account (or region) holds a bucket name;
      *         deploy.lookup_denied when the profile may not look a table up; deploy.queue_replaced or
      *         deploy.resource_replaced when a name would change. After the stack fails:
-     *         deploy.public_blocked or deploy.public_policy_denied for a refused public bucket policy
+     *         deploy.public_blocked or deploy.public_policy_denied for a refused public bucket policy;
+     *         deploy.import_failed when importing the resources of `adopt` entries fails (steps
+     *         deploy.step_import, or deploy.step_import_one for one resource, then deploy.queue_adopted,
+     *         deploy.storage_adopted or deploy.generic_table_adopted instead of the *_created step, and
+     *         deploy.queue_dlq_adopted after the queue's step for an imported dead-letter queue)
      */
     public function deployResources(AppConfig $config, Closure $onStep): void;
 
@@ -166,7 +183,7 @@ interface Deployer
      * Every resource of the region tagged for this app and environment (tag:GetResources), sorted by
      * type and name; `retained` says whether `remove()` keeps it.
      *
-     * @return list<array{type: string, name: string, arn: string, retained: bool, relations: list<array{type: string, target: string}>}>
+     * @return list<array{type: string, name: string, arn: string, retained: bool, relations: list<array{type: string, target: string}>, source: ?string, options: ?array<string, mixed>}>
      * @throws \Aws\Exception\AwsException a refused or failed lookup
      */
     public function resources(AppConfig $config): array;

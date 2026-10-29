@@ -29,6 +29,22 @@ final class Queues
         }
     }
 
+    /**
+     * The tags of the queue. Throws on any failure (e.g. a profile without sqs:ListQueueTags).
+     *
+     * @return array<string, string>
+     */
+    public function tags(string $url): array
+    {
+        $tags = [];
+        foreach (Aws::map(Aws::call($this->sqs, 'ListQueueTags', ['QueueUrl' => $url])['Tags'] ?? null) as $key => $value) {
+            if (is_string($value)) {
+                $tags[(string) $key] = $value;
+            }
+        }
+        return $tags;
+    }
+
     /** Whether the error says the queue does not exist. */
     public static function missing(AwsException $e): bool
     {

@@ -789,6 +789,18 @@ With `queue()`, the deploy profile also needs:
 - `tag:GetResources`, to find the workers of queues removed from `arco.php` (without it the deploy warns and
   leaves them)
 
+Adopting a retained queue, bucket or table from a [config layer](config-layer.md#adopting-retained-resources)
+(`adopt: true`) also needs, to import it into the resources stack with a CloudFormation `IMPORT` change set:
+
+- `cloudformation:CreateChangeSet`, `DescribeChangeSet`, `ExecuteChangeSet`, `DeleteChangeSet` on
+  `arn:aws:cloudformation:*:*:stack/arco-*` (`cloudformation:*Stack*` does not cover them), plus
+  `cloudformation:GetTemplate` (already listed above)
+- the reads that check a resource before importing it and that CloudFormation makes while importing:
+  `sqs:ListQueueTags` and `sqs:GetQueueAttributes` on the queues, `s3:GetBucketTagging` and `s3:GetBucket*` on the
+  buckets, `dynamodb:ListTagsOfResource` and `dynamodb:DescribeTable` on the tables. The lists above already name them
+  for the resources Arco creates (`<app>-*`); an adopted resource has the same names, so nothing more is needed
+  unless you narrowed those lists
+
 Without queues in `arco.php` a deploy reads the queue stack only to clean up after removed queues, and a
 profile without CloudFormation access is not asked for any of this. The execution role's statements (and
 what to add to your own `role()`) are in [Queue permissions](configuration.md#queue-permissions).

@@ -23,6 +23,8 @@ final readonly class StorageConfig
         /** name of a bucket Arco does not manage */
         public ?string $existing = null,
         public bool $default = false,
+        /** a config layer entry with `adopt: true`: a deploy may import the existing bucket */
+        public bool $adopt = false,
     ) {
     }
 

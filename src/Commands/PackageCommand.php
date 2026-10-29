@@ -8,6 +8,7 @@ use Multiapi\Arco\Cli\ArcoCommand;
 use Multiapi\Arco\Cli\StepPrinter;
 use Multiapi\Arco\Cli\UserError;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
+use Multiapi\Arco\Config\ConfigLayer;
 use Multiapi\Arco\Deploy\DeployPipeline;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Input\InputInterface;
@@ -30,7 +31,8 @@ final class PackageCommand extends ArcoCommand
     protected function configure(): void
     {
         $this->addOption('env', 'e', InputOption::VALUE_REQUIRED, 'Environment to package')
-            ->addOption('output', 'o', InputOption::VALUE_REQUIRED, 'Where to write the zip');
+            ->addOption('output', 'o', InputOption::VALUE_REQUIRED, 'Where to write the zip')
+            ->addOption(ConfigLayer::OPTION, null, InputOption::VALUE_REQUIRED, ConfigLayer::DESCRIPTION);
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int

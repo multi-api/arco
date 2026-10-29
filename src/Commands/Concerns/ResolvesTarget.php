@@ -18,8 +18,10 @@ use Multiapi\Arco\Build\BuildException;
 use Multiapi\Arco\Cli\UserError;
 use Multiapi\Arco\Config\AppConfig;
 use Multiapi\Arco\Config\ConfigException;
+use Multiapi\Arco\Config\ConfigLayer;
 use Multiapi\Arco\Config\ConfigLoader;
 use Multiapi\Arco\Config\ConfigResolver;
+use Multiapi\Arco\Config\LayerConflicts;
 use Multiapi\Arco\Config\PermissionsBoundary;
 use Multiapi\Arco\Config\Validator;
 use Multiapi\Arco\Deploy\DeployException;
@@ -40,29 +42,57 @@ trait ResolvesTarget
     /** The DNS profile, when the command also uses one (Route 53 in another account). */
     protected ?string $dnsCredentialProfile = null;
 
-    /** @param (Closure(string, array<string, string|int>): void)|null $warn gets each config warning instead of $io (--json) */
+    /**
+     * The configuration of the target environment: arco.php, with the config layer merged over it when the
+     * command has --config-layer (or ARCO_CONFIG_LAYER is set for it). Without arco.php the layer alone is
+     * the configuration; with neither, config.not_found.
+     *
+     * @param (Closure(string, array<string, string|int>): void)|null $warn gets each config warning instead of $io (--json)
+     */
     protected function loadTarget(InputInterface $input, SymfonyStyle $io, ?Closure $warn = null): AppConfig
     {
-        $raw = (new ConfigLoader())->load($this->projectDir() . '/arco.php');
-        $environments = ConfigResolver::environments($raw);
+        /** @var array<string, string> $env */
+        $env = getenv();
+        $layer = null;
+        if ($input->hasOption(ConfigLayer::OPTION)) {
+            $option = $input->getOption(ConfigLayer::OPTION);
+            $layer = ConfigLayer::fromInput(is_string($option) ? $option : null, $env);
+        }
+        $arcoPhp = $this->projectDir() . '/arco.php';
+        $withoutArcoPhp = $layer !== null && ! is_file($arcoPhp);
+        $raw = $withoutArcoPhp ? ConfigResolver::layerOnly($layer) : (new ConfigLoader())->load($arcoPhp);
+        $environments = ConfigResolver::environments($raw, $layer);
         $environment = $input->getOption('env');
         if (! is_string($environment) || $environment === '') {
-            if (count($environments) !== 1) {
+            if ($layer !== null) {
+                $environment = $layer->environment;
+            } elseif (count($environments) !== 1) {
                 throw $this->userError('config.choose_environment', ['available' => implode(', ', $environments)]);
+            } else {
+                $environment = $environments[0];
             }
-            $environment = $environments[0];
         }
 
-        $config = ConfigResolver::resolve($raw, $environment);
+        try {
+            // Also refuses an --env that is not the layer's (config.layer_environment).
+            $config = ConfigResolver::resolve($raw, $environment, $layer);
+        } catch (LayerConflicts $e) {
+            throw new UserError(
+                implode("\n", array_map(fn (array $c) => '• ' . $this->t($c['key'], $c['params']), $e->errors)),
+                $e->errors[0]['key'] ?? null,
+                $e->errors[0]['params'] ?? [],
+            );
+        }
+        if ($withoutArcoPhp) {
+            $config = $config->withoutArcoPhp();
+        }
         // deploy and info: the deploy host's override, validated with the rest (info shows what deploy uses).
         if ($input->hasOption(PermissionsBoundary::OPTION)) {
             $flag = $input->getOption(PermissionsBoundary::OPTION);
-            /** @var array<string, string> $env */
-            $env = getenv();
             $config = PermissionsBoundary::apply($config, is_string($flag) ? $flag : null, $env);
         }
         $validation = (new Validator())->validate($config, $this->projectDir());
-        foreach ($validation->warnings as $warning) {
+        foreach ([...$config->notes, ...$validation->warnings] as $warning) {
             $warn !== null ? $warn($warning['key'], $warning['params']) : $io->warning($this->t($warning['key'], $warning['params']));
         }
         if (! $validation->isValid()) {
