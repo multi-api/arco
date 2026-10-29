@@ -11,6 +11,18 @@ composer require multiapi/arco-laravel:^0.12
 vendor/bin/arco info --env=staging     # validation runs here: errors and deprecations name the fix
 ```
 
+## Upgrading to 0.12.1
+
+Nothing is required: 0.12.1 only adds `endpoints:` to `vpc()`. Without it the deploy makes no new calls and needs no
+new permissions.
+
+To use it, add the deploy permissions first (see [Permissions for VPC](getting-started.md#permissions-for-vpc)):
+`ec2:DescribeRouteTables`, `ec2:DescribeVpcEndpoints`, `ec2:CreateVpcEndpoint`, `ec2:ModifyVpcEndpoint`,
+`ec2:DeleteVpcEndpoints`, `ec2:CreateTags` and `ec2:DeleteTags`. A service that deploys for you (Arco Cloud) needs
+them in its connect template. If the VPC already has gateway endpoints of your own, name them in `endpoints:`
+(`'s3' => 'vpce-...'`) so a deploy in CI never stops on them; see
+[Gateway endpoints](configuration.md#gateway-endpoints).
+
 ## Upgrading to 0.12
 
 Nothing is required: 0.12 only adds an opt-in setting, `vpc()`. Without it, the deploy permissions do not

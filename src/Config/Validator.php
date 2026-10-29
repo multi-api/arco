@@ -623,6 +623,22 @@ final class Validator
                 $result->error('validation.vpc_duplicate', ['value' => (string) $duplicate]);
             }
         }
+        $seen = [];
+        foreach ($config->vpc->endpoints as ['service' => $service, 'id' => $id]) {
+            if (! in_array($service, ['s3', 'dynamodb'], true)) {
+                $result->error('validation.vpc_endpoint_service', ['value' => $service]);
+            } elseif (isset($seen[$service])) {
+                if ($seen[$service] !== 2) {
+                    $result->error('validation.vpc_endpoint_duplicate', ['service' => $service]);
+                    $seen[$service] = 2;
+                }
+            } else {
+                $seen[$service] = 1;
+            }
+            if ($id !== null && preg_match('/^vpce-[0-9a-f]+$/D', $id) !== 1) {
+                $result->error('validation.vpc_endpoint_id', ['value' => $id]);
+            }
+        }
     }
 
     private static function validateDomains(AppConfig $config, ValidationResult $result): void

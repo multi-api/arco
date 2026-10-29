@@ -30,6 +30,12 @@ final readonly class AppStatus
         public ?string $account = null,
         /** @var array{connector: string, version: int, state: string}|null the network connector with vpc(); null without one or when unreadable */
         public ?array $vpc = null,
+        /**
+         * The gateway endpoint of each vpc() service, from GatewayEndpoints::plan(): [] when vpc() has no endpoints, null when unreadable.
+         *
+         * @var list<array{service: string, id: ?string, arco: bool, environments: ?int, route_tables: list<string>, missing_route_tables: list<string>}>|null
+         */
+        public ?array $endpoints = null,
     ) {
     }
 }

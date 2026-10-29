@@ -3,6 +3,42 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.12.1
+
+- **Added:** the package uploads to S3 show their progress: a bar with the megabytes sent (`48 / 180 MB`) in a
+  terminal, `25% (45 / 180 MB)` lines in CI logs; sizes under 10 MB have one decimal. The console package and its
+  runtime binary, whose upload used to print nothing for minutes, upload under their own step,
+  `deploy.step_upload_console` (`{size, mb}`, both files counted, one progress run), before `deploy.step_console`,
+  which now covers only the console's Lambda update. `deploy.step_upload` gains the param `mb` (the size as printed,
+  e.g. `"4.2"`; `size` stays whole MB). Both are now the zip that is sent, not the unzipped package size that
+  `package.ready` prints, so the step and its bar agree. In CI logs a jump (a runtime binary already in the bucket
+  counts as sent at once) prints only the mark it reached. `deploy --json` streams the upload progress under the new
+  progress key `deploy.upload`.
+- **Added:** a step that waits on AWS (the network connector, the first VPC console update, the VPC network
+  interfaces of `remove`, CloudFront and certificates) shows its elapsed time after 10 seconds: a line redrawn in
+  place in a terminal (`3 min 05 s elapsed`), one line per minute in CI logs (`3 min elapsed`). `--json` streams
+  nothing new: the elapsed time follows from the step's `at`.
+- **Added:** `->vpc(subnets: [...], securityGroups: [...], endpoints: [...])` makes sure S3 and/or DynamoDB go through
+  free gateway endpoints, so a VPC without a NAT still reaches the code bucket, `storage()`, `cache()`, `table()` and
+  the failed-jobs table. `endpoints: ['s3', 'dynamodb']` creates what is missing, reuses what exists and never deletes
+  an endpoint it did not create; `'s3' => 'vpce-...'` names your own endpoint and lets Arco add the missing route
+  tables to it. When the VPC has only endpoints of yours that miss route tables, a terminal asks what to do; in CI,
+  with `--json` or with `--yes` the deploy fails with `deploy.endpoint_routes_missing` (it never continues silently).
+  Arco's endpoints are tagged and shared by the environments of the VPC (`arco:uses:<app>/<env>`) and deleted once
+  the last one leaves; route tables are never removed. New steps: `deploy.step_endpoints`, `deploy.endpoint_created`,
+  `deploy.endpoint_routes_added`, `deploy.endpoint_reused`, `deploy.endpoint_shared`, `deploy.endpoint_released`, `deploy.endpoint_deleted`
+  (and `remove.endpoint_released`, `_deleted`, `_cleanup_failed`); `deploy.endpoint_skipped`,
+  `deploy.endpoint_cleanup_failed` and `deploy.endpoint_record_failed` (warnings); errors `deploy.endpoint_not_found`,
+  `_wrong_type`, `_wrong_service`, `_wrong_vpc`, `_vpc_mixed`, `_routes_missing`, `_conflict`, `_tag_limit`, `_timeout`,
+  `_create_failed`, `_modify_failed` and `_cancelled`. `arco info --json` gains `vpc.endpoints` (`[]` without `endpoints`,
+  `null` when unreadable). Without `endpoints` there are no new calls or permissions
+  ([Gateway endpoints](docs/configuration.md#gateway-endpoints)).
+- **Added:** documentation for coding agents: [`docs/agents.md`](docs/agents.md) (running Arco without a terminal,
+  every command and `arco.php` method, workflows, error keys and their fixes), an [`llms.txt`](llms.txt) index, and a
+  Claude Code skill in `skills/arco` (copy it into a project's `.claude/skills/`).
+- **Fixed:** `arco remove` printed the code of a kept bucket (`… was kept in AWS: some`) instead of saying whether
+  it still has files. Its steps now print the way `deploy` prints them.
+
 ## 0.12.0
 
 New opt-in setting in `arco.php`: `vpc()`. Without it nothing changes. To use it, the deploy permissions need new

@@ -1,0 +1,25 @@
+# Arco
+
+> Arco is a PHP CLI (`multiapi/arco`, installed with `composer require --dev`) that builds Laravel and plain PHP apps
+> and deploys them to AWS Lambda Web Functions with FrankenPHP. The app is configured in `arco.php` at the project
+> root; `vendor/bin/arco deploy --env=<env>` builds, uploads, deploys, verifies and rolls back on failure. It also
+> manages a console function (`arco command`, `arco tinker`, migrations, the scheduler), SQS queues with worker
+> functions, S3 storage, DynamoDB tables, custom domains (CloudFront) and VPC access.
+
+Coding agents: start with `docs/agents.md`. It covers running Arco without a terminal (`-n`, `--yes`, `--json`, exit
+codes), every command and `arco.php` method, common workflows and the error keys with their fixes. In a user's
+project these files are under `vendor/multiapi/arco/`.
+
+## Docs
+
+- [Arco for coding agents](docs/agents.md): ground rules, non-interactive use, command and `arco.php` reference, workflows, error keys
+- [Getting started](docs/getting-started.md): install, `arco init`, AWS profiles, secrets, deploys, CI and `--json`, IAM permissions
+- [Configuration reference](docs/configuration.md): every `arco.php` method with defaults, merge rules, queues, storage, tables, domains, VPC, runtime
+- [Try your app locally with Floci](docs/local-floci.md): deploy to a local AWS emulator with `AWS_ENDPOINT_URL`
+- [Upgrading](docs/upgrading.md): breaking changes per version and what 1.x keeps stable
+
+## Optional
+
+- [README](README.md): overview and command list
+- [Changelog](CHANGELOG.md)
+- [Claude Code skill](skills/arco/SKILL.md): copy `skills/arco` into a project's `.claude/skills/`

@@ -13,7 +13,7 @@ use Symfony\Component\Console\Output\OutputInterface;
  *   (with `elapsed_ms`) when the next bullet starts or the command succeeds. StepPrinter's warning
  *   blocks are `warning`, its WARNINGS bullets and other informational lines `note`;
  * - `{"type":"progress","key","percent","at"}` for `package.progress`: the first of a run, then at most one a
- *   second, and always 100;
+ *   second, and always 100. The `sent`/`total` MB of an upload are not streamed;
  * - `{"type":"result",...}`: exactly once, always last (see result()).
  *
  * `key` and `params` are API; `message` is the human text in the current language and is not.
@@ -26,7 +26,12 @@ final class JsonStream
 {
     public const SCHEMA = 1;
     /** Progress key by the step that starts the progress run. */
-    private const PROGRESS_KEYS = ['package.writing' => 'build.zip', 'deploy.php_cli_downloading' => 'binary.download'];
+    private const PROGRESS_KEYS = [
+        'package.writing' => 'build.zip',
+        'deploy.php_cli_downloading' => 'binary.download',
+        'deploy.step_upload' => 'deploy.upload',
+        'deploy.step_upload_console' => 'deploy.upload',
+    ];
     private const PROGRESS_FALLBACK = 'progress';
     /** Secrets this long are redacted inside any string; shorter ones only as a whole value. */
     private const SUBSTRING_SECRET_LENGTH = 8;
@@ -125,6 +130,14 @@ final class JsonStream
     public function scrubbed(string $text): string
     {
         return $this->redactString($text);
+    }
+
+    /**
+     * StepPrinter's counterpart, called after each wait: writes nothing. NDJSON consumers derive a step's
+     * elapsed time from its `at`.
+     */
+    public function tick(): void
+    {
     }
 
     /** StepPrinter's counterpart: nothing is drawn, so nothing to end. */

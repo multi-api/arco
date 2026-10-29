@@ -40,12 +40,14 @@ final class RemoveCommand extends ArcoCommand
     private Closure $deployerFactory;
     /** --json: whether a deletion step started (a failure after it is "failed", before it "refused") */
     private bool $deleting = false;
+    /** @var (Closure(): void)|null the step printer's (or stream's) tick, called after each wait of the default deployer */
+    private ?Closure $onSleep = null;
 
     /** @param (Closure(): float)|null $clock */
     public function __construct(?Closure $awsFactory = null, ?Closure $deployerFactory = null, ?Closure $cloudflareFactory = null, ?Closure $clock = null)
     {
         $this->awsFactory = $awsFactory ?? fn (?string $profile, string $region) => new AwsClients($profile, $region);
-        $this->deployerFactory = $deployerFactory ?? fn (AwsClients $aws, ?AwsClients $dns = null, bool $forceDns = false, ?DnsProvider $dnsProvider = null) => new AwsDeployer($aws, new Sleeper(), $dns, $forceDns, false, $dnsProvider);
+        $this->deployerFactory = $deployerFactory ?? fn (AwsClients $aws, ?AwsClients $dns = null, bool $forceDns = false, ?DnsProvider $dnsProvider = null) => new AwsDeployer($aws, new Sleeper(function (): void { $this->onSleep?->__invoke(); }), $dns, $forceDns, false, $dnsProvider);
         $this->cloudflareFactory = $cloudflareFactory;
         $this->clock = $clock ?? fn (): float => microtime(true);
         parent::__construct();
@@ -90,6 +92,14 @@ final class RemoveCommand extends ArcoCommand
     /** The remove. With --json, $stream gets the steps and the result and $io writes nowhere. */
     private function remove(InputInterface $input, SymfonyStyle $io, ?JsonStream $stream): int
     {
+        // The deletion of VPC network interfaces alone can wait 20 minutes: the elapsed time shows it is not hung.
+        if ($stream !== null) {
+            $steps = null;
+            $this->onSleep = $stream->tick(...);
+        } else {
+            $steps = new StepPrinter($io, $this->t(...), $input->isInteractive() && $io->isDecorated());
+            $this->onSleep = $steps->tick(...);
+        }
         try {
             if ($input->getOption('force')) {
                 $io->warning($this->t('deprecated.force_remove'));
@@ -152,24 +162,22 @@ final class RemoveCommand extends ArcoCommand
             if ($dns !== null && $domainResources) {
                 $this->checkDnsCredentials($dns);
             }
-            $deployer->remove($config, function (string $key, array $params = []) use ($io, $stream): void {
+            $deployer->remove($config, function (string $key, array $params = []) use ($steps, $stream): void {
                 if ($stream !== null) {
                     // The steps are announced before what they delete: from the first one on, AWS changes.
                     $this->deleting = $this->deleting || ! in_array($key, StepPrinter::WARNINGS, true);
                     $stream($key, $params);
                     return;
                 }
-                // A leftover AWS cannot be checked (e.g. the scheduler rule): a warning block, not a bullet.
-                if (in_array($key, StepPrinter::WARNINGS, true)) {
-                    $io->warning($this->t($key, $params));
-                    return;
-                }
-                $io->writeln('  • ' . $this->t($key, $params));
+                // A leftover AWS cannot be checked (e.g. the scheduler rule) is a WARNINGS key: a warning block, not a bullet.
+                $steps?->__invoke($key, $params);
             });
+            $steps?->finish();
             $io->success($this->t('remove.done', ['function' => $config->functionName()]));
             $stream?->result('removed', $config->app, $config->environment);
             return self::SUCCESS;
         } catch (Throwable $e) {
+            $steps?->finish();
             $message = $this->describeError($e) ?? throw $e;
             $io->error($message);
             if ($stream !== null) {

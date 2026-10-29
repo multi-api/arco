@@ -117,7 +117,9 @@ final class InfoCommand extends ArcoCommand
                 'endpoint_auth' => RevisionFactory::authType($config),
                 // Additive (0.12), last: the vpc() subnets and security groups; null without vpc().
                 // With a deploy, also the network connector: its id, latest version and state.
-                'vpc' => $config->vpc === null ? null : ['subnets' => $config->vpc->subnets, 'security_groups' => $config->vpc->securityGroups] + ($status->vpc ?? []),
+                // 0.12.1: its gateway endpoints per service ([] without any, null when unreadable or not read).
+                'vpc' => $config->vpc === null ? null : ['subnets' => $config->vpc->subnets, 'security_groups' => $config->vpc->securityGroups] + ($status->vpc ?? [])
+                    + ['endpoints' => $config->vpc->endpointIds() === [] ? [] : $status?->endpoints],
             ] + ($remoteError !== null ? ['error' => $remoteError] : []), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
             return $remoteError === null ? self::SUCCESS : self::FAILURE;
         }
@@ -131,6 +133,9 @@ final class InfoCommand extends ArcoCommand
                 $value = $this->t('info.auth_cloudfront', ['auth' => $value]);
             }
             $rows[] = [$key === 'vpc' ? 'VPC' : $key, $value, $row[1]];
+            if ($key === 'vpc' && $status?->endpoints !== null && $status->endpoints !== []) {
+                $rows[] = [$this->t('info.vpc_endpoints'), $this->endpointsLabel($status->endpoints), $row[1]];
+            }
             if ($key === 'dns' && ($provider = self::dnsProvider($config)) !== null) {
                 $rows[] = ['dns.provider', $provider, $row[1]];
             }
@@ -483,6 +488,21 @@ final class InfoCommand extends ArcoCommand
             }
         }
         return $json;
+    }
+
+    /** @param list<array{service: string, id: ?string, arco: bool, environments: ?int, route_tables: list<string>, missing_route_tables: list<string>}> $endpoints */
+    private function endpointsLabel(array $endpoints): string
+    {
+        return implode(' · ', array_map(function (array $endpoint): string {
+            $params = ['service' => $endpoint['service'], 'id' => (string) $endpoint['id'], 'count' => $endpoint['environments'] ?? 0];
+            $label = match (true) {
+                $endpoint['id'] === null => $this->t('info.vpc_endpoint_none', $params),
+                ! $endpoint['arco'] => $this->t('info.vpc_endpoint_yours', $params),
+                $endpoint['environments'] === 1 => $this->t('info.vpc_endpoint_arco_one', $params),
+                default => $this->t('info.vpc_endpoint_arco', $params),
+            };
+            return $endpoint['missing_route_tables'] === [] ? $label : $label . ' ' . $this->t('info.vpc_endpoint_missing', ['route_tables' => implode(', ', $endpoint['missing_route_tables'])]);
+        }, $endpoints));
     }
 
     private function display(string $key, mixed $value, ?AppStatus $status = null): string

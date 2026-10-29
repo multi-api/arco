@@ -216,7 +216,14 @@ final class ConfigResolver
             return null;
         }
         $strings = static fn (mixed $list): array => is_array($list) ? array_values(array_filter($list, 'is_string')) : [];
-        return new VpcConfig($strings($value['subnets'] ?? []), $strings($value['securityGroups'] ?? []));
+        $endpoints = [];
+        foreach (is_array($value['endpoints'] ?? null) ? $value['endpoints'] : [] as $key => $entry) {
+            // A value that is not a string is kept as its JSON text: no service or endpoint id looks like it, so the
+            // validator reports it (validation.vpc_endpoint_service for a list entry, validation.vpc_endpoint_id for a value).
+            $text = is_string($entry) ? $entry : (json_encode($entry) ?: get_debug_type($entry));
+            $endpoints[] = is_int($key) ? ['service' => $text, 'id' => null] : ['service' => $key, 'id' => $text];
+        }
+        return new VpcConfig($strings($value['subnets'] ?? []), $strings($value['securityGroups'] ?? []), $endpoints);
     }
 
     /**

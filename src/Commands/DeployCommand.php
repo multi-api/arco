@@ -21,6 +21,7 @@ use Multiapi\Arco\Console\Console;
 use Multiapi\Arco\Console\LambdaConsole;
 use Multiapi\Arco\Deploy\AwsDeployer;
 use Multiapi\Arco\Deploy\AwsVerifier;
+use Multiapi\Arco\Deploy\EndpointPlan;
 use Multiapi\Arco\Deploy\EndpointSigner;
 use Multiapi\Arco\Deploy\RevisionFactory;
 use Multiapi\Arco\Deploy\ChangeTrackingDeployer;
@@ -42,6 +43,7 @@ use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\NullOutput;
 use Symfony\Component\Console\Output\OutputInterface;
+use Symfony\Component\Console\Question\ChoiceQuestion;
 use Symfony\Component\Console\Style\SymfonyStyle;
 use Throwable;
 
@@ -53,7 +55,7 @@ final class DeployCommand extends ArcoCommand
     use UsesCloudflare;
 
     private DeployPipeline $pipeline;
-    /** @var Closure(AwsClients, ?AwsClients, bool, bool, ?DnsProvider): Deployer */
+    /** @var Closure(AwsClients, ?AwsClients, bool, bool, ?DnsProvider, ?Closure): Deployer */
     private Closure $deployerFactory;
     /** @var Closure(AwsClients): Verifier */
     private Closure $verifierFactory;
@@ -62,6 +64,8 @@ final class DeployCommand extends ArcoCommand
     private Closure $consoleFactory;
     /** --json: the deployer of the running deploy, which knows whether AWS changed */
     private ?ChangeTrackingDeployer $tracked = null;
+    /** @var (Closure(): void)|null the step printer's (or stream's) tick, called after each wait of the default deployer and verifier */
+    private ?Closure $onSleep = null;
 
     public function __construct(
         ?Closure $awsFactory = null,
@@ -75,8 +79,8 @@ final class DeployCommand extends ArcoCommand
     ) {
         $this->awsFactory = $awsFactory ?? fn (?string $profile, string $region) => new AwsClients($profile, $region);
         $this->pipeline = $pipeline ?? DeployPipeline::default();
-        $this->deployerFactory = $deployerFactory ?? fn (AwsClients $aws, ?AwsClients $dns = null, bool $forceDns = false, bool $force = false, ?DnsProvider $dnsProvider = null) => new AwsDeployer($aws, new Sleeper(), $dns, $forceDns, $force, $dnsProvider);
-        $this->verifierFactory = $verifierFactory ?? fn (AwsClients $aws) => new AwsVerifier($aws->logs(), new Client(), new Sleeper(), signer: EndpointSigner::for($aws));
+        $this->deployerFactory = $deployerFactory ?? fn (AwsClients $aws, ?AwsClients $dns = null, bool $forceDns = false, bool $force = false, ?DnsProvider $dnsProvider = null, ?Closure $endpointDecider = null) => new AwsDeployer($aws, new Sleeper(function (): void { $this->onSleep?->__invoke(); }), $dns, $forceDns, $force, $dnsProvider, endpointDecider: $endpointDecider);
+        $this->verifierFactory = $verifierFactory ?? fn (AwsClients $aws) => new AwsVerifier($aws->logs(), new Client(), new Sleeper(function (): void { $this->onSleep?->__invoke(); }), signer: EndpointSigner::for($aws));
         $this->presets = $presets ?? PresetRegistry::default();
         $this->consoleFactory = $consoleFactory ?? fn (AwsClients $aws, AppConfig $config) => new LambdaConsole($aws->lambda(LambdaConsole::clientOptions($config)));
         $this->cloudflareFactory = $cloudflareFactory;
@@ -132,6 +136,7 @@ final class DeployCommand extends ArcoCommand
     private function deploy(InputInterface $input, OutputInterface $output, SymfonyStyle $io, ?JsonStream $stream): int
     {
         $steps = $stream ?? new StepPrinter($io, $this->t(...), $input->isInteractive() && $output->isDecorated());
+        $this->onSleep = $steps->tick(...);
         /** @var list<string> $ran deploy commands that ran, for the messages of a later failure */
         $ran = [];
         $config = null;
@@ -202,7 +207,9 @@ final class DeployCommand extends ArcoCommand
                 $stream?->note('deploy.dns_cloudflare', $params);
             }
 
-            $deployer = ($this->deployerFactory)($aws, $dns, (bool) $input->getOption('force-dns'), (bool) $input->getOption('force'), $cloudflare);
+            $deployer = ($this->deployerFactory)($aws, $dns, (bool) $input->getOption('force-dns'), (bool) $input->getOption('force'), $cloudflare,
+                // --yes never answers it, and --json or no terminal never asks: the deploy then stops with the way out.
+                $steps instanceof StepPrinter && $input->isInteractive() && ! $input->getOption('yes') ? $this->endpointDecider($io, $steps) : null);
             if ($stream !== null) {
                 $deployer = $this->tracked = new ChangeTrackingDeployer($deployer);
             }
@@ -343,6 +350,42 @@ final class DeployCommand extends ArcoCommand
             }
             return $message === null ? throw $e : self::FAILURE;
         }
+    }
+
+    /**
+     * Asks what to do with the route tables of vpc() that only a gateway endpoint of the user lacks (the decider of
+     * AwsDeployer): add them to one of the user's endpoints, go on without, or cancel before anything changed.
+     *
+     * @return Closure(EndpointPlan): EndpointPlan
+     */
+    private function endpointDecider(SymfonyStyle $io, StepPrinter $steps): Closure
+    {
+        return function (EndpointPlan $plan) use ($io, $steps): EndpointPlan {
+            // Nothing of the deploy has run yet, but a redrawn line must not share the screen with the question.
+            $steps->finish();
+            $choices = [];
+            foreach ($plan->userEndpoints as $endpoint) {
+                $choices[$endpoint] = $this->t('deploy.endpoint_choice_associate', ['endpoint' => $endpoint]);
+            }
+            $choices['@skip'] = $this->t('deploy.endpoint_choice_skip');
+            $choices['@cancel'] = $this->t('deploy.endpoint_choice_cancel');
+            $answer = $io->askQuestion(new ChoiceQuestion($this->t('deploy.endpoint_ask', [
+                'service' => $plan->service,
+                'route_tables' => implode(', ', $plan->missing),
+                'endpoints' => implode(', ', $plan->userEndpoints),
+            ]), $choices, '@cancel'));
+            $answer = is_string($answer) || is_int($answer) ? (string) $answer : '@cancel';
+            $associated = in_array($answer, $plan->userEndpoints, true);
+            // The line that makes the answer permanent: the chosen endpoint, or the first one to authorize next time.
+            $line = $plan->withAssociate($associated ? $answer : ($plan->userEndpoints[0] ?? ''))->configLine();
+            $decided = match (true) {
+                $associated => $plan->withAssociate($answer),
+                $answer === '@skip' => $plan->withSkip(),
+                default => null,
+            };
+            $io->writeln($this->t('deploy.endpoint_config_hint', ['config' => $line]));
+            return $decided ?? throw DeployException::make('deploy.endpoint_cancelled');
+        };
     }
 
     /**

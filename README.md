@@ -167,6 +167,8 @@ Messages are in English or Spanish (`--lang=es` or `ARCO_LANG=es`).
 - [Configuration reference](docs/configuration.md)
 - [Upgrading](docs/upgrading.md): every breaking change per version, and what 1.x keeps stable
 - [Try it locally with Floci](docs/local-floci.md)
+- [Arco for coding agents](docs/agents.md): for Claude Code, Codex and other agents working in your app (also
+  [`llms.txt`](llms.txt) and a [Claude Code skill](skills/arco/SKILL.md))
 
 ## Limits (of Lambda Web Functions)
 

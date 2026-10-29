@@ -26,6 +26,10 @@ final readonly class PreparedDeploy
         public array $keepConnectorVersions = [],
         /** the live revision pinned a connector and vpc() is not set: this deploy took the console and the workers out of the VPC */
         public bool $leftVpc = false,
+        /** @var list<string> Arco gateway endpoints the Web Function's record lists that this deploy no longer uses: prune() releases them */
+        public array $releaseEndpoints = [],
+        /** @var list<string> Arco gateway endpoints this deploy relies on: the record prune() writes once the others are released */
+        public array $keepEndpoints = [],
     ) {
     }
 }

@@ -99,8 +99,11 @@ final class CodeBucket
         ];
     }
 
-    /** @param (callable(string, array<string, string|int>): void)|null $onStep receives deploy.upload_retry */
-    public function upload(string $bucket, string $key, string $path, ?callable $onStep = null): ?string
+    /**
+     * @param (callable(string, array<string, string|int>): void)|null $onStep receives deploy.upload_retry
+     * @param (callable(int, int): void)|null $onProgress receives (bytes sent, file size) while the file is sent
+     */
+    public function upload(string $bucket, string $key, string $path, ?callable $onStep = null, ?callable $onProgress = null): ?string
     {
         try {
             $head = $this->s3->headObject(['Bucket' => $bucket, 'Key' => $key]);
@@ -110,7 +113,7 @@ final class CodeBucket
                 throw $e;
             }
         }
-        return $this->put($bucket, $key, $path, $onStep);
+        return $this->put($bucket, $key, $path, $onStep, $onProgress);
     }
 
     /**
@@ -122,8 +125,9 @@ final class CodeBucket
      * their SHA-256, so the bootstrap never pins an S3 version (noncurrent versions expire).
      *
      * @param (callable(string, array<string, string|int>): void)|null $onStep receives deploy.upload_retry
+     * @param (callable(int, int): void)|null $onProgress receives (bytes sent, file size) while the file is sent
      */
-    public function uploadBinary(string $bucket, string $key, string $path, int $bytes, ?callable $onStep = null): void
+    public function uploadBinary(string $bucket, string $key, string $path, int $bytes, ?callable $onStep = null, ?callable $onProgress = null): void
     {
         try {
             $head = $this->s3->headObject(['Bucket' => $bucket, 'Key' => $key]);
@@ -149,25 +153,30 @@ final class CodeBucket
                 throw $e;
             }
         }
-        $this->put($bucket, $key, $path, $onStep);
+        $this->put($bucket, $key, $path, $onStep, $onProgress);
     }
 
     /**
      * A failure the network or S3 caused (connection reset, timeout, 5xx) is retried once, after the
      * SDK's own retries: a multipart upload resumes with the parts already uploaded. A multipart upload
-     * that still fails is aborted so no parts are left behind.
+     * that still fails is aborted so no parts are left behind. Progress counts the parts uploaded before
+     * a retry: the retry does not send them again.
      *
      * @param (callable(string, array<string, string|int>): void)|null $onStep
+     * @param (callable(int, int): void)|null $onProgress
      */
-    private function put(string $bucket, string $key, string $path, ?callable $onStep): ?string
+    private function put(string $bucket, string $key, string $path, ?callable $onStep, ?callable $onProgress = null): ?string
     {
         $body = fopen($path, 'rb');
         if ($body === false) {
             throw DeployException::make('deploy.read_package_failed', ['path' => $path]);
         }
+        $stat = fstat($body);
+        $progress = $onProgress === null ? null : new UploadProgress($stat === false ? 0 : $stat['size'], $onProgress(...));
+        $options = ['exception_class' => PartUploadException::class, 'before_upload' => $progress === null ? null : $progress->attach(...)];
         try {
             try {
-                $result = $this->send($bucket, $key, $body);
+                $result = $this->send($bucket, $key, $body, $options);
             } catch (AwsException|PartUploadException $e) {
                 $reason = self::transientReason($e);
                 if ($reason === null) {
@@ -181,8 +190,8 @@ final class CodeBucket
                 rewind($body);
                 try {
                     $result = $e instanceof PartUploadException && $e->getState()->isInitiated()
-                        ? (new MultipartUploader($this->s3, $body, ['state' => $e->getState(), 'acl' => self::ACL, 'exception_class' => PartUploadException::class]))->upload()
-                        : $this->send($bucket, $key, $body);
+                        ? (new MultipartUploader($this->s3, $body, ['state' => $e->getState(), 'acl' => self::ACL, ...$options]))->upload()
+                        : $this->send($bucket, $key, $body, $options);
                 } catch (PartUploadException $again) {
                     $this->abort($again);
                     throw $again;
@@ -193,13 +202,17 @@ final class CodeBucket
                 fclose($body);
             }
         }
+        $progress?->finish();
         return self::version($result instanceof ResultInterface ? $result->get('VersionId') : null);
     }
 
-    /** @param resource $body */
-    private function send(string $bucket, string $key, $body): mixed
+    /**
+     * @param resource $body
+     * @param array<string, mixed> $options
+     */
+    private function send(string $bucket, string $key, $body, array $options): mixed
     {
-        return (new ObjectUploader($this->s3, $bucket, $key, $body, self::ACL, ['exception_class' => PartUploadException::class]))->upload();
+        return (new ObjectUploader($this->s3, $bucket, $key, $body, self::ACL, $options))->upload();
     }
 
     /** What went wrong, when every error is one a retry can fix; null otherwise. */

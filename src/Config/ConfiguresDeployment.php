@@ -4,7 +4,7 @@ namespace Multiapi\Arco\Config;
 
 trait ConfiguresDeployment
 {
-    /** @var array<string, string|int|bool|array<string, string|list<string>>> */
+    /** @var array<string, string|int|bool|array<string, string|array<int|string, string>>> */
     private array $settings = [];
     /** @var array<string, string> */
     private array $variables = [];
@@ -46,12 +46,20 @@ trait ConfiguresDeployment
      * through one Lambda network connector Arco manages. An environment's call replaces the app's as a whole;
      * false at the environment level clears the app's.
      *
+     * `endpoints` lists the gateway endpoints for the subnets' route tables: 's3' and/or 'dynamodb' for Arco to
+     * find or create the endpoint, or 's3' => 'vpce-...' to use an existing one.
+     *
      * @param list<string>|false $subnets
      * @param list<string> $securityGroups
+     * @param array<int|string, string> $endpoints
      */
-    public function vpc(array|false $subnets, array $securityGroups = []): static
+    public function vpc(array|false $subnets, array $securityGroups = [], array $endpoints = []): static
     {
-        $this->settings['vpc'] = $subnets === false ? false : ['subnets' => $subnets, 'securityGroups' => $securityGroups];
+        $this->settings['vpc'] = $subnets === false ? false : [
+            'subnets' => $subnets,
+            'securityGroups' => $securityGroups,
+            ...($endpoints === [] ? [] : ['endpoints' => $endpoints]),
+        ];
         return $this;
     }
 
@@ -279,7 +287,7 @@ trait ConfiguresDeployment
     /**
      * `tables` only when table() was called, so configurations without it keep their shape.
      *
-     * @return array{settings: array<string, string|int|bool|array<string, string|list<string>>>, variables: array<string, string>, runtime: array<string, mixed>, permissions: list<array<string, mixed>>, domains: list<string>|null, deployCommands: list<string>|null, queues: array<string, array<string, mixed>|false>, storage: array<string, array<string, mixed>|false>, tables?: array<string, array<string, mixed>|false>}
+     * @return array{settings: array<string, string|int|bool|array<string, string|array<int|string, string>>>, variables: array<string, string>, runtime: array<string, mixed>, permissions: list<array<string, mixed>>, domains: list<string>|null, deployCommands: list<string>|null, queues: array<string, array<string, mixed>|false>, storage: array<string, array<string, mixed>|false>, tables?: array<string, array<string, mixed>|false>}
      */
     protected function deploymentArray(): array
     {

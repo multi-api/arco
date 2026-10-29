@@ -223,7 +223,11 @@ unreadable report fails verification, with a message that says which of the two 
 
 While building, Arco prints each phase (copying the project, `composer install --no-dev`, the
 preset's build commands such as `php artisan event:cache`, writing the zip). Writing the zip shows
-a progress bar in a terminal and `25%`/`50%`/`75%`/`100%` lines in CI logs.
+a progress bar in a terminal and `25%`/`50%`/`75%`/`100%` lines in CI logs. Uploading the package to S3 (and the
+console package, on its own line) shows the same, with the megabytes sent: `48 / 180 MB` next to the bar, or
+`25% (45 / 180 MB)` in CI logs. A step that waits on AWS (the network connector, a VPC update, CloudFront)
+shows how long it has been running after 10 seconds: a `2 min 05 s elapsed` line redrawn in a terminal, and a
+`2 min elapsed` line per minute in CI logs.
 
 The health route must answer with a 2xx status (redirects are not followed). With
 `->auth('iam')` Arco cannot probe the endpoint without signing, so it relies on Lambda's init
@@ -378,8 +382,8 @@ To let the app reach private resources (a database in a private subnet, ElastiCa
 `vpc()` to the app or an environment:
 
 ```php
-Environment::make('staging')
-    ->vpc(subnets: ['subnet-0abc1234', 'subnet-0def5678'], securityGroups: ['sg-0abc1234']);
+->environment('staging', fn (Environment $env) => $env
+    ->vpc(subnets: ['subnet-0abc1234', 'subnet-0def5678'], securityGroups: ['sg-0abc1234']))
 ```
 
 Before you deploy:
@@ -388,8 +392,9 @@ Before you deploy:
    NAT instance, or the AWS calls fail. Arco calls SSM and Secrets Manager (`arco-ssm:` / `arco-secret:`
    references), SQS (jobs), S3 and DynamoDB (gateway endpoints are enough for these two), and a console or worker
    without `bin/php` downloads the runtime binary from the code bucket (S3). See
-   [The VPC needs a NAT](configuration.md#the-vpc-needs-a-nat). Gateway endpoints for S3 and DynamoDB created by
-   Arco are planned for a later release.
+   [The VPC needs a NAT](configuration.md#the-vpc-needs-a-nat). For S3 and DynamoDB alone you can skip the NAT:
+   add `endpoints: ['s3', 'dynamodb']` and Arco creates or reuses free gateway endpoints
+   ([Gateway endpoints](configuration.md#gateway-endpoints)).
 2. **Pick a security group** that allows the egress you need (to the database port, and 443 for the AWS APIs).
 3. **Add the deploy permissions** ([Permissions for VPC](#permissions-for-vpc)).
 
@@ -615,10 +620,11 @@ Every line has `schema` (`1`) and `type`, one of:
   - `note`: an informational line, such as the target (`deploy.target`), where the DNS records go
     (`deploy.dns_target`, `deploy.dns_cloudflare`), an endpoint override, or what `remove` lists and keeps
     (`remove.resources`, `remove.resource_kept`).
-- **`progress`**: `key`, `percent` (0 to 100) and `at`. The keys are `build.zip` (writing the package zip) and
-  `binary.download` (downloading the PHP CLI binary of the console function); other keys may be added. Lines
-  of one key come at most once a second, except the last one at `100`, which always comes and may follow the
-  previous line by less than a second. The upload to S3 has no progress line.
+- **`progress`**: `key`, `percent` (0 to 100) and `at`. The keys are `build.zip` (writing the package zip),
+  `binary.download` (downloading the PHP CLI binary of the console function) and `deploy.upload` (uploading the
+  package, or the console package and its runtime binary, to S3); other keys may be added. Lines of one key come
+  at most once a second, except the last one at `100`, which always comes and may follow the previous line by
+  less than a second. Elapsed time during long waits is not streamed: derive it from the running step's `at`.
 - **`result`**: always the last line, exactly once: `outcome`, `app`, `environment`, `revision`, `url`, `domains`,
   `rolled_back`, `cold_start_ms` and `error`.
   - `app` is `null` when `arco.php` could not be loaded (`environment` is then the `--env` value).
@@ -901,6 +907,36 @@ With `vpc()` (0.12), the deploy profile also needs:
   }
 ]
 ```
+
+**With `endpoints`** (0.12.1) the deploy profile also needs these, and only then:
+
+- `ec2:DescribeRouteTables`, `ec2:DescribeVpcEndpoints` (resource `*`);
+- `ec2:CreateVpcEndpoint`, on `vpc/*`, `vpc-endpoint/*` and `route-table/*`;
+- `ec2:ModifyVpcEndpoint`, on `vpc-endpoint/*` and `route-table/*`;
+- `ec2:DeleteVpcEndpoints`, on `vpc-endpoint/*`, which you can scope with the condition
+  `aws:ResourceTag/arco:managed` = `gateway-endpoint`, so Arco can delete only endpoints it created;
+- `ec2:CreateTags`, on `vpc-endpoint/*` (for the tags put on creation, and for the usage tags on an endpoint that
+  exists), and `ec2:DeleteTags`, on `vpc-endpoint/*`.
+
+```json
+{
+  "Sid": "ArcoGatewayEndpoints",
+  "Effect": "Allow",
+  "Action": [
+    "ec2:DescribeRouteTables", "ec2:DescribeVpcEndpoints", "ec2:CreateVpcEndpoint", "ec2:ModifyVpcEndpoint",
+    "ec2:DeleteVpcEndpoints", "ec2:CreateTags", "ec2:DeleteTags"
+  ],
+  "Resource": "*"
+}
+```
+
+Narrow `Resource` to the resource types above where you want to. The resource types and the
+`aws:ResourceTag/arco:managed` condition on `ec2:DeleteVpcEndpoints` come from our reading of EC2's actions: check
+them against the Service Authorization Reference for Amazon EC2 before you rely on them. To let `ec2:CreateTags`
+apply only while an endpoint is being created, use the condition `ec2:CreateAction` = `CreateVpcEndpoint`; the usage
+tag Arco puts later on an endpoint that already exists needs `ec2:CreateTags` without it. Where AWS cannot scope an action to your app
+(the endpoints and route tables are shared by the VPC, not owned by one app), the statement stays broad; `Describe*`
+actions only support `*`. `arco remove` needs the same tag and delete actions to release an endpoint.
 
 `arco remove` of an environment that uses `vpc()` needs the connector delete and the IAM role actions too. A service
 that deploys for you (Arco Cloud) needs these in its connect template. Without them the deploy stops with an AWS

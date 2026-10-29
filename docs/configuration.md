@@ -115,7 +115,7 @@ like the others (an environment's call replaces the app's, and `cache(false)` tu
 | `cache(bool = true, existing: ?string, driver: 'dynamodb')` | off | A DynamoDB table for Laravel's cache (see [Cache and failed-jobs tables](#cache-and-failed-jobs-tables)) |
 | `failedJobsTable(bool = true, existing: ?string)` | off | A DynamoDB table for Laravel's failed jobs (same section) |
 | `table(name, ttl: ?string, existing: ?string)` | none | A DynamoDB table of your own (`PK`/`SK` strings, on demand) for the app to use through the AWS SDK (see [Tables](#tables)); `table(name, false)` drops an app-level table from an environment |
-| `vpc(subnets: [...], securityGroups: [...])` | none | Run the environment's Web Function, console, scheduler and workers inside your VPC through a Lambda network connector (see [VPC](#vpc)); 1 to 16 subnets and 1 to 5 security groups; `vpc(false)` at environment level clears an app-level `vpc()` |
+| `vpc(subnets: [...], securityGroups: [...], endpoints: [...])` | none | Run the environment's Web Function, console, scheduler and workers inside your VPC through a Lambda network connector (see [VPC](#vpc)); 1 to 16 subnets and 1 to 5 security groups; `endpoints:` makes sure S3 and/or DynamoDB go through free gateway endpoints (see [Gateway endpoints](#gateway-endpoints)); `vpc(false)` at environment level clears an app-level `vpc()` |
 
 An *environment* in Arco is an `environment()` in `arco.php` (staging, production), each deployed as
 its own Web Function. AWS calls one running copy of a function an *execution environment*; Arco calls
@@ -1190,8 +1190,8 @@ app sees. Do not rely on `request()->ip()` for rate limiting, audit logs or allo
 ## VPC
 
 ```php
-Environment::make('staging')
-    ->vpc(subnets: ['subnet-0abc1234'], securityGroups: ['sg-0abc1234']);
+->environment('staging', fn (Environment $env) => $env
+    ->vpc(subnets: ['subnet-0abc1234'], securityGroups: ['sg-0abc1234']))
 ```
 
 `vpc()` (0.12) puts every compute piece of the environment inside your VPC, so the app can reach private
@@ -1235,13 +1235,99 @@ not check it. What an Arco app calls at runtime:
   startup);
 - **SQS**, to dispatch jobs;
 - **S3** and **DynamoDB** (storage, cache, tables, failed jobs): a free *gateway endpoint* is enough, a NAT also
-  works;
+  works. `endpoints:` makes Arco take care of them (see [Gateway endpoints](#gateway-endpoints));
 - **S3, for the runtime binary:** a console or worker whose zip has no `bin/php` downloads the FrankenPHP binary
   from the code bucket at cold start, so without S3 access (gateway endpoint or NAT) it cannot start.
 
-Whatever else your app calls (payment APIs, mail) needs the NAT too. Gateway endpoints for S3 and DynamoDB, created
-by Arco, are planned for a later release; today you create them in the VPC. To reach a database in another VPC
+Whatever else your app calls (payment APIs, mail) needs the NAT too. For S3 and DynamoDB alone you can skip the
+NAT: `endpoints: ['s3', 'dynamodb']` ([Gateway endpoints](#gateway-endpoints)). To reach a database in another VPC
 or account (peering, transit gateway), the routes and security groups are yours as well.
+
+### Gateway endpoints
+
+```php
+Environment::make('staging')->vpc(
+    subnets: ['subnet-0abc1234'],
+    securityGroups: ['sg-0abc1234'],
+    endpoints: ['s3', 'dynamodb'],
+);
+
+// Your own S3 endpoint; Arco may add the missing route tables to it:
+->vpc([...], [...], endpoints: ['s3' => 'vpce-0abc1234def567890', 'dynamodb']);
+```
+
+`endpoints` (0.12.1) makes sure every route table of the environment's subnets sends S3 and/or DynamoDB through a
+*gateway endpoint*. Gateway endpoints are free; a NAT is not. With them, an app in a VPC without a NAT still reaches
+the code bucket (including the runtime binary a console or worker downloads at cold start), `storage()`, `cache()`,
+`table()` and the failed-jobs table. Without `endpoints` nothing changes: no new calls, no new permissions.
+
+- **A list that mixes two forms:** a service name (`'s3'`, `'dynamodb'`: "make sure it is routed") or
+  `service => 'vpce-...'` ("route it through this endpoint of mine"; this also authorizes Arco to add the missing
+  route tables to it). Only `s3` and `dynamodb`, each at most once. An environment's `vpc()` replaces the app's as a
+  whole, as for the rest of `vpc()`.
+- **Checked at deploy:** a named endpoint must exist, be a Gateway endpoint, be for that service in the deploy region
+  and be in the VPC of the subnets. Otherwise the deploy stops before anything changes. The subnets must share one VPC.
+- **Not supported:** interface endpoints (SSM, Secrets Manager, SQS...: they cost money, keep using your NAT) and
+  endpoint policies. Arco creates endpoints with the default full-access policy and does not read or judge the policy
+  of one of yours.
+
+**What Arco does.** For each service, on every deploy, it reads the route table of each subnet (its explicit
+association, or the VPC's main route table) and the gateway endpoints of that service in the VPC. A route table
+that any gateway endpoint lists is covered, whoever owns the endpoint (a route table belongs to one gateway endpoint
+per service). For the route tables left uncovered:
+
+1. **You named an endpoint** in `endpoints`: Arco adds them to it.
+2. **The VPC has an endpoint Arco created** for the service: Arco adds them to it.
+3. **The VPC has no gateway endpoint for the service:** Arco creates one with all of them and waits until it is
+   available (with the elapsed time).
+4. **The VPC has only endpoints that are not Arco's** (yours): a decision is needed. In a terminal, Arco lists the
+   endpoint(s) and the route tables and asks: add them to your endpoint (you pick one if there are several), go on
+   without (the app will time out on that service from those subnets), or cancel. Either way it prints the
+   `endpoints: ['s3' => 'vpce-...']` line that makes it automatic next time. **In CI, with `--json`, or with
+   `--yes`, the deploy fails** with `deploy.endpoint_routes_missing`, naming the endpoint, the route tables, the
+   `aws ec2 modify-vpc-endpoint --vpc-endpoint-id ... --add-route-table-ids ...` command and the `arco.php` line.
+   `--yes` never answers this question: "yes to everything" must not change a resource of yours without you having
+   written it down.
+
+An endpoint that already exists is used, never deleted. Arco never changes one of yours unless you named it, or said
+yes in the question, and never tags it. This happens before anything else changes (before the code bucket and the
+upload), so cancelling or failing in CI leaves AWS untouched. The changes (create, add route tables, tag) run after
+the execution role and before the network connector and the new revision, so the first cold start already reaches S3.
+
+**Sharing.** An endpoint Arco creates carries the tag `arco:managed = gateway-endpoint` plus the usual `arco:app` and
+`arco:environment` tags. Every environment that relies on it, of any app in the VPC, adds its own usage tag
+`arco:uses:<app>/<env>`; the creator has no special rights. EC2 allows 50 tags per resource, so about 47
+environments can share one; past that, the deploy fails with `deploy.endpoint_tag_limit`. The environment also keeps
+the ids it uses in the tag `arco:gateway-endpoints` of its Web Function, which is how a later deploy or `arco remove`
+knows what to release without searching AWS (without `endpoints` and without that tag there are no new calls).
+
+**Leaving.** An environment stops using an Arco endpoint when the service leaves `endpoints`, `vpc()` is removed, the
+subnets move to another VPC, or `arco remove` runs. Arco removes the environment's usage tag, and deletes the endpoint
+once no usage tag is left (it reads the tags again right before deleting). On `deploy` this runs after the new
+revision is verified; on `arco remove`, after the functions are deleted. **Route tables are never removed** from an
+endpoint that stays, yours or Arco's: something else may rely on the route, and a route left behind only sends S3 or
+DynamoDB traffic through a free endpoint. To remove one by hand:
+`aws ec2 modify-vpc-endpoint --vpc-endpoint-id vpce-... --remove-route-table-ids rtb-...`.
+
+**Limitations.**
+
+- A failed release is a warning that prints the manual commands (`aws ec2 delete-tags`, `aws ec2 delete-vpc-endpoints`).
+  On `deploy` the next deploy tries again; during `arco remove` it is **not** retried, because the record lived on
+  the function that was just deleted.
+- If a first deploy fails after Arco created and tagged an endpoint but before the Web Function exists, the usage tag
+  is not recorded on it. The next successful deploy picks it up; but `arco remove` after only failed deploys leaves
+  it. Remove the tag and, if no `arco:uses:` tag is left, the endpoint by hand:
+  `aws ec2 delete-tags --resources vpce-... --tags Key=arco:uses:<app>/<env>` and
+  `aws ec2 delete-vpc-endpoints --vpc-endpoint-ids vpce-...`.
+- Two deploys in the same VPC at the same time have no lock. One that conflicts (a route table already belongs to
+  another endpoint of the service) reads again and retries once; if it still conflicts, it fails with
+  `deploy.endpoint_conflict` and succeeds when run again.
+- Behind an emulator endpoint endpoints are skipped, like `vpc()` itself.
+
+`arco info` shows an Endpoints line (`s3 vpce-... (yours) · dynamodb vpce-... (Arco, 2 environments)`, with
+`missing rtb-...` for a service with uncovered route tables); `arco info --json` has `vpc.endpoints`, a list of
+`{service, id, arco, environments, route_tables, missing_route_tables}`, `[]` without `endpoints` and `null` when it
+cannot be read. `info` only reads and never asks.
 
 ### Changing and removing `vpc()`
 

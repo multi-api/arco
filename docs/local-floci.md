@@ -127,7 +127,8 @@ available yet": Floci does not report the Lambda init metric to CloudWatch Logs.
   endpoint. Arco therefore skips the protection behind an emulator endpoint (see above). Test the protection itself
   (the custom domain answers, the endpoint URL answers 403) against a real account.
 - **No VPC for `vpc()`.** Floci has no Lambda network connectors, so Arco skips `vpc()` behind an emulator endpoint
-  with a note (`deploy.vpc_unsupported_emulator`) and deploys outside any VPC. Test it against a real account.
+  with a note (`deploy.vpc_unsupported_emulator`) and deploys outside any VPC. Its `endpoints:` (gateway endpoints)
+  are skipped with the same note. Test them against a real account.
 - **No real DNS or TLS.** Custom domains do not resolve outside the emulator, and nothing is served over HTTPS.
 
 ## Clean up
