@@ -163,6 +163,7 @@ final class ResourcesCommand extends ArcoCommand
             fn (string $key, array $params): string => $this->t($key, $params),
             fn (ResourceItem $item): string => $this->pickerLabel($item),
             fn (array $command, OutputInterface $out): int => $this->runEditingCommand($input, $command, $out),
+            fn (ResourceItem $item): array => $this->describeItem($item),
         );
     }
 
@@ -208,24 +209,69 @@ final class ResourcesCommand extends ArcoCommand
         }
     }
 
-    /** A resource on one line for the picker's checklists: name and id, marks, details, warnings. */
+    /**
+     * A resource's checklist row, short because prompts cuts a row at the terminal's width: the name, the marks and how
+     * many warnings, then the id (an ARN or a URL by its last part), which is the part a narrow terminal may lose. The
+     * full description is printed above the checklist (describeItem()).
+     */
     private function pickerLabel(ResourceItem $item): string
     {
-        $parts = [$item->name === null || $item->name === $item->id ? $item->id : "{$item->name}  {$item->id}"];
-        if ($item->inUse !== null) {
-            $parts[] = $this->t('resources.in_use', ['source' => $item->inUse['source']]);
+        $parts = [$item->name ?? self::shortId($item->id), ...$this->marks($item)];
+        $warnings = count($this->warningLines($item));
+        if ($warnings > 0) {
+            $parts[] = '! ' . $warnings;
         }
-        if ($item->hidden) {
-            $parts[] = $this->t('resources.hidden');
-        }
-        if ($item->unnamed()) {
-            $parts[] = $this->t('resources.unnamed');
-        }
-        $parts[] = $this->details($item);
-        foreach ($this->warningLines($item) as $warning) {
-            $parts[] = '! ' . $warning;
+        if ($item->name !== null && $item->name !== $item->id && self::shortId($item->id) !== $item->name) {
+            $parts[] = self::shortId($item->id);
         }
         return implode(' · ', $parts);
+    }
+
+    /** An ARN or a URL by its last part, cut to 8 characters (enough to tell a certificate's id apart); other ids whole. */
+    private static function shortId(string $id): string
+    {
+        $slash = strrpos($id, '/');
+        if ($slash === false) {
+            return $id;
+        }
+        $last = substr($id, $slash + 1);
+        return strlen($last) > 12 ? substr($last, 0, 8) . '…' : $last;
+    }
+
+    /**
+     * A resource in full, as the plain listing shows it without its commands: name and id with the marks, the
+     * details, the warnings and the conflict, one per line.
+     *
+     * @return list<string>
+     */
+    private function describeItem(ResourceItem $item): array
+    {
+        $marks = $this->marks($item);
+        $label = $item->name === null || $item->name === $item->id ? $item->id : "{$item->name}  {$item->id}";
+        $lines = ['<info>' . $label . '</info>' . ($marks === [] ? '' : '  · ' . implode(' · ', $marks)), $this->details($item)];
+        foreach ($this->warningLines($item) as $warning) {
+            $lines[] = '<comment>! ' . $warning . '</comment>';
+        }
+        if ($item->conflict !== null) {
+            $lines[] = $this->t('resources.conflict', $item->conflict);
+        }
+        return $lines;
+    }
+
+    /** @return list<string> in use, hidden, unnamed */
+    private function marks(ResourceItem $item): array
+    {
+        $marks = [];
+        if ($item->inUse !== null) {
+            $marks[] = $this->t('resources.in_use', ['source' => $item->inUse['source']]);
+        }
+        if ($item->hidden) {
+            $marks[] = $this->t('resources.hidden');
+        }
+        if ($item->unnamed()) {
+            $marks[] = $this->t('resources.unnamed');
+        }
+        return $marks;
     }
 
     /**
@@ -363,24 +409,8 @@ final class ResourcesCommand extends ArcoCommand
 
     private function printItem(SymfonyStyle $io, ResourceItem $item): void
     {
-        $marks = [];
-        if ($item->inUse !== null) {
-            $marks[] = $this->t('resources.in_use', ['source' => $item->inUse['source']]);
-        }
-        if ($item->hidden) {
-            $marks[] = $this->t('resources.hidden');
-        }
-        if ($item->unnamed()) {
-            $marks[] = $this->t('resources.unnamed');
-        }
-        $label = $item->name === null || $item->name === $item->id ? $item->id : "{$item->name}  {$item->id}";
-        $io->writeln(' <info>' . $label . '</info>' . ($marks === [] ? '' : '  · ' . implode(' · ', $marks)));
-        $io->writeln('   ' . $this->details($item));
-        foreach ($this->warningLines($item) as $warning) {
-            $io->writeln('   <comment>! ' . $warning . '</comment>');
-        }
-        if ($item->conflict !== null) {
-            $io->writeln('   ' . $this->t('resources.conflict', $item->conflict));
+        foreach ($this->describeItem($item) as $i => $line) {
+            $io->writeln(($i === 0 ? ' ' : '   ') . $line);
         }
         $apply = $item->apply;
         if ($apply === null) {

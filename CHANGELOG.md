@@ -3,6 +3,14 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.14.1
+
+- **Fixed:** `arco resources` printed the account, profile, region and environment inside the confirmation, which
+  a narrow terminal cut off (the region came last). They are now a line of their own above a short question.
+- **Fixed:** the `arco resources` picker's rows carried every detail and warning, which a narrow terminal cut off
+  (the in-use mark and the warnings came last). Each row is now short (name, marks, the number of warnings, the id);
+  every resource is printed in full above its checklist, warnings included.
+
 ## 0.14.0
 
 - **Added:** `Inventory`, `ResourceItem` and `ResourceType` (`Multiapi\Arco\Resources`) are public API, for tools

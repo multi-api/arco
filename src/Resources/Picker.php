@@ -25,7 +25,8 @@ final class Picker
 
     /**
      * @param Closure(string, array<string, string|int>): string $t translates a message key
-     * @param Closure(ResourceItem): string $label one line that identifies a resource
+     * @param Closure(ResourceItem): string $label a resource's short checklist row: prompts cuts a row at the terminal's width
+     * @param Closure(ResourceItem): list<string> $describe a resource in full (marks, details, warnings), printed above its checklist
      * @param Closure(array{command: string, args: list<string>}, OutputInterface): int $run runs an editing command
      */
     public function __construct(
@@ -34,18 +35,21 @@ final class Picker
         private readonly Closure $t,
         private readonly Closure $label,
         private readonly Closure $run,
+        private readonly Closure $describe,
     ) {
     }
 
     /** Spec §7 step 1: the account, profile and region, confirmed before anything is listed. */
     public function confirmTarget(AppConfig $config, string $profile): bool
     {
-        return $this->ui->confirm($this->t('resources.confirm_target', [
+        // The target goes on its own line: prompts cuts a label at the terminal's width, and the region is last.
+        $this->output->writeln($this->t('resources.target', [
             'account' => (string) $config->account,
             'profile' => $profile,
             'region' => (string) $config->region,
             'environment' => $config->environment,
-        ]), true);
+        ]));
+        return $this->ui->confirm($this->t('resources.confirm_target'), true);
     }
 
     /**
@@ -154,6 +158,10 @@ final class Picker
             $byId[$item->id] = $item;
         }
         $default ??= array_values(array_map(fn (ResourceItem $item) => $item->id, array_filter($list['shown'], fn (ResourceItem $item) => $item->inUse !== null)));
+        $this->output->writeln("<info>{$list['title']}</info>");
+        foreach ($list['shown'] as $item) {
+            $this->describe($item);
+        }
         while (true) {
             $ids = $this->ui->multiselect($this->t('resources.pick', ['type' => $list['title']]), $options, $default);
             $chosen = array_values(array_filter(array_map(fn (string $id) => $byId[$id] ?? null, $ids)));
@@ -209,6 +217,14 @@ final class Picker
         return $this->t('resources.mixed_vpcs', ['vpcs' => implode(', ', $ids)]);
     }
 
+    /** The resource's first line, then its details and warnings indented: the output wraps them, prompts would cut them. */
+    private function describe(ResourceItem $item): void
+    {
+        foreach (($this->describe)($item) as $i => $line) {
+            $this->output->writeln(($i === 0 ? '  ' : '    ') . $line);
+        }
+    }
+
     /** @param list<ResourceItem> $zones */
     private function showZones(string $title, array $zones): void
     {
@@ -217,7 +233,7 @@ final class Picker
         }
         $this->output->writeln("<info>$title</info>");
         foreach ($zones as $zone) {
-            $this->output->writeln('  ' . ($this->label)($zone));
+            $this->describe($zone);
         }
         $this->output->writeln('  ' . $this->t('resources.zones_not_picked'));
     }
