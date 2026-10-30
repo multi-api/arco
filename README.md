@@ -156,6 +156,9 @@ Every option, the packaging rules and the Laravel preset are in the
 | `arco secret:set <name> --env=<env>` | Store a secret in SSM and print the reference to use |
 | `arco set <key> <value> --env=<env>` / `arco unset <key>` | Change `concurrency`, `max-instances`, `rate-limit`, `timeout`, `log-level`, `console-timeout`, `console-memory` in `arco.php` |
 | `arco domain:add <host> --env=<env>` / `domain:remove` | Change an environment's domains in `arco.php` |
+| `arco resources --env=<env>` | List the subnets, security groups, gateway endpoints, buckets, queues, tables, certificates and Route 53 zones you already have, and pick the ones to use (read-only; `--json` gives the command that adds each) |
+| `arco vpc:set --env=<env>` / `vpc:remove` | Set `vpc()` (`--subnet`, `--security-group`, `--endpoint`, each repeatable; the whole list at once) or remove it in `arco.php` |
+| `arco certificate:set <arn> --env=<env>` / `certificate:remove` | Use an existing ACM certificate (`us-east-1`) for the environment's domains, or go back to Arco's own |
 | `arco profile --env=<env>` | Show or change the AWS profile remembered for an environment (`--json` too) |
 | `arco remove --env=<env>` | Delete the function, its endpoint, role, workers and domain resources (queues, buckets, tables and log groups are kept); without a terminal it needs `--yes`; `--json` too |
 

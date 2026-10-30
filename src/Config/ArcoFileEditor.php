@@ -7,7 +7,8 @@ use Symfony\Component\Process\Process;
 
 /**
  * @phpstan-type Option int|bool|string|array<array-key, int|string>
- * @phpstan-type Changes array{domains?: list<string>, dns?: string|false|null, settings?: array<string, int|string|bool|array<string, Option>|null>, queues?: array<string, array<string, Option>|false|null>, storage?: array<string, array<string, Option>|false|null>, tables?: array<string, array<string, Option>|false|null>}
+ * @phpstan-type Vpc array{subnets: list<string>, securityGroups: list<string>, endpoints: array<int|string, string>}
+ * @phpstan-type Changes array{domains?: list<string>, dns?: string|false|null, settings?: array<string, int|string|bool|array<string, Option>|Vpc|null>, queues?: array<string, array<string, Option>|false|null>, storage?: array<string, array<string, Option>|false|null>, tables?: array<string, array<string, Option>|false|null>}
  */
 final class ArcoFileEditor
 {
@@ -77,6 +78,69 @@ final class ArcoFileEditor
     public static function setSetting(string $arcoPhpPath, ?string $environment, string $method, int|string|bool|null $value): bool
     {
         return self::update($arcoPhpPath, $environment, ['settings' => [$method => $value]]);
+    }
+
+    /**
+     * Sets the ->vpc(subnets: [...], securityGroups: [...], endpoints: [...]) call in an environment, or on
+     * the App chain when $environment is null. false writes ->vpc(false) (no VPC), null removes the call.
+     * Returns false, without writing, when arco.php has a shape this editor does not understand.
+     *
+     * @param Vpc|false|null $vpc
+     */
+    public static function setVpc(string $arcoPhpPath, ?string $environment, array|false|null $vpc): bool
+    {
+        return self::update($arcoPhpPath, $environment, ['settings' => ['vpc' => $vpc]]);
+    }
+
+    /**
+     * The call as written: endpoints are left out when empty; a service without an id is a list entry
+     * ('s3'), one with an id keeps it ('dynamodb' => 'vpce-...').
+     *
+     * @param Vpc|false $vpc
+     */
+    public static function vpcLine(array|false $vpc): string
+    {
+        if ($vpc === false) {
+            return '->vpc(false)';
+        }
+        $list = static fn (array $items): string => '[' . implode(', ', array_map(static fn (mixed $item): string => var_export($item, true), $items)) . ']';
+        $args = ['subnets: ' . $list($vpc['subnets']), 'securityGroups: ' . $list($vpc['securityGroups'])];
+        if ($vpc['endpoints'] !== []) {
+            $items = [];
+            foreach ($vpc['endpoints'] as $key => $value) {
+                $items[] = is_int($key) ? var_export($value, true) : var_export($key, true) . ' => ' . var_export($value, true);
+            }
+            $args[] = 'endpoints: [' . implode(', ', $items) . ']';
+        }
+        return '->vpc(' . implode(', ', $args) . ')';
+    }
+
+    /**
+     * Whether a vpc() value writes back as it loads: lists of strings, and endpoints whose integer keys
+     * are the positions the loader gives a list entry.
+     */
+    private static function vpcWritable(mixed $vpc): bool
+    {
+        if (! is_array($vpc) || ! isset($vpc['subnets'], $vpc['securityGroups']) || array_diff(array_keys($vpc), ['subnets', 'securityGroups', 'endpoints']) !== []) {
+            return false;
+        }
+        foreach (['subnets', 'securityGroups'] as $key) {
+            $items = $vpc[$key] ?? null;
+            if (! is_array($items) || ! array_is_list($items) || array_filter($items, 'is_string') !== $items) {
+                return false;
+            }
+        }
+        $next = 0;
+        $endpoints = $vpc['endpoints'] ?? [];
+        if (! is_array($endpoints)) {
+            return false;
+        }
+        foreach ($endpoints as $key => $value) {
+            if (! is_string($value) || (is_int($key) ? $key !== $next++ : false)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -306,6 +370,14 @@ final class ArcoFileEditor
                 $changes['queues'][$queue] = $options;
             }
         }
+        $vpc = $changes['settings']['vpc'] ?? null;
+        if (is_array($vpc)) {
+            if (! self::vpcWritable($vpc)) {
+                return false;
+            }
+            $vpc['endpoints'] ??= [];
+            $changes['settings']['vpc'] = $vpc;
+        }
         $source = (string) file_get_contents($arcoPhpPath);
         $updated = $source;
         $consoleLine = false;
@@ -330,6 +402,9 @@ final class ArcoFileEditor
                         return false;
                     }
                     $line = self::singletonLine($method, $value);
+                } elseif ($method === 'vpc' && ($value === false || is_array($value))) {
+                    /** @var Vpc|false $value */
+                    $line = self::vpcLine($value);
                 } elseif (is_array($value)) {
                     return false;
                 } else {
@@ -466,6 +541,9 @@ final class ArcoFileEditor
     private static function expected(array $raw, ?string $environment, array $changes): array
     {
         $settings = $changes['settings'] ?? [];
+        if (is_array($settings['vpc'] ?? null) && ($settings['vpc']['endpoints'] ?? null) === []) {
+            unset($settings['vpc']['endpoints']); // the loaded setting has none when there are none (see ConfiguresDeployment::vpc())
+        }
         if (array_key_exists('dns', $changes)) {
             $settings['dns'] = $changes['dns'];
         }
@@ -1009,6 +1087,22 @@ final class ArcoFileEditor
     {
         if (isset(self::NAMED[$method]) || in_array($method, [...self::SINGLETONS, 'console'], true)) {
             return self::isArgsLiteral($args, isset(self::NAMED[$method]));
+        }
+        if ($method === 'vpc') {
+            // ->vpc(false), ->vpc(['subnet-1'], ['sg-1'], ['s3']) or the same with named arguments.
+            foreach ($args as $i => $token) {
+                $ok = $token->id === T_CONSTANT_ENCAPSED_STRING || $token->id === T_DOUBLE_ARROW
+                    || self::is($token, '[') || self::is($token, ']') || self::is($token, ',')
+                    || ($token->id === T_STRING && (
+                        (isset($args[$i + 1]) && self::is($args[$i + 1], ':') && in_array($token->text, ['subnets', 'securityGroups', 'endpoints'], true))
+                        || strtolower($token->text) === 'false'
+                    ))
+                    || (self::is($token, ':') && $i > 0 && $args[$i - 1]->id === T_STRING);
+                if (! $ok) {
+                    return false;
+                }
+            }
+            return true;
         }
         if ($method !== 'domain' && $method !== 'dns') {
             // A scalar setting: no argument, or exactly one integer, plain string or true/false.

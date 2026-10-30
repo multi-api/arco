@@ -3,6 +3,43 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.14.0
+
+- **Added:** `Inventory`, `ResourceItem` and `ResourceType` (`Multiapi\Arco\Resources`) are public API, for tools
+  that list existing resources in-process instead of running `arco resources --json`
+  ([Listing existing resources in-process](docs/config-layer.md#listing-existing-resources-in-process)). The config
+  layer docs now list `resources` among the commands that read the layer.
+- **Added:** `arco resources` lists the AWS resources an environment could use (subnets, security groups, gateway
+  endpoints, buckets, queues, tables, certificates and Route 53 zones) and the command that adds each one to
+  `arco.php`. It only reads (`List*`, `Describe*`, `Get*`); the only file it writes is `arco.php`, through the editing
+  commands. In a terminal it is a picker that confirms the account, profile and region first. `--json` (schema 1) is
+  the document for tools and agents: each item has `inUse`, `hidden`, `warnings` and `apply`, an argv `{command, args}`
+  (`null` for zones; tables have one per use: `generic`, `cache`, `failedJobs`), and the top-level `vpc` is the
+  environment's resolved `vpc()` (`{subnets, securityGroups, endpoints: [{service, id}], source}`, `false` for
+  `vpc(false)`, `null` for none), the base of the one `vpc:set` a caller builds (an endpoint with a `null` id is the
+  one Arco manages, which no item lists). Options: `--env`, `--profile`,
+  `--region`, `--dns-profile`, `--type` (repeatable), `--all` (also Arco's own resources, other regions and default-VPC
+  items), `--json`, `--config-layer`. A missing permission degrades only that type
+  (`{"ok": false, "error": {...}}`, exit 0). Needs new, optional permissions
+  ([Permissions for `arco resources`](docs/getting-started.md#permissions-for-arco-resources)); nothing else changes.
+- **Added:** `arco vpc:set --env=<env> --subnet=<id> --security-group=<id> --endpoint=<s3|dynamodb|s3=vpce-...>`
+  and `arco vpc:remove` edit `vpc()` in `arco.php`. `vpc:set` sets the **whole** list (it does not merge with what is
+  there). With working credentials it checks the subnets (not found, more than one VPC) and prints the egress warnings.
+- **Added:** `arco certificate:set <arn> --env=<env>` and `arco certificate:remove` edit `certificate()` in
+  `arco.php`. The ARN must be an ACM certificate in `us-east-1`; with working credentials it warns when the certificate
+  is not issued, expiring, expired, not covering the environment's domains or not found.
+- **Added:** new dependency `laravel/prompts` `^0.3.25` (the picker). It brings `ext-mbstring` and conflicts with
+  `laravel/framework` `>=10.17.0 <10.25.0`. Without a terminal, or if prompts cannot run, `arco resources` prints the
+  plain list instead.
+- **Added:** message keys `resources.*`, `vpc.set`, `vpc.replaced`, `vpc.removed`, `vpc.unchanged`,
+  `vpc.mixed_vpcs`, `vpc.subnet_not_found`, `certificate.set`, `certificate.replaced`, `certificate.removed`,
+  `certificate.unchanged`, `certificate.not_acm` and `certificate.wrong_region`. The `warnings` of `arco resources
+  --json` use the keys `resources.warning.subnet_public`, `subnet_no_egress`, `subnet_few_ips`, `sg_no_egress`,
+  `bucket_other_region`, `bucket_region_unknown`, `queue_is_dlq`, `table_schema`, `endpoint_missing_routes`,
+  `zone_private`,
+  `certificate_not_issued`, `certificate_expired`, `certificate_expiring`, `certificate_expiring_one_day`,
+  `certificate_not_covering` and `certificate_not_found`.
+
 ## 0.13.0
 
 - **Added:** the config layer, a JSON document merged over `arco.php` (or used alone when there is no `arco.php`),

@@ -87,6 +87,12 @@ final readonly class AppConfig
         return $this->copy($account, $this->permissionsBoundary, $this->sources);
     }
 
+    /** The same configuration in another region (`arco resources --region`). */
+    public function withRegion(string $region): self
+    {
+        return $this->copy($this->account, $this->permissionsBoundary, $this->sources, region: $region);
+    }
+
     /** The same configuration, marked as resolved from a config layer alone (there is no arco.php). */
     public function withoutArcoPhp(): self
     {
@@ -103,12 +109,12 @@ final readonly class AppConfig
     }
 
     /** @param array<string, string> $sources */
-    private function copy(?string $account, ?string $permissionsBoundary, array $sources, ?bool $hasArcoPhp = null): self
+    private function copy(?string $account, ?string $permissionsBoundary, array $sources, ?bool $hasArcoPhp = null, ?string $region = null): self
     {
         return new self(
             app: $this->app,
             environment: $this->environment,
-            region: $this->region,
+            region: $region ?? $this->region,
             concurrency: $this->concurrency,
             timeout: $this->timeout,
             maxInstances: $this->maxInstances,

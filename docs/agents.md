@@ -199,9 +199,11 @@ written twice, an app built over several statements) it changes nothing, prints 
 | `storage:cors <name> <origin>...` | CORS origins | `--remove` |
 | `cache:add` / `cache:remove` | `->cache()` | `--existing=<table>` |
 | `table:add <name>` / `table:remove <name>` | `->table('<name>', ...)` | `--ttl=<attribute>`, `--existing=<name\|ARN>`; `cache` and `failed-jobs` are reserved names |
+| `vpc:set` / `vpc:remove` | `->vpc(subnets:, securityGroups:, endpoints:)` / removes it | `--subnet=<id>`, `--security-group=<id>`, `--endpoint=s3\|dynamodb\|s3=vpce-...` (each repeatable). **`vpc:set` writes the whole list: it does not merge with the current `vpc()`.** With credentials it checks the subnets with EC2 (not found, more than one VPC) and prints egress warnings; without them it stays offline |
+| `certificate:set <arn>` / `certificate:remove` | `->certificate('<arn>')` / removes it | The ARN of an ACM certificate in `us-east-1`. With credentials it warns when the certificate is not issued, expiring, not covering the domains or not found |
 | `domain:add <host>...` / `domain:remove <host>...` | `->domain([...])` and `->dns(...)` | `--env` only (no `--app`); `domain:add` takes `--profile`, `--dns-profile`, `--dns=manual\|cloudflare`, `--cloudflare-token` and checks the zone in the place you name |
 
-There is no command for `vpc()`, `variables()`, `permissions()`, `runtime()`, `deployCommands()`, `role()`,
+There is no command for `variables()`, `permissions()`, `runtime()`, `deployCommands()`, `role()`,
 `permissionsBoundary()`, `account()` or `exclude()`/`include()`: edit `arco.php` for those, then validate.
 
 ### AWS state of queues and storage
@@ -211,6 +213,53 @@ There is no command for `vpc()`, `variables()`, `permissions()`, `runtime()`, `d
 | `queue:list` | Each queue from AWS: URL, messages waiting and in flight, dead-letter queue and count, worker version | `--env`, `--profile`, `--json` |
 | `queue:dlq <name>` | Count and a sample (up to 10) of the dead-letter queue | `--env`, `--profile`, `--redrive` (move the messages back: **changes AWS**), `-y/--yes` |
 | `storage:list` | Each storage's bucket, URL and options, and retained buckets no longer in `arco.php` | `--env`, `--profile`, `--json` |
+
+### Existing AWS resources
+
+| Command | What it does | Options |
+|---|---|---|
+| `resources` | Lists the existing subnets, security groups, gateway endpoints, buckets, queues, tables, certificates and Route 53 zones, each with the command that adds it to `arco.php`. Read-only (`List*`, `Describe*`, `Get*`); in a terminal it is a picker, so always pass `--json` | `--env`, `--profile`, `--region`, `--dns-profile`, `--type=<type>` (repeatable: `subnet`, `security-group`, `endpoint`, `bucket`, `queue`, `table`, `certificate`, `zone`), `--all`, `--json`, `--config-layer=<path>` |
+
+`resources --json` prints `{"schema": 1, "account", "region", "environment", "vpc", "types": {...}, "warnings": [...]}`.
+`vpc` is the environment's resolved `vpc()`: `{"subnets": [...], "securityGroups": [...], "endpoints": [{"service":
+"s3", "id": null}, {"service": "dynamodb", "id": "vpce-..."}], "source": "arco.php"|"cloud"}`, `false` for
+`vpc(false)`, or `null` when there is none. An endpoint with `"id": null` is one Arco manages: no item lists it.
+Each type is `{"ok": true, "items": [...]}` or `{"ok": false, "error": {"key", "params", "message"}}`: a missing
+permission (`resources.permission_denied`, `params.action`) degrades only that type and the exit code stays 0. A
+fatal error (no credentials, bad environment) is `{"schema": 1, "error": "<message>"}` with exit 1. The top-level
+`warnings` (`[{key, params, message}]`) holds problems that do not stop the listing (`resources.dns_profile_failed`: the DNS profile's zones could not be read). Each item has:
+
+- `id`, `name`, `tags`, `stack`, `arco` (Arco's own marks), `unnamed`, and the fields of its type (`vpc`, `az`, `cidr`,
+  `egress`, `service`, `region`, `fifo`, `keys`, `status`, ...).
+- `inUse`: `null`, or `{"source": "arco.php"}` (or `"cloud"` for the config layer) when the environment's configuration already uses it.
+- `hidden`: shown only with `--all` in the terminal, always present in JSON with `hidden: true`. Hidden are Arco's
+  own resources for this app and environment, the gateway endpoints Arco created (tag `arco:managed`; their `apply` is
+  `null`: never name one by id, use the service name), Arco's code bucket, `cdk-*` and `aws-sam-cli-*` buckets, buckets
+  in other regions and, when other VPCs exist, the default VPC's subnets, security groups and endpoints.
+- `warnings`: `[{key, params}]`, e.g. `resources.warning.subnet_no_egress`, `certificate_not_issued`,
+  `bucket_region_unknown` (`s3:GetBucketLocation` was refused: the bucket may be in another region), `table_schema`
+  (one per use the table's keys do not fit; `params.use` is `generic`, `cache` or `failedJobs`).
+  The subnet check treats a `0.0.0.0/0` route to a Transit Gateway or a peering connection as no egress, and
+  `endpoint_missing_routes` is only computed when subnets are listed in the same run (not with `--type=endpoint`
+  alone).
+- `apply`: `{"command": "vpc:set", "args": ["--subnet=subnet-0abc", "--env=staging"]}`, an argv: run it as
+  `vendor/bin/arco <command> <args...>` without a shell. `null` for zones (use `domain:add`). A table has one per use,
+  keyed `generic` (`table:add`), `cache` (`cache:add`) and `failedJobs` (`failed-jobs:add`); pick the one the user wants
+  and read `warnings` (`table_schema`) first. A FIFO queue's `apply` carries `--fifo`.
+
+**One `vpc:set` per environment.** `vpc:set` sets the full list of subnets, security groups and endpoints: it does
+not merge with what `arco.php` has. Do not run the `apply` of each subnet, group and endpoint one after the other (the
+last would win). Build **one** call per environment from the top-level `vpc` plus the user's picks: every subnet and
+security group of `vpc` (`--subnet=<id>`, `--security-group=<id>`), every endpoint of `vpc` (`--endpoint=<service>`
+when its `id` is `null`, the endpoint Arco manages, which no item lists; `--endpoint=<service>=<id>` otherwise), then
+the `--subnet`, `--security-group` and `--endpoint` args of the picks. Drop something already in use only when the
+user asked to. A pick of a service `vpc` already has replaces that endpoint. The same holds for `certificate:set` (it replaces the one certificate). Buckets, queues and
+tables are separate entries, so each `apply` can run on its own.
+
+The terminal picker (for the user, not for you) confirms the account, profile and region first and never writes with a
+`--region` different from the environment's. Unticking an in-use subnet, security group or endpoint removes it from
+`vpc()` (in-use ids it did not list are kept); unticking an in-use bucket, queue, table or certificate writes nothing.
+Listing is sequential, one type after another, so a large account takes a moment.
 
 ### Secrets
 
@@ -402,7 +451,9 @@ A new queue, storage or table may need packages (see above) and deploy permissio
 For an app that must reach RDS, ElastiCache or another private resource:
 
 1. Get from the user the subnet ids (two Availability Zones for production) and a security group allowing the
-   egress the app needs (database port, 443).
+   egress the app needs (database port, 443). If they do not know them, run `vendor/bin/arco resources --env=<env>
+   --type=subnet --type=security-group --type=endpoint --json -n` (confirm the profile first), show the candidates with
+   their `warnings` and let the user choose.
 2. Make sure the subnets have a **NAT gateway** (or VPC endpoints): a function in a VPC has no internet, and the app
    calls SSM and Secrets Manager (secret references), SQS, S3 and DynamoDB at runtime. For S3 and DynamoDB add
    `endpoints: ['s3', 'dynamodb']`: Arco creates or reuses free gateway endpoints (never deletes one it did not
@@ -413,7 +464,12 @@ For an app that must reach RDS, ElastiCache or another private resource:
    `ec2:Describe*` for subnets, security groups, VPCs and network interfaces, `lambda:ListFunctions`; with
    `endpoints`, also `ec2:DescribeRouteTables`, `ec2:DescribeVpcEndpoints`, `ec2:CreateVpcEndpoint`,
    `ec2:ModifyVpcEndpoint`, `ec2:DeleteVpcEndpoints`, `ec2:CreateTags`, `ec2:DeleteTags`).
-4. Edit `arco.php` (no CLI command for this):
+4. Set `vpc()` with one command (it writes the whole list; include everything, also what is already there), or
+   edit `arco.php`:
+   ```bash
+   vendor/bin/arco vpc:set --env=production --subnet=subnet-0abc1234 --subnet=subnet-0def5678 \
+     --security-group=sg-0abc1234 --endpoint=s3 --endpoint=dynamodb -n
+   ```
    ```php
    ->environment('production', fn (Environment $env) => $env
        ->vpc(subnets: ['subnet-0abc1234', 'subnet-0def5678'], securityGroups: ['sg-0abc1234'],
@@ -424,7 +480,7 @@ For an app that must reach RDS, ElastiCache or another private resource:
    If the VPC only has the user's own endpoint and it misses some route tables, a deploy without a terminal (`-n`,
    `--json`, `--yes`) fails with `deploy.endpoint_routes_missing`; the message gives the `aws ec2 modify-vpc-endpoint`
    command and the `endpoints: ['s3' => 'vpce-...']` line. Ask the user which one; never pick for them.
-6. To leave the VPC remove `vpc()` (or `->vpc(false)` on the environment) and deploy: Arco deletes the connector
+6. To leave the VPC run `vpc:remove` (or remove `vpc()`, or `->vpc(false)` on the environment) and deploy: Arco deletes the connector
    and its operator role after the deploy is verified, and may wait up to about 20 minutes for Lambda to delete the
    network interfaces. Arco's gateway endpoints are shared by the environments of the VPC and deleted when the last
    one leaves; route tables are never removed.
@@ -498,6 +554,13 @@ Two different identities matter:
 - **The execution role** `arco-<app>-<env>` (what the app may do at runtime). Arco writes its policy: logs, the
   queues, buckets and tables in `arco.php`, the referenced secrets, and the VPC network interfaces. Anything else the
   app calls (SES, a bucket not in `arco.php`) goes in `permissions()`.
+
+- **`arco resources`, `vpc:set` and `certificate:set`** use read-only permissions the deploy does not need
+  ([Permissions for `arco resources`](getting-started.md#permissions-for-arco-resources)): `ec2:Describe*`
+  (subnets, route tables, security groups, VPC endpoints, VPCs), `s3:ListAllMyBuckets`, `s3:GetBucketLocation`,
+  `s3:GetBucketTagging`, SQS and DynamoDB list/describe/tag reads, `acm:ListCertificates`,
+  `acm:DescribeCertificate`, `route53:ListHostedZones`. They are optional: without one, that type is reported as
+  `ok: false` and the rest is listed.
 
 When AWS denies a call, Arco names the operation (`aws.access_denied`). Tell the user which permission to add to
 which identity; do not try to work around it.

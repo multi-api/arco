@@ -10,6 +10,16 @@ Coding agents: start with `docs/agents.md`. It covers running Arco without a ter
 codes), every command and `arco.php` method, common workflows and the error keys with their fixes. In a user's
 project these files are under `vendor/multiapi/arco/`.
 
+## Existing resources
+
+`vendor/bin/arco resources --env=<env> --json -n` (read-only) lists the subnets, security groups, gateway endpoints,
+buckets, queues, tables, certificates and zones the account has, each with `inUse`, `hidden`, `warnings` and `apply`
+(an argv `{command, args}`, never a shell string; `null` for zones: use `domain:add`; tables have one per use:
+`generic`, `cache`, `failedJobs`). Run `apply` to put it in `arco.php`. `vpc:set` sets the full list and does not
+merge: send ONE `vpc:set` per environment, built from the document's top-level `vpc` (the environment's current
+`vpc()`: keep every subnet, security group and endpoint in it, an endpoint with `"id": null` as `--endpoint=<service>`)
+plus the picks, or the others are dropped. Confirm the profile and account with the user first.
+
 ## Docs
 
 - [Arco for coding agents](docs/agents.md): ground rules, non-interactive use, command and `arco.php` reference, workflows, error keys

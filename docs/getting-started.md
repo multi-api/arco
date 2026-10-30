@@ -403,6 +403,9 @@ change it only when the subnets or groups change. One subnet works; use two Avai
 `arco info --env=staging` shows the connector. To leave the VPC, remove `vpc()` and deploy: Arco deletes the
 connector after the deploy is verified ([details](configuration.md#changing-and-removing-vpc)).
 
+Not sure which subnets and groups to use? `arco resources` lists them with their routes and warnings, and
+`arco vpc:set` writes the choice ([Using resources you already have](configuration.md#using-resources-you-already-have)).
+
 ### Commands
 
 ```bash
@@ -954,6 +957,44 @@ actions only support `*`. `arco remove` needs the same tag and delete actions to
 that deploys for you (Arco Cloud) needs these in its connect template. Without them the deploy stops with an AWS
 access error that names the denied operation. In a profile with a permissions boundary, add the same statements to the
 guarded Lambda and IAM scoping as well ([Enforcing a permissions boundary](#enforcing-a-permissions-boundary)).
+
+### Permissions for `arco resources`
+
+Optional: only `arco resources` (and the checks `vpc:set` and `certificate:set` make when credentials work) needs
+these, never a deploy. They are all reads, resource `*`:
+
+- `ec2:DescribeSubnets`, `ec2:DescribeRouteTables`, `ec2:DescribeSecurityGroups`, `ec2:DescribeVpcEndpoints`,
+  `ec2:DescribeVpcs`;
+- `s3:ListAllMyBuckets`, `s3:GetBucketLocation`, `s3:GetBucketTagging`;
+- `sqs:ListQueues`, `sqs:GetQueueAttributes`, `sqs:ListQueueTags`;
+- `dynamodb:ListTables`, `dynamodb:DescribeTable`, `dynamodb:DescribeTimeToLive`, `dynamodb:ListTagsOfResource`;
+- `acm:ListCertificates`, `acm:DescribeCertificate` (in `us-east-1`);
+- `route53:ListHostedZones` (on the profile that owns the zones: `--dns-profile` or the environment's `dns()` profile).
+
+```json
+{
+  "Sid": "ArcoListExistingResources",
+  "Effect": "Allow",
+  "Action": [
+    "ec2:DescribeSubnets", "ec2:DescribeRouteTables", "ec2:DescribeSecurityGroups", "ec2:DescribeVpcEndpoints",
+    "ec2:DescribeVpcs", "s3:ListAllMyBuckets", "s3:GetBucketLocation", "s3:GetBucketTagging",
+    "sqs:ListQueues", "sqs:GetQueueAttributes", "sqs:ListQueueTags",
+    "dynamodb:ListTables", "dynamodb:DescribeTable", "dynamodb:DescribeTimeToLive", "dynamodb:ListTagsOfResource",
+    "acm:ListCertificates", "acm:DescribeCertificate", "route53:ListHostedZones"
+  ],
+  "Resource": "*"
+}
+```
+
+A missing permission does not stop the command: that type is reported as not listed
+(`{"ok": false, "error": {"key": "resources.permission_denied", ...}}` in `--json`) and the others are listed; the exit
+code stays 0. Two of them are softer: without `s3:GetBucketLocation` every bucket is still listed, each with a
+`resources.warning.bucket_region_unknown` warning (its region is unknown, so it may be in another region, where Arco
+cannot use it), and without `s3:GetBucketTagging` buckets are listed without their tags. `vpc:set` and
+`certificate:set` need none of them: without working credentials (or when a call is
+denied) they edit `arco.php` offline and skip their checks (`ec2:DescribeSubnets`, `ec2:DescribeRouteTables`,
+`ec2:DescribeVpcs` and `acm:DescribeCertificate`). A service that runs the command for you (Arco Cloud) needs them in
+its connect template.
 
 ### Enforcing a permissions boundary
 

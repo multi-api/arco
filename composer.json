@@ -28,6 +28,7 @@
         "ext-zip": "*",
         "aws/aws-sdk-php": "^3.401.1",
         "guzzlehttp/guzzle": "^7.8 || ^8.0",
+        "laravel/prompts": "^0.3.25",
         "multiapi/arco-secrets": "self.version",
         "symfony/console": "^7.1 || ^8.0",
         "symfony/filesystem": "^7.1 || ^8.0",

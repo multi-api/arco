@@ -244,6 +244,69 @@ vendor/bin/arco set timeout 60 --app          # app level (all environments)
 - Only `arco.php` changes: run `arco deploy --env=<env>` to apply. (`scheduler:set` and `scheduler:remove`
   can also apply their change at once with `--apply`, see [Scheduler](#scheduler).)
 
+## Using resources you already have
+
+`arco resources --env=<env>` lists what the account already has and could be used by this environment: subnets,
+security groups, gateway endpoints (`vpc()`), buckets (`storage()`), queues (`queue()`), tables (`table()`, `cache()`,
+`failedJobsTable()`), ACM certificates (`certificate()`) and Route 53 zones. It only reads. In a terminal it asks you
+to confirm the account, profile and region first (the default profile may be a personal account), lists one type
+after another and lets you tick what to use; it then runs the commands below for you, which are the only thing that
+writes, and only `arco.php`.
+
+```bash
+vendor/bin/arco resources --env=staging                       # the picker (in a terminal) or a plain list
+vendor/bin/arco resources --env=staging --type=subnet --json  # the document for scripts, agents and Arco Cloud
+vendor/bin/arco resources --env=staging --all                 # include the hidden resources
+```
+
+| Option | What it does |
+|---|---|
+| `--env`, `--profile` | The environment and the AWS profile (the usual rules) |
+| `--region=<region>` | List another region. The picker never writes with a region different from the environment's: it prints the list and stops |
+| `--dns-profile=<profile>` | List the Route 53 zones of that profile too (default: the environment's `dns()` profile). If it cannot be read, the deploy profile's zones are listed and a warning says so |
+| `--type=<type>` | Only these types (repeatable): `subnet`, `security-group`, `endpoint`, `bucket`, `queue`, `table`, `certificate`, `zone` |
+| `--all` | Also show the hidden resources |
+| `--json` | The machine-readable document ([agents](agents.md#existing-aws-resources)) |
+
+Each resource shows what makes it a good or bad choice (`arco resources` warns about public subnets, subnets with no
+route out, few free addresses, security groups without outbound rules, buckets in another region (or whose region
+could not be read), a queue that is a
+dead-letter queue, a table whose keys do not fit the use, a gateway endpoint missing route tables, a certificate that
+is not issued, expiring or not covering your domains, and private zones), the Arco name it would get, and whether it
+is already in use and by what.
+
+**Hidden by default** (with `--all` in the terminal; always in `--json` with `hidden: true`): the resources Arco
+itself created for this app and environment, the gateway endpoints Arco created for any environment (never offered by
+id: `endpoints: ['s3']` lets Arco find and share them), Arco's code bucket, `cdk-*` and `aws-sam-cli-*` buckets, buckets in other
+regions, and the default VPC's subnets, security groups and endpoints when the account has other VPCs.
+
+What each pick writes:
+
+| Resource | Command it runs | Writes |
+|---|---|---|
+| Subnets, security groups, gateway endpoints | `vpc:set` | One `vpc()` with everything ticked, in one write |
+| Bucket | `storage:add <name> --existing=<bucket>` | `->storage('<name>', existing: ...)` |
+| Queue | `queue:add <name> --existing=<url>` (and `--fifo` for a `.fifo` queue) | `->queue('<name>', existing: ...)` |
+| Table | `table:add`, `cache:add` or `failed-jobs:add` with `--existing=<table>` | The use you choose (the keys must fit it) |
+| Certificate | `certificate:set <arn>` | `->certificate('<arn>')` |
+| Hosted zone | none | Add the domain with `domain:add` (it checks the zone) |
+
+**`vpc:set` sets the whole list; it does not merge.** `arco vpc:set --subnet=<id> --security-group=<id>
+--endpoint=s3` replaces the `vpc()` at that level (the environment's, or the app's with `--app`), so pass every subnet, group and endpoint you
+want to keep (with `--json`, the top-level `vpc` is the environment's current `vpc()`: start the one `vpc:set` from it,
+keeping each endpoint whose `id` is `null` as `--endpoint=<service>`). The picker pre-ticks what is in use: unticking an in-use subnet, security group or endpoint removes it
+from `vpc()`, while in-use ids it did not list (another region, a type that failed to list) are kept. Unticking an
+in-use bucket, queue, table or certificate writes nothing; use `storage:remove`, `queue:remove`, `table:remove` or
+`certificate:remove` for that. `vpc:remove` takes `vpc()` out (`->vpc(false)` when the environment would inherit the
+app's), and `certificate:remove` goes back to Arco finding or requesting a certificate at the next deploy.
+
+Known limits: a `0.0.0.0/0` route to a Transit Gateway or a peering connection counts as no route out, so such a
+subnet gets the no-egress warning; and a gateway endpoint's missing route tables are only reported when the subnets
+are listed in the same run.
+
+The commands need read permissions the deploy does not: see
+[Permissions for `arco resources`](getting-started.md#permissions-for-arco-resources).
+
 ## Permissions
 
 The managed execution role only gets what Arco itself needs: writing logs (web, console and queue workers), sending to and reading the queues in `arco.php`, reading and writing the buckets and tables of `storage()`, `cache()`, `failedJobsTable()` and `table()`, reading

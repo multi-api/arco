@@ -18,7 +18,7 @@ ARCO_CONFIG_LAYER=layer.json vendor/bin/arco deploy
 
 - `--config-layer=<path>` wins over `ARCO_CONFIG_LAYER`. Surrounding whitespace is trimmed, and an empty or blank
   value falls back to the other one: there is no layer only when both are empty.
-- Only `deploy`, `package`, `info`, `remove` and `logs` read the layer. Every other command (`tinker`, `command`,
+- Only `deploy`, `package`, `info`, `remove`, `logs` and `resources` read the layer. Every other command (`tinker`, `command`,
   `queue:list`, the `arco.php`-editing commands, ...) ignores both the flag and the variable, and the editing commands
   change `arco.php` only.
 - A missing or unreadable file is `config.layer_not_found` (`{path}`).
@@ -212,6 +212,40 @@ tables](getting-started.md#permissions-for-storage-and-tables).
 
 `variables` and `config` are present with or without a layer. `arco info` (the table) shows `cloud` in the source
 column for what the layer set.
+
+## Listing existing resources in-process
+
+A tool that already runs PHP with Arco installed (Arco Cloud does) can list an environment's existing AWS resources
+without the CLI: `arco resources --json` is a thin wrapper around `Multiapi\Arco\Resources\Inventory`.
+
+```php
+use Multiapi\Arco\Aws\AwsClients;
+use Multiapi\Arco\Config\ConfigLayer;
+use Multiapi\Arco\Config\ConfigResolver;
+use Multiapi\Arco\Resources\Inventory;
+use Multiapi\Arco\Resources\ResourceType;
+
+$config = ConfigResolver::resolve([], 'production', ConfigLayer::load($path))->withAccount($accountId);
+$aws = new AwsClients(null, (string) $config->region, ['credentials' => $readOnlyCredentials]);
+$inventory = new Inventory('cloud');
+$types = $inventory->collect($config, $aws, null, ResourceType::cases(), function (ResourceType $type): void {});
+```
+
+- `ConfigResolver::resolve([], ...)` is the configuration from the layer alone; pass `arco.php`'s array instead of `[]`
+  when there is one. The account must be set (`withAccount()`): it names Arco's code bucket, which is hidden.
+- `new Inventory(string $deployLabel, ?string $dnsLabel = null)`: the labels say who saw each hosted zone (`profile`
+  in the zone's details). `collect()`'s third argument is the DNS account's clients, or `null`; the last one is called
+  before each type is listed.
+- `collect()` returns the `types` of `arco resources --json`, keyed by type: `['ok' => true, 'items' => list<ResourceItem>]`
+  or `['ok' => false, 'error' => ['key' => ..., 'params' => [...]]]`. `ResourceItem::toArray()` is exactly an item of
+  the JSON, `apply` included. Errors and `$inventory->warnings` (read it after `collect()`) are the JSON's without
+  `message`. The top-level `vpc` of the JSON is not part of `collect()`: read `$config->vpc`.
+- Only `List*`, `Describe*` and `Get*` calls are made; the permissions are in
+  [Permissions for `arco resources`](getting-started.md#permissions-for-arco-resources).
+- `Inventory`, `ResourceItem`, `ResourceType` and the `resources.*` error and warning keys are public API: within 0.x
+  they are only added to, and a change that is not an addition comes in a minor release with a CHANGELOG entry; from
+  1.0 they follow the [1.x promise](upgrading.md#the-1x-promise). `tests/Unit/Commands/fixtures/resources-contract.json`
+  in the repository is the shared contract: the test suite checks both the command and `collect()` against it.
 
 ## Errors
 

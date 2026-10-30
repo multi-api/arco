@@ -17,8 +17,8 @@ run `composer install` first, or read the docs at https://github.com/multi-api/a
 
 - Ask the user before any command that changes AWS or runs code there: `deploy`, `remove`, `command`, `tinker`,
   `secret:set`, `queue:dlq --redrive`, `scheduler:pause`/`resume`, `scheduler:set`/`remove --apply`. Editing commands
-  (`set`, `queue:add`, `storage:add`, `domain:add`, ...) and `info`, `logs`, `queue:list`, `storage:list`, `profile`
-  are safe.
+  (`set`, `queue:add`, `storage:add`, `domain:add`, `vpc:set`, `certificate:set`, ...) and `info`, `logs`,
+  `queue:list`, `storage:list`, `resources --json`, `profile` are safe.
 - Confirm which AWS profile and account to use; never assume `default`.
 - Never put secret values in `arco.php`, `.env` files you commit, command arguments or the chat. The user stores them
   with `vendor/bin/arco secret:set <name> --env=<env>`; reference them as `arco-ssm:/<app>/<env>/<name>`.
