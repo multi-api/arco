@@ -11,6 +11,12 @@ composer require multiapi/arco-laravel:^0.12
 vendor/bin/arco info --env=staging     # validation runs here: errors and deprecations name the fix
 ```
 
+## Upgrading to 0.15
+
+Nothing is required: 0.15 only adds the `grants` relation on the execution role in `arco info --resources --json`
+(see [Resource relations](getting-started.md)). It is worked out from `arco.php`, with no new AWS call or permission.
+A tool that reads `relations` should ignore a `type` it does not know.
+
 ## Upgrading to 0.12.1
 
 Nothing is required: 0.12.1 only adds `endpoints:` to `vpc()`. Without it the deploy makes no new calls and needs no

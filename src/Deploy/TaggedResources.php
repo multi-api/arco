@@ -108,7 +108,9 @@ final class TaggedResources
      * Fills each resource's outgoing relations from the resolved config and the listing alone (no extra
      * AWS calls): a queue's worker function `worker_of` its queue, a dead-letter queue `dlq_of` its queue,
      * the scheduler rule `invokes` the console function, the distribution `serves` and a certificate
-     * `validates` each configured domain. A target that cannot be resolved is left out, never guessed.
+     * `validates` each configured domain, and the execution role `grants` access to each queue, bucket and
+     * table its policy names (the ones PolicyBuilder::document() gets at deploy). A target that cannot be
+     * resolved is left out, never guessed.
      *
      * @param list<array{type: string, name: string, arn: string, retained: bool, relations: list<array{type: string, target: string}>, source: ?string, options: ?array<string, mixed>}> $resources
      * @return list<array{type: string, name: string, arn: string, retained: bool, relations: list<array{type: string, target: string}>, source: ?string, options: ?array<string, mixed>}>
@@ -142,6 +144,32 @@ final class TaggedResources
                 $dlqs[$dlq] = $arn;
             }
         }
+        // What the execution role's policy names: a managed resource by its listed ARN, an `existing` one by
+        // the ARN the config spells (a table only with a region and an account; a bucket ARN has neither).
+        // A bucket's name carries the account: without one in arco.php, it is the role's.
+        $role = array_values(array_filter($resources, static fn (array $r): bool => $r['type'] === 'iam:role' && $r['name'] === ExecutionRole::roleName($config)))[0] ?? null;
+        $roleAccount = $role === null ? '' : (explode(':', $role['arn'], 6)[4] ?? '');
+        $granting = $config->account === null && $roleAccount !== '' ? $config->withAccount($roleAccount) : $config;
+        $tableArn = static function (?string $existing, string $name, string $arn) use ($arns): ?string {
+            if ($existing === null) {
+                return $arns['dynamodb:table ' . $name] ?? null;
+            }
+            return self::hasRegionAndAccount($arn) ? $arn : null;
+        };
+        $grants = [];
+        foreach ($config->queues as $queue) {
+            $grants[] = $queueArn($queue);
+        }
+        foreach ($granting->storage as $storage) {
+            $grants[] = $storage->existing === null ? ($arns['s3 ' . $storage->bucketName($granting)] ?? null) : $storage->arn($granting);
+        }
+        foreach (array_filter([$granting->cacheTable, $granting->failedJobsTable]) as $table) {
+            $grants[] = $tableArn($table->existing, $table->tableName($granting), $table->arn($granting));
+        }
+        foreach ($granting->tables as $table) {
+            $grants[] = $tableArn($table->existing, $table->physicalName($granting), $table->arn($granting));
+        }
+        $grants = array_values(array_unique(array_filter($grants)));
         $certificates = count(array_filter($resources, static fn (array $r): bool => $r['type'] === 'acm:certificate'));
         $console = $arns['lambda:function ' . $config->consoleFunctionName()] ?? null;
         foreach ($resources as &$resource) {
@@ -151,6 +179,7 @@ final class TaggedResources
                 'events:rule' => $resource['name'] === SchedulerRule::name($config) ? self::relations('invokes', array_filter([$console])) : [],
                 'cloudfront:distribution' => self::relations('serves', $config->domains),
                 'acm:certificate' => self::relations('validates', self::validatesDomains($config, $resource['arn'], $certificates)),
+                'iam:role' => $resource['name'] === ExecutionRole::roleName($config) ? self::relations('grants', $grants) : [],
                 default => [],
             };
         }

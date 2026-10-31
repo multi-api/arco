@@ -580,11 +580,18 @@ They are worked out from `arco.php` and the listing itself, with no extra AWS ca
 | `invokes` | the scheduler rule (`events:rule`) | the console function's ARN, when it is listed |
 | `serves` | the CloudFront distribution | each custom domain |
 | `validates` | an ACM certificate | each custom domain |
+| `grants` | the execution role Arco manages (`iam:role`) | the ARN of each queue, bucket and table its policy gives access to |
 
 `validates` is set on the certificate of `certificate(arn)`, or, without one, only when exactly one certificate
 is listed: a certificate kept from an earlier set of domains makes two, and then neither gets it. A queue
 Arco manages that is missing from the listing gives no `worker_of`/`dlq_of`; an `existing` queue is named by
 its configured ARN when that ARN names the region and the account (otherwise it gets no relation).
+
+`grants` follows the policy Arco writes on the role at deploy (the queues, buckets, cache, failed-jobs and `table()`
+tables of `arco.php`, never the dead-letter queues), not the policy as it is in IAM: an edit made to the role by hand
+does not show. A resource Arco manages counts only when it is listed; an `existing` bucket is named by its ARN, an
+`existing` queue or table only when its ARN names the region and the account. With `role(arn)` there is no Arco role,
+so no `grants`.
 
 ```json
 {"type":"lambda:function","name":"shop-production-queue-emails","arn":"arn:aws:lambda:us-east-1:111111111111:function:shop-production-queue-emails","retained":false,"relations":[{"type":"worker_of","target":"arn:aws:sqs:us-east-1:111111111111:shop-production-emails"}]}
