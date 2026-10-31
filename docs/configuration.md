@@ -515,11 +515,16 @@ Retries are Laravel's. A job that throws is released and comes back after its `$
 one); the queue's `tries` is the default for jobs without their own `$tries`. A job out of tries is failed
 by Laravel: `failed()` runs and the job is stored in the app's **failed-jobs store** (`failed_jobs`, as
 configured in `config/queue.php`, or the DynamoDB table of [`failedJobsTable()`](#failed-jobs)), so
-`queue:failed` and `queue:retry` (through `arco command`) work as usual.
+`queue:failed` and `queue:retry` (through `arco command`) work as usual. If the store cannot take the job
+(the app's `failed_jobs` lives in a SQLite file that does not exist on Lambda, or its database is down), the
+error is reported and the message is **not** deleted: it comes back, fails again, and ends in the dead-letter
+queue instead of being lost. `failed()` then runs again on each of those deliveries. Give an app without a
+database for `failed_jobs` the DynamoDB table of [`failedJobsTable()`](#failed-jobs).
 
 Each queue Arco creates gets a **dead-letter queue** (`<app>-<env>-<name>-dlq`, messages kept 14 days) with
 `maxReceiveCount` = `tries` + 2. It is a safety net, not the retry mechanism: a message only reaches it when
-the worker never answered for it (the function crashed, ran out of memory or hit its Lambda timeout). On the
+the worker never answered for it (the function crashed, ran out of memory or hit its Lambda timeout) or the
+failed-jobs store could not take a failed job. On the
 last delivery before the dead-letter queue (receive `tries` + 1), a job that would be retried again is
 failed through Laravel instead (`failed()` and `failed_jobs`, with a "max attempts exceeded" error), so it
 is never lost in the dead-letter queue unseen. In practice a job whose own `$tries`, `retryUntil()` or a
@@ -684,8 +689,8 @@ vendor/bin/arco queue:dlq emails --env=production --redrive
   background) once the cause is fixed; follow the counts with `queue:list`.
 - `arco logs --queue=emails` shows one worker's logs, `--source=queues` every worker's, `--console` the
   console's (same as `--source=console`); the default `--source=all` includes the workers. Each job writes
-  one JSON line with its queue, job class, message id, duration and status (`ok`, `failed`, `released`,
-  `skipped`, `held`, `maintenance`, `maintenance_requeued`). CloudWatch Live Tail follows at most 10 log groups:
+  one JSON line with its queue, job class, message id, duration and status (`ok`, `failed`, `failed_unstored`,
+  `released`, `skipped`, `held`, `maintenance`, `maintenance_requeued`). CloudWatch Live Tail follows at most 10 log groups:
   with more, `--follow` polls and says so; narrow it with `--source`, `--console` or `--queue`.
 - `arco info` lists each queue with its URL and the worker's live version; `--json` adds `queues`: a list of
   `{name, url, existing, dlq, worker: {function, version}}`, where `existing` is `true` or `false`, `dlq` the

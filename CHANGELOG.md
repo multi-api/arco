@@ -3,6 +3,12 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.14.2
+
+- **Fixed:** a queue job that failed for good was deleted even when the app's failed-jobs store could not take it
+  (an app whose `failed_jobs` is a SQLite file, which does not exist on Lambda), so it was lost without a trace. Its
+  message now comes back and ends in the dead-letter queue; the worker logs it with status `failed_unstored`.
+
 ## 0.14.1
 
 - **Fixed:** `arco resources` printed the account, profile, region and environment inside the confirmation, which
