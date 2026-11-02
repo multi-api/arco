@@ -3,6 +3,20 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.16.0
+
+- **Added:** `bundleVariables()` (environment or app level; `bundleVariables` in a config layer) keeps an
+  environment's variables in one S3 object of the code bucket instead of the Lambda environment, which AWS caps at
+  4 KB per function. The web revision, the console and the queue workers keep `ARCO`, `ARCO_APP`, `ARCO_ENV`, their
+  runtime variables and `ARCO_VARIABLES`, a pointer the runtimes read at cold start, before `arco-ssm:` and
+  `arco-secret:` references (those inside the object included) are resolved. Each version pins its own object, so a
+  rollback restores its variables. Off by default: without it nothing changes
+  ([Bundled variables](docs/configuration.md#bundled-variables)). New deploy step `deploy.step_variables`
+  (`{count, bucket, key}`), `arco info` setting `bundleVariables`.
+- **Changed:** the managed execution role may read the environment's bundled variables (`s3:GetObject` on
+  `variables/<app>/<env>/*` of the code bucket, `ArcoVariables`; with `kmsKey()` also `kms:Decrypt` on the key
+  through S3), whether `bundleVariables()` is on or not, so a rollback to a version deployed with it keeps working.
+
 ## 0.15.0
 
 - **Added:** the execution role in `arco info --resources --json` has a `grants` relation to each queue, bucket and

@@ -1,7 +1,7 @@
 <?php declare(strict_types=1);
 
 // Arco console runtime: entrypoint of the <app>-<env>-console function (provided.al2023), started by
-// /var/task/bootstrap. Resolves secret references once, then runs one command per invocation.
+// /var/task/bootstrap. Loads the variable bundle and resolves secret references once, then runs one command per invocation.
 
 use Multiapi\Arco\ConsoleRuntime\Handler;
 use Multiapi\Arco\ConsoleRuntime\InvalidEvent;
@@ -11,6 +11,7 @@ use Multiapi\Arco\ConsoleRuntime\Response;
 use Multiapi\Arco\ConsoleRuntime\RuntimeApi;
 use Multiapi\Arco\ConsoleRuntime\Secrets;
 use Multiapi\Arco\ConsoleRuntime\Storage;
+use Multiapi\Arco\ConsoleRuntime\Variables;
 
 foreach (glob(__DIR__ . '/console/*.php') ?: [] as $file) {
     require_once $file;
@@ -33,6 +34,9 @@ try {
     $console = is_array($config) && is_array($config['console'] ?? null) ? $config['console'] : [];
     $entry = is_string($console['entry'] ?? null) ? $console['entry'] : null;
 
+    // bundleVariables(): the bundle joins the environment before the secrets, so references inside it are resolved too.
+    $bundled = (new Variables($env['AWS_REGION'] ?? ''))->load($env);
+    $env = [...$env, ...$bundled];
     ['resolved' => $resolved, 'missing' => $missing] = (new Secrets($env['AWS_REGION'] ?? ''))->resolve($env);
     if ($missing !== []) {
         $log(['arco' => 'secrets_missing', 'missing' => $missing]);
@@ -55,7 +59,7 @@ try {
         $childEnv,
         $log,
     );
-    $log(['arco' => 'console_ready', 'secrets' => count($resolved)]);
+    $log(['arco' => 'console_ready', 'secrets' => count($resolved), 'variables' => count($bundled)]);
 } catch (\Throwable $e) {
     $log(['arco' => 'fatal', 'error' => $e->getMessage()]);
     $api->initError('Arco.InitError', $e->getMessage());

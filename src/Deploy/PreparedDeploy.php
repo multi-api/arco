@@ -30,6 +30,8 @@ final readonly class PreparedDeploy
         public array $releaseEndpoints = [],
         /** @var list<string> Arco gateway endpoints this deploy relies on: the record prune() writes once the others are released */
         public array $keepEndpoints = [],
+        /** bundleVariables(): S3 key of the variable bundle this deploy's functions point to, kept by the prune */
+        public ?string $variablesKey = null,
     ) {
     }
 }

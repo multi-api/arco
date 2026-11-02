@@ -770,7 +770,8 @@ worker log groups, the SQS actions the app and workers need on the queues in `ar
 and write access to the buckets and tables in `arco.php` (`ArcoStorage`, `ArcoStorageList`, `ArcoTables`, `ArcoAppTables`), `s3:GetObject` on `runtime/*` of the code bucket (the console function only reads it when it
 downloads the binary, but the role keeps it: a console version that downloads can be live after a
 rollback), and read access to the
-secrets you reference.
+secrets you reference, and `s3:GetObject` on the environment's [bundled variables](configuration.md#bundled-variables)
+(`variables/<app>/<env>/*` of the code bucket, `ArcoVariables`).
 
 ### Permissions for queues
 

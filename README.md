@@ -110,6 +110,7 @@ The main options:
 | `rateLimit(int)` | no limit | Requests per second; extra requests get 429 |
 | `timeout(int)` | 30 | Seconds per request (3–900) |
 | `variables([...])` | preset defaults | Environment variables; values may be secret references |
+| `bundleVariables()` | off | Keep the variables in one S3 object instead of the Lambda environment (4 KB cap per function) |
 | `permissions([...])` | — | Extra IAM statements for the function's role |
 | `domain(...)` / `dns(...)` | — | Custom domains and where their DNS zone is |
 | `profile()` / `account()` | — | AWS profile for the environment (without it, the first deploy asks and remembers the answer in `.arco/local.php`), and an account lock so a wrong profile can't deploy (offered after the first deploy) |

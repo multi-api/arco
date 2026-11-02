@@ -212,6 +212,7 @@ return [
     'deploy.step_bucket' => 'Preparando el bucket de código {bucket}',
     'deploy.step_upload' => 'Subiendo el paquete ({mb} MB)',
     'deploy.step_upload_console' => 'Subiendo el paquete de la consola ({mb} MB)',
+    'deploy.step_variables' => 'Guardando las variables fuera del entorno de Lambda (bundleVariables): s3://{bucket}/{key} ({count} en el paquete de variables)',
     'deploy.upload_retry' => 'Falló la subida de {key} ({error}); se reintenta una vez en {seconds} s.',
     'deploy.policy_too_large' => 'La policy del rol de ejecución tiene {size} caracteres; IAM permite {max}. Usa comodines o menos statements en permissions().',
     'deploy.step_role' => 'Actualizando el rol de ejecución {role}',

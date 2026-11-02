@@ -107,6 +107,7 @@ rules and `adopt` are in [Config layer](config-layer.md).
 | `profile(string)` | unset | AWS profile for the environment. Without it, the first deploy asks and remembers the answer in `.arco/local.php`, not in `arco.php` (see [Choosing the AWS profile](getting-started.md#choosing-the-aws-profile)) |
 | `account(string)` | written on first deploy | 12-digit account lock; environment level only |
 | `variables(array)` | preset defaults | Revision environment variables. Names starting with `ARCO` are reserved for Arco and refused; Lambda's own (`AWS_REGION`, `AWS_LAMBDA_*`, ...) too |
+| `bundleVariables(bool = true)` | off | Keep the variables in one S3 object instead of the Lambda environment, which AWS caps at 4 KB per function (see [Bundled variables](#bundled-variables)); `bundleVariables(false)` at environment level clears an app-level one |
 | `permissions(array)` | `[]` | Extra IAM statements for the managed execution role (below) |
 | `exclude(array)` / `include(array)` | preset rules | Packaging globs (below) |
 | `domain(string\|array)` | none | Custom domains served through CloudFront (below); lowercase hostnames, no wildcards, at most 10 |
@@ -145,11 +146,56 @@ one of yours. Values may be references (`arco-ssm:...`, `arco-secret:...`).
 | `ARCO_CACHE_TABLE`, `ARCO_FAILED_JOBS_TABLE` | web, console and worker functions, with the tables | the table name, see [Cache and failed-jobs tables](#cache-and-failed-jobs-tables) | stable for `multiapi/arco-laravel` |
 | `ARCO_TABLES` | web, console and worker functions, with `table()` | JSON map `{"<name>": "<table>"}`, see [Tables](#tables) | stable: read it in your app; its JSON shape may gain keys |
 | `ARCO_WORKER_QUEUE`, `ARCO_QUEUE_TRIES`, `ARCO_QUEUE_MAX_RECEIVES`, `ARCO_BINARY_BUCKET`, `ARCO_BINARY_KEY`, `ARCO_BINARY_SHA256`, `ARCO_PHP_BINARY`, `ARCO_TMP`, `ARCO_S3_ENDPOINT` | the runtime of the console and worker functions | | internal: may change in any release, do not read them |
+| `ARCO_VARIABLES` | web, console and worker functions, with `bundleVariables()` | `s3://<code bucket>/variables/<app>/<env>/<sha256>.json` | internal: may change in any release, do not read it |
 
 Arco also sets the Laravel variables of the features you use (`QUEUE_CONNECTION`, `SQS_*`, `FILESYSTEM_DISK`,
 `AWS_BUCKET`, `AWS_URL`, `CACHE_STORE`, `DYNAMODB_CACHE_TABLE`, `QUEUE_FAILED_DRIVER`; see each section) and the
 preset's defaults ([Laravel preset](#laravel-preset)); your own `variables()` win over those. `ARCO_LANG` is
 not set by Arco: it is read on your machine to pick the CLI's language.
+
+### Bundled variables
+
+Lambda caps a function's environment variables at 4 KB (names and values together). An app with many variables,
+long values or several queues, buckets and tables (whose `ARCO_QUEUES`, `ARCO_STORAGE` and `ARCO_TABLES` maps grow
+with them) can go over it, and the deploy then fails with `InvalidParameterValueException` from Lambda. Moving long
+values to `arco-ssm:` references barely helps: a reference is about as long as many values. `bundleVariables()`
+takes the variables out of the Lambda environment:
+
+```php
+->environment('staging', fn (Environment $env) => $env
+    ->bundleVariables()
+    ->variables([...]))
+```
+
+- **On deploy**, after the execution role and before any function, Arco writes every variable except `ARCO`,
+  `ARCO_APP` and `ARCO_ENV` (Arco's maps and the Laravel variables it sets included) to one JSON object in the code
+  bucket, `variables/<app>/<env>/<sha256>.json`, named after the SHA-256 of its content. The web revision, the
+  console and every queue worker keep only `ARCO`, `ARCO_APP`, `ARCO_ENV`, their own runtime variables
+  (`ARCO_WORKER_QUEUE`, ...) and `ARCO_VARIABLES`, the object's `s3://` address: a few hundred bytes whatever
+  `variables()` holds. `arco-ssm:` and `arco-secret:` references go into the object as they are written, never
+  resolved, so the object holds no secret that the Lambda environment would not have held.
+- **At cold start** the web, console and worker runtimes read the object (one S3 `GetObject` in the region, tens of
+  milliseconds), check it against the SHA-256 in its name, and add its variables to the process environment, then
+  resolve the `arco-ssm:` / `arco-secret:` references, those inside the object included, as before. A variable the
+  real environment already has is never replaced. The app sees the variables as ordinary environment variables
+  (`env()`, `getenv()`, libraries reading the process environment). A missing, unreadable or altered object stops
+  the cold start with an error naming the object (a `fatal` log line on the web function, the init error
+  `Arco.InitError` / `Arco.WorkerInit` on the console and the workers), never a start with some variables missing.
+- **Rollback.** Each function version and web revision points at the object of its own deploy, so `arco rollback`
+  (and the automatic rollback of a failed verification) brings back exactly the variables that version was
+  deployed with. After a verified deploy Arco deletes the environment's older objects, keeping the 20 newest and
+  the one in use, as for the packages.
+- **Encryption.** The object is encrypted at rest by the code bucket (SSE-S3), or with your key under `kmsKey()`
+  (SSE-KMS), like the Lambda environment it replaces. Whoever may read the code bucket may read it: keep secrets as
+  `arco-ssm:` / `arco-secret:` references, as without the option.
+- **Permissions.** The managed execution role may `s3:GetObject` the environment's objects
+  (`arn:aws:s3:::arco-<account>-<region>/variables/<app>/<env>/*`, statement `ArcoVariables`) whether the option is
+  on or not, so a rollback to a version deployed with it works after `bundleVariables(false)`; with `kmsKey()` also
+  `kms:Decrypt` on that key through S3 (`ArcoVariablesDecrypt`). With your own `role()`, grant both yourself. The
+  deploy profile needs `s3:PutObject` on the code bucket (already in the [minimal permissions](getting-started.md#minimal-iam-permissions))
+  and, with `kmsKey()`, `kms:GenerateDataKey` on the key.
+- **Switching** it on or off takes effect on the next deploy; nothing else changes. Without `bundleVariables()`
+  every variable stays in the Lambda environment, exactly as before.
 
 ### Named arguments
 
@@ -427,7 +473,8 @@ GitHub (the warning names the URL and the error; a size or checksum mismatch sti
 the code bucket (`runtime/<build>/frankenphp`); at a cold start the console function downloads it (about 2.5 s
 for 160 MB, once per execution environment), checks its SHA-256 and keeps it in `/tmp`. The managed role may
 read `runtime/*` of the code bucket in every case; with your own `role()`, allow `s3:GetObject` on
-`arn:aws:s3:::arco-<account>-<region>/runtime/*` (needed whenever a console version that downloads can run)
+`arn:aws:s3:::arco-<account>-<region>/runtime/*` (needed whenever a console version that downloads can run;
+with [`bundleVariables()`](#bundled-variables) also on `variables/<app>/<env>/*`)
 and `logs:CreateLogStream` / `logs:PutLogEvents` on the console log group. If the console package is
 still over 250 MB, the web function deploys, the console function is skipped with a warning and deploy
 commands are refused: leave large folders out with `->exclude([...])`.

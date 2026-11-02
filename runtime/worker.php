@@ -2,13 +2,14 @@
 
 // Arco worker runtime: entrypoint of a queue's worker function (<app>-<env>-queue-<name>), started by
 // /var/task/bootstrap when ARCO_WORKER_QUEUE is set. Prepares the environment exactly like
-// runtime/console.php (secrets, storage, phpIni), then becomes `php artisan arco:work`, which boots
+// runtime/console.php (variable bundle, secrets, storage, phpIni), then becomes `php artisan arco:work`, which boots
 // Laravel once and serves every invocation through the Runtime API.
 
 use Multiapi\Arco\ConsoleRuntime\PhpIni;
 use Multiapi\Arco\ConsoleRuntime\RuntimeApi;
 use Multiapi\Arco\ConsoleRuntime\Secrets;
 use Multiapi\Arco\ConsoleRuntime\Storage;
+use Multiapi\Arco\ConsoleRuntime\Variables;
 
 foreach (glob(__DIR__ . '/console/*.php') ?: [] as $file) {
     require_once $file;
@@ -38,6 +39,9 @@ try {
         throw new \RuntimeException("The artisan entry point $artisan does not exist.");
     }
 
+    // bundleVariables(): the bundle joins the environment before the secrets, so references inside it are resolved too.
+    $bundled = (new Variables($env['AWS_REGION'] ?? ''))->load($env);
+    $env = [...$env, ...$bundled];
     ['resolved' => $resolved, 'missing' => $missing] = (new Secrets($env['AWS_REGION'] ?? ''))->resolve($env);
     if ($missing !== []) {
         throw new \RuntimeException('These secret references do not exist or are not readable: ' . implode(', ', $missing));
@@ -53,7 +57,7 @@ try {
     if (! chdir("$root/app")) {
         throw new \RuntimeException("Cannot enter $root/app.");
     }
-    $log(['arco' => 'worker_ready', 'queue' => $env['ARCO_WORKER_QUEUE'] ?? null, 'secrets' => count($resolved)]);
+    $log(['arco' => 'worker_ready', 'queue' => $env['ARCO_WORKER_QUEUE'] ?? null, 'secrets' => count($resolved), 'variables' => count($bundled)]);
 } catch (\Throwable $e) {
     $log(['arco' => 'fatal', 'error' => $e->getMessage()]);
     $api->initError('Arco.WorkerInit', $e->getMessage());

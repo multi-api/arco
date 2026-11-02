@@ -78,6 +78,8 @@ final readonly class AppConfig
         public array $notes = [],
         /** false: the config comes from a config layer alone, there is no arco.php */
         public bool $hasArcoPhp = true,
+        /** true: the variables live in one S3 object (VariableBundle), the functions keep ARCO_* and a pointer */
+        public bool $bundleVariables = false,
     ) {
     }
 
@@ -153,6 +155,7 @@ final readonly class AppConfig
             vpc: $this->vpc,
             notes: $this->notes,
             hasArcoPhp: $hasArcoPhp ?? $this->hasArcoPhp,
+            bundleVariables: $this->bundleVariables,
         );
     }
 

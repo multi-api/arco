@@ -21,7 +21,7 @@ final readonly class ConfigLayer
         'auth' => 'string', 'logLevel' => 'string', 'role' => 'string', 'kmsKey' => 'string', 'profile' => 'string',
         'permissionsBoundary' => 'string|false', 'dns' => 'string|false', 'certificate' => 'string',
         'console' => 'bool', 'consoleTimeout' => 'int', 'consoleMemory' => 'int',
-        'scheduler' => 'int|false', 'logRetention' => 'int|false', 'protected' => 'bool',
+        'scheduler' => 'int|false', 'logRetention' => 'int|false', 'protected' => 'bool', 'bundleVariables' => 'bool',
         'cacheDriver' => 'string', 'account' => 'string',
     ];
     private const QUEUE = [

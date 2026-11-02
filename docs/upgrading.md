@@ -11,6 +11,13 @@ composer require multiapi/arco-laravel:^0.12
 vendor/bin/arco info --env=staging     # validation runs here: errors and deprecations name the fix
 ```
 
+## Upgrading to 0.16
+
+Nothing is required. The managed execution role gains a read-only statement on the environment's
+[bundled variables](configuration.md#bundled-variables) (`ArcoVariables`), whether or not you use
+`bundleVariables()`. With your own `role()`, grant `s3:GetObject` on `variables/<app>/<env>/*` of the code bucket
+only if you turn `bundleVariables()` on.
+
 ## Upgrading to 0.15
 
 Nothing is required: 0.15 only adds the `grants` relation on the execution role in `arco info --resources --json`

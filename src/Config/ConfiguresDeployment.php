@@ -130,6 +130,13 @@ trait ConfiguresDeployment
     public function protected(bool $protected = true): static { $this->settings['protected'] = $protected; return $this; }
 
     /**
+     * Store the app's variables in one S3 object (the code bucket) instead of the Lambda environment, which AWS caps
+     * at 4 KB per function: the functions keep ARCO_* and a pointer, and the runtime loads the rest at cold start,
+     * before it resolves arco-ssm: and arco-secret: references. false (the default) keeps every variable in Lambda.
+     */
+    public function bundleVariables(bool $enabled = true): static { $this->settings['bundleVariables'] = $enabled; return $this; }
+
+    /**
      * An SQS queue with a worker function that consumes it. Options not given keep their defaults
      * (timeout 60, memory 1024, batchSize 1, tries 3, dlq on); repeated calls for a name accumulate.
      * An environment's entry merges over the app's; `queue('name', false)` drops the queue there.

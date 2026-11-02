@@ -377,7 +377,9 @@ final class AwsDeployer implements Deployer
                 array_map(fn (TableConfig $table) => $table->arn($config), array_values(array_filter([$config->cacheTable, $config->failedJobsTable]))),
                 array_map(fn (GenericTableConfig $table) => $table->arn($config), $config->tables),
                 // Leaving the VPC keeps the ENI statements: the automatic rollback may bring back a VPC console or worker.
-                RevisionFactory::usesVpc($config) || $outOfVpc);
+                RevisionFactory::usesVpc($config) || $outOfVpc,
+                VariableBundle::prefix($config),
+                $config->kmsKey);
             ['arn' => $roleArn, 'created' => $roleCreated] = (new ExecutionRole($this->aws->iam()))->ensure(ExecutionRole::roleName($config), $policy, $tags, $region, $step, $config->permissionsBoundary);
         }
 
@@ -396,6 +398,13 @@ final class AwsDeployer implements Deployer
             $connectorArn = $this->networkConnectors()->ensure($config, $tags, $step, $liveConnector);
         } elseif ($config->vpc !== null) {
             $step('deploy.vpc_unsupported_emulator', ['function' => $function]);
+        }
+
+        $variablesKey = null;
+        if ($config->bundleVariables) {
+            // After the role (whose policy needs every arco-ssm:/arco-secret: reference), before any function: from
+            // here on the functions get ARCO_* and the pointer, the runtimes load the rest.
+            ['variables' => $variables, 'key' => $variablesKey] = (new VariableBundle($this->aws->s3()))->store($config, $bucket, $variables, $step);
         }
 
         $revision = RevisionFactory::revision($config, $bucket, $key, $versionId, $roleArn, $variables, $connectorArn);
@@ -474,7 +483,7 @@ final class AwsDeployer implements Deployer
 
         return new PreparedDeploy($revisionId, $previous, $bucket, $key, $consoleVersion, $previousConsole, $consoleKey, $console?->download?->key, $workerVersions,
             $leftover, array_values(array_unique(array_filter([$liveConnector, $connectorArn], fn (?string $arn) => $arn !== null))), $outOfVpc,
-            releaseEndpoints: $releaseEndpoints, keepEndpoints: $keepEndpoints);
+            releaseEndpoints: $releaseEndpoints, keepEndpoints: $keepEndpoints, variablesKey: $variablesKey);
     }
 
     /**
@@ -718,6 +727,9 @@ final class AwsDeployer implements Deployer
             $codeBucket->prune($prepared->bucket, self::prefix($config), self::KEEP_PACKAGES, [$prepared->key], self::consolePrefix($config));
             if ($prepared->consoleKey !== null) {
                 $codeBucket->prune($prepared->bucket, self::consolePrefix($config), self::KEEP_PACKAGES, [$prepared->consoleKey]);
+            }
+            if ($prepared->variablesKey !== null) {
+                (new VariableBundle($this->aws->s3()))->prune($config, $prepared->bucket, $prepared->variablesKey);
             }
         } catch (AwsException $e) {
             $step('deploy.prune_packages_failed', ['bucket' => $prepared->bucket, 'error' => self::awsError($e)]);

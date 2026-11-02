@@ -212,6 +212,7 @@ return [
     'deploy.step_bucket' => 'Preparing code bucket {bucket}',
     'deploy.step_upload' => 'Uploading package ({mb} MB)',
     'deploy.step_upload_console' => 'Uploading console package ({mb} MB)',
+    'deploy.step_variables' => 'Storing the variables outside the Lambda environment (bundleVariables): s3://{bucket}/{key} ({count} in the bundle)',
     'deploy.upload_retry' => 'Uploading {key} failed ({error}); retrying once in {seconds} s.',
     'deploy.policy_too_large' => 'The execution role policy is {size} characters; IAM allows {max}. Use wildcards or fewer statements in permissions().',
     'deploy.step_role' => 'Updating execution role {role}',

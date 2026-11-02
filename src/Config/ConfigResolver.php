@@ -26,6 +26,7 @@ final class ConfigResolver
         'consoleMemory' => 2048,
         'cacheDriver' => null,
         'protected' => null,
+        'bundleVariables' => false,
         'console' => null,
         'scheduler' => null,
         'logRetention' => null,
@@ -241,6 +242,7 @@ final class ConfigResolver
         $logRetention = $setting('logRetention');
         $permissionsBoundary = $setting('permissionsBoundary');
         $vpc = self::vpc($setting('vpc'));
+        $bundleVariables = $setting('bundleVariables') === true;
 
         if ([...$appPermissions, ...($env['permissions'] ?? [])] === [] && ($cloud['permissions'] ?? []) !== []) {
             // Only when the layer alone has statements: info shows arco.php's as app/environment.
@@ -293,6 +295,7 @@ final class ConfigResolver
             permissionsBoundary: $permissionsBoundary === false ? null : self::nullableString($permissionsBoundary),
             vpc: $vpc,
             notes: $notes,
+            bundleVariables: $bundleVariables,
         );
 
         return $config;

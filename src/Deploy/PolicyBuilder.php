@@ -21,9 +21,11 @@ final class PolicyBuilder
      * @param list<string> $bucketArns the storage buckets the app reads and writes (created and existing)
      * @param list<string> $tableArns the DynamoDB tables of the cache and the failed jobs (created and existing)
      * @param list<string> $genericTableArns the table() tables (created and existing)
+     * @param string|null $variablesPrefix the code bucket prefix of the environment's variable bundles (VariableBundle)
+     * @param string|null $kmsKey kmsKey(): the key the variable bundles are encrypted with
      * @return array{Version: string, Statement: list<array<string, mixed>>}
      */
-    public static function document(string $region, string $account, string $function, array $references, array $permissions = [], ?string $codeBucket = null, array $queueArns = [], array $workerFunctions = [], array $bucketArns = [], array $tableArns = [], array $genericTableArns = [], bool $vpcAccess = false): array
+    public static function document(string $region, string $account, string $function, array $references, array $permissions = [], ?string $codeBucket = null, array $queueArns = [], array $workerFunctions = [], array $bucketArns = [], array $tableArns = [], array $genericTableArns = [], bool $vpcAccess = false, ?string $variablesPrefix = null, ?string $kmsKey = null): array
     {
         // Web Functions log to /aws/lambda/web/<function> and also to a "<group>.local" group; the
         // console function to the classic /aws/lambda/<function>-console group.
@@ -99,6 +101,25 @@ final class PolicyBuilder
                 'Action' => 's3:GetObject',
                 'Resource' => "arn:aws:s3:::$codeBucket/runtime/*",
             ];
+            if ($variablesPrefix !== null) {
+                // The runtimes load bundleVariables() at cold start. Granted with the option off too: arco rollback
+                // may bring back a version deployed with it.
+                $statements[] = [
+                    'Sid' => 'ArcoVariables',
+                    'Effect' => 'Allow',
+                    'Action' => 's3:GetObject',
+                    'Resource' => "arn:aws:s3:::$codeBucket/{$variablesPrefix}*",
+                ];
+                if ($kmsKey !== null) {
+                    $statements[] = [
+                        'Sid' => 'ArcoVariablesDecrypt',
+                        'Effect' => 'Allow',
+                        'Action' => ['kms:Decrypt'],
+                        'Resource' => $kmsKey,
+                        'Condition' => ['StringEquals' => ['kms:ViaService' => "s3.$region.amazonaws.com"]],
+                    ];
+                }
+            }
         }
 
         $parameters = [];

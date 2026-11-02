@@ -1,8 +1,9 @@
 'use strict';
-// Arco runtime for AWS Lambda Web Functions: resolves secrets, then runs FrankenPHP.
+// Arco runtime for AWS Lambda Web Functions: loads the variable bundle, resolves secrets, then runs FrankenPHP.
 const fs = require('node:fs');
 const path = require('node:path');
 const { resolveSecrets } = require('./lib/secrets');
+const { POINTER, loadVariables } = require('./lib/variables');
 const { createFetchers } = require('./lib/aws');
 const { buildCaddyfile } = require('./lib/caddyfile');
 const supervisor = require('./lib/supervisor');
@@ -19,7 +20,14 @@ async function main() {
   log('boot', { mode: config.mode, endpoint: `${host}:${port}` });
 
   const region = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION;
-  const { resolved, missing } = await resolveSecrets(process.env, createFetchers(region));
+  const fetchers = createFetchers(region);
+  if (process.env[POINTER]) {
+    // bundleVariables(): before the secrets, so references inside the bundle are resolved too.
+    const loaded = await loadVariables(process.env, fetchers.getObject);
+    Object.assign(process.env, loaded);
+    log('variables', { loaded: Object.keys(loaded).length });
+  }
+  const { resolved, missing } = await resolveSecrets(process.env, fetchers);
   if (missing.length > 0) {
     log('secrets_missing', { missing });
     process.exit(1);
