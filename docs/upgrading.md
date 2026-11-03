@@ -11,6 +11,12 @@ composer require multiapi/arco-laravel:^0.12
 vendor/bin/arco info --env=staging     # validation runs here: errors and deprecations name the fix
 ```
 
+## Upgrading to 0.17
+
+Nothing is required. `multiapi/arco-laravel` now loads Arco Cloud extensions: each `.arco-cloud/<name>/bootstrap.php`
+in the deployed app that returns a service provider is registered, and one that fails is logged and skipped. Without
+an `.arco-cloud/` directory nothing changes.
+
 ## Upgrading to 0.16
 
 Nothing is required. The managed execution role gains a read-only statement on the environment's

@@ -3,6 +3,11 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.17.0
+
+- **Added:** `multiapi/arco-laravel` registers Arco Cloud extensions: the service provider that the `bootstrap.php`
+  of each `.arco-cloud/<name>/` directory returns. A failing extension is logged and skipped.
+
 ## 0.16.0
 
 - **Added:** `bundleVariables()` (environment or app level; `bundleVariables` in a config layer) keeps an
