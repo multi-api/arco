@@ -437,6 +437,7 @@ final class InfoCommand extends ArcoCommand
             'consoleTimeout' => [$config->consoleTimeout, $s['consoleTimeout']],
             'protected' => [$config->isProtected(), $s['protected']],
             'bundleVariables' => [$config->bundleVariables, $s['bundleVariables']],
+            'accessLog' => [$config->accessLog, $s['accessLog']],
             'deployCommands' => [$config->deployCommands === [] ? null : implode('; ', $config->deployCommands), $s['deployCommands']],
             'permissions' => [count($config->permissions), $config->permissions === [] ? 'default' : ($s['permissions'] ?? 'app/environment')],
             'permissionsBoundary' => [$config->permissionsBoundary, $s['permissionsBoundary']],

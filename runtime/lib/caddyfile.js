@@ -16,6 +16,8 @@ function buildCaddyfile(config, { host, port, root }) {
   for (const [key, value] of Object.entries({ ...SECURITY_INI, ...(config.phpIni || {}) })) lines.push(`\t\tphp_ini ${key} ${iniValue(value)}`);
   if (worker) lines.push('\t\tworker {', `\t\t\tfile ${root}/${worker}`, `\t\t\tnum ${workerCount}`, '\t\t}');
   lines.push('\t}', '}', '', `http://:${port} {`, `\tbind ${host}`, `\troot * ${root}/${config.publicDir}`, '\tencode zstd br gzip');
+  // accessLog(): to stdout, where lib/accesslog.js rewrites each entry before it reaches CloudWatch.
+  if (config.accessLog) lines.push('\tlog {', '\t\toutput stdout', '\t\tformat json', '\t}');
   if (worker) {
     const script = path.basename(worker);
     lines.push('\tphp_server {', `\t\tindex ${script}`, `\t\ttry_files {path} ${script}`, '\t}');

@@ -48,6 +48,7 @@ async function main() {
     { ...process.env, ARCO: '1', HOME: TMP, XDG_CONFIG_HOME: `${TMP}/caddy/config`, XDG_DATA_HOME: `${TMP}/caddy/data` },
     path.join(ROOT, 'app'),
     log,
+    { accessLog: config.accessLog === true },
   );
   await supervisor.waitForPort(phpHost === '0.0.0.0' ? '127.0.0.1' : phpHost, phpPort);
   log('frankenphp_ready');

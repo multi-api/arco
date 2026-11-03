@@ -11,6 +11,13 @@ composer require multiapi/arco-laravel:^0.12
 vendor/bin/arco info --env=staging     # validation runs here: errors and deprecations name the fix
 ```
 
+## Unreleased
+
+Nothing is required. With the new `multiapi/arco-laravel`, the JSON log lines of console commands and queue jobs
+carry `requestId` and `traceId` in their `context` (jobs also `job`), and web lines gain `traceId`
+([Log context](configuration.md#log-context)): a metric filter or query that matches the whole `context` object may
+need a look. The access log stays off until you add `->accessLog()` ([Access log](configuration.md#access-log)).
+
 ## Upgrading to 0.17
 
 Nothing is required. `multiapi/arco-laravel` now loads Arco Cloud extensions: each `.arco-cloud/<name>/bootstrap.php`

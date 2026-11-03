@@ -115,6 +115,7 @@ rules and `adopt` are in [Config layer](config-layer.md).
 | `deployCommands(array)` | `[]` | Commands run on the console function during every deploy, before traffic moves; an environment's list replaces the app's |
 | `console(bool = true, ?int timeout, ?int memory)` | off | Deploy the console function (`arco command`, `arco tinker`, `deployCommands()`); `console(false)` deletes an existing one on the next deploy; a scheduler implies it. `timeout:` is in seconds (3 to 900, default 900), `memory:` in MB (128 to 10240, default 2048); giving either also turns the console on |
 | `scheduler(int\|false)` | off | Run Laravel's `schedule:run` every N minutes (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30 or 60), aligned to the UTC clock; needs the console, which it turns on |
+| `accessLog(bool = true)` | off | One JSON line per HTTP request in the web function's log, written by the runtime for every request, static files and requests Laravel never sees included (see [Access log](#access-log)); `accessLog(false)` at environment level clears an app-level one |
 | `logRetention(int\|false)` | 30 | Days CloudWatch keeps the web, console and queue worker logs (1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288 or 3653); `false` = never expire; not set = 30 days |
 | `protected(bool = true)` | on for `production` | Ask for confirmation before `arco tinker`, `arco command`, `arco remove` and `arco queue:dlq --redrive`; `--yes` answers it, and without a terminal it is required (CI: `arco command "migrate --force" --env=production --no-interaction --yes`). Deploy commands (`deployCommands()`, `arco deploy --migrate`) are not asked. `protected(false)` turns it off |
 | `certificate(arn)` | looked up or requested | ACM certificate ARN in `us-east-1` to use for the domains |
@@ -146,6 +147,7 @@ one of yours. Values may be references (`arco-ssm:...`, `arco-secret:...`).
 | `ARCO_CACHE_TABLE`, `ARCO_FAILED_JOBS_TABLE` | web, console and worker functions, with the tables | the table name, see [Cache and failed-jobs tables](#cache-and-failed-jobs-tables) | stable for `multiapi/arco-laravel` |
 | `ARCO_TABLES` | web, console and worker functions, with `table()` | JSON map `{"<name>": "<table>"}`, see [Tables](#tables) | stable: read it in your app; its JSON shape may gain keys |
 | `ARCO_WORKER_QUEUE`, `ARCO_QUEUE_TRIES`, `ARCO_QUEUE_MAX_RECEIVES`, `ARCO_BINARY_BUCKET`, `ARCO_BINARY_KEY`, `ARCO_BINARY_SHA256`, `ARCO_PHP_BINARY`, `ARCO_TMP`, `ARCO_S3_ENDPOINT` | the runtime of the console and worker functions | | internal: may change in any release, do not read them |
+| `ARCO_REQUEST_ID` | each command the console function runs (with `_X_AMZN_TRACE_ID`, the invocation's trace header) | the Lambda invocation id | internal: `multiapi/arco-laravel` shares it in the log context ([Log context](#log-context)); read `context.requestId` instead |
 | `ARCO_VARIABLES` | web, console and worker functions, with `bundleVariables()` | `s3://<code bucket>/variables/<app>/<env>/<sha256>.json` | internal: may change in any release, do not read it |
 
 Arco also sets the Laravel variables of the features you use (`QUEUE_CONNECTION`, `SQS_*`, `FILESYSTEM_DISK`,
@@ -522,6 +524,47 @@ keep 30 days (before 0.9 Arco left them alone, so logs never expired: set `->log
 `arco logs:retention --remove` goes back to the default. Allowed days are the ones CloudWatch
 accepts (1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922,
 3288, 3653).
+
+### Access log
+
+`->accessLog()` makes the web runtime write one JSON line per HTTP request to the web function's log group
+(`/aws/lambda/web/<app>-<env>`):
+
+```json
+{"arco":"request","status":200,"method":"GET","path":"/orders/42","ms":38,"requestId":"5f0c..."}
+```
+
+- `status` is the response status, `method` the HTTP method, `path` the path without the query string (cut at
+  1024 characters), `ms` the time the web server took to answer, in whole milliseconds.
+- `requestId` is the id `multiapi/arco-laravel` puts in the log context of the same request (`context.requestId`
+  of its lines, see [Log context](#log-context)): the caller's `X-Request-ID`, else the id the AWS front end adds.
+  `null` when the request had none.
+- The line comes from the web server (Caddy, inside FrankenPHP), not from Laravel, so every request is there:
+  static files and requests that fail before Laravel boots. Headers, cookies, query strings and the
+  client IP are never written.
+- Query them with CloudWatch Logs Insights, for example
+  `filter arco = "request" | stats pct(ms, 50), pct(ms, 95), count(*) by bin(5m)`. Arco Cloud's Monitoring tab
+  draws its request duration from these lines. `arco logs` hides runtime lines; `--platform` shows them, and
+  `--request=<id>` finds a request's line with its app lines.
+
+It is off by default because of what it costs: each line is about 150 bytes once CloudWatch counts its overhead,
+ingested at $0.50 per GB in us-east-1 (about $0.07 per million requests), and every Logs Insights query over the
+web log group scans these lines too ($0.005 per GB scanned), which matters more on a busy app queried often.
+Switching it on or off takes effect on the next deploy (the setting travels in the package).
+
+### Log context
+
+`multiapi/arco-laravel` shares these entries in Laravel's log context, so every Monolog JSON line of one unit of
+work carries them under `context` and the lines of one request, command or job can be found together:
+
+| Key | Web function | Console function | Queue workers |
+|---|---|---|---|
+| `requestId` | the caller's `X-Request-ID`, else the id or trace header the AWS front end adds | the Lambda invocation id | the Lambda invocation id (one per SQS batch) |
+| `traceId` | from `X-Amzn-Trace-Id` | from `_X_AMZN_TRACE_ID` | from the message's `AWSTraceHeader`, else `_X_AMZN_TRACE_ID`; with `multiapi/arco-xray`, the trace the job was dispatched in |
+| `job` | | | the job's name (its class, or `displayName()`) |
+
+`traceId` is an X-Ray trace id (`1-<8 hex>-<24 hex>`, the Root of the trace header), left out when there is none.
+A worker shares the entries again for each job, so a job never logs with the previous job's.
 
 ### Runtime binary clean-up
 

@@ -359,6 +359,7 @@ an environment).
 | `logRetention(int\|false)` | 30 days | Days CloudWatch accepts; `false` = never expire |
 | `protected(bool = true)` | on for `production` | Confirmation before `command`, `tinker`, `remove`, `queue:dlq --redrive` (`--yes` answers) |
 | `bundleVariables(bool = true)` | off | Variables in one S3 object instead of the Lambda environment (4 KB cap); the fix for a deploy failing with `InvalidParameterValueException` on the environment's size. See [Bundled variables](configuration.md#bundled-variables) |
+| `accessLog(bool = true)` | off | One `{"arco":"request","status","method","path","ms","requestId"}` line per HTTP request in the web log, written by the runtime (requests that never reach Laravel included); costs CloudWatch ingest and Logs Insights scanning. See [Access log](configuration.md#access-log) |
 | `queue(string $name, ...)` | none | Named options `timeout` (60; 10 to 900), `memory` (1024), `maxInstances`, `batchSize` (1), `tries` (3), `dlq` (true), `fifo` (false), `existing` (name, URL or ARN), `default`. `queue('x', false)` drops it |
 | `storage(string $name, ...)` | none | Named options `public` (prefixes ending in `/`), `expire` (`['tmp/' => 1]`), `cors` (origins), `existing` (bucket name), `default`. Names `s3`, `public`, `local` are refused |
 | `table(string $name, ...)` | none | DynamoDB `PK`/`SK` strings, on demand; named options `ttl` (attribute), `existing`. Read the names from `ARCO_TABLES` |

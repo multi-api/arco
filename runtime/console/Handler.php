@@ -35,10 +35,12 @@ final class Handler
     }
 
     /**
+     * @param array<string, string> $invocationEnv added to the command's environment for this invocation only
+     *        (ARCO_REQUEST_ID, _X_AMZN_TRACE_ID)
      * @return array{exitCode: int, output: string}
      * @throws InvalidEvent
      */
-    public function handle(string $body, int $remainingMs): array
+    public function handle(string $body, int $remainingMs, array $invocationEnv = []): array
     {
         $event = json_decode($body, true);
         if (! is_array($event) || array_is_list($event)) {
@@ -73,7 +75,7 @@ final class Handler
         try {
             // A tinker reply carries the presented result and the serialized scope (secrets, PII):
             // it never goes to the function log, only to the invoker.
-            $result = $this->runner->run($argv, $this->appDir, $this->env, $timeout, $stdin, echo: ! $tinker);
+            $result = $this->runner->run($argv, $this->appDir, [...$this->env, ...$invocationEnv], $timeout, $stdin, echo: ! $tinker);
         } catch (\ValueError) {
             // proc_open refuses NUL bytes in arguments and environment values.
             $result = new ProcessResult(2, "The command cannot be run: its arguments or environment contain a NUL byte.\n", false);

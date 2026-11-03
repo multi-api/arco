@@ -84,7 +84,7 @@ Each key has the type the `arco.php` method stores:
 | `auth`, `logLevel`, `role`, `kmsKey`, `profile`, `certificate`, `cacheDriver`, `account` | string |
 | `permissionsBoundary`, `dns` | string or `false` (`dns` is a profile name, `"cloudflare"` or `false`; Route 53 in the deploy account is no `dns` at all) |
 | `scheduler`, `logRetention` | integer or `false` |
-| `console`, `protected`, `bundleVariables` | boolean |
+| `console`, `protected`, `bundleVariables`, `accessLog` | boolean |
 | `cache`, `failedJobsTable` | `true`, `false` or `{"existing": "<table>"}` |
 | `vpc` | `false` or `{"subnets": [...], "securityGroups": [...], "endpoints": [...]}`, as `vpc()` stores it (`endpoints` a list of services, or `service => id`) |
 

@@ -14,7 +14,7 @@ final class RuntimeApi
     /**
      * Blocks until Lambda hands over the next invocation.
      *
-     * @return array{requestId: string, deadlineMs: int, body: string}
+     * @return array{requestId: string, deadlineMs: int, traceId: ?string, body: string}
      */
     public function next(): array
     {
@@ -23,7 +23,12 @@ final class RuntimeApi
         if ($status !== 200 || $id === '') {
             throw new \RuntimeException("The Runtime API answered HTTP $status for the next invocation.");
         }
-        return ['requestId' => $id, 'deadlineMs' => (int) ($headers['lambda-runtime-deadline-ms'] ?? 0), 'body' => $body];
+        return [
+            'requestId' => $id,
+            'deadlineMs' => (int) ($headers['lambda-runtime-deadline-ms'] ?? 0),
+            'traceId' => $headers['lambda-runtime-trace-id'] ?? null,
+            'body' => $body,
+        ];
     }
 
     public function respond(string $requestId, string $json): void

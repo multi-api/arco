@@ -137,6 +137,13 @@ trait ConfiguresDeployment
     public function bundleVariables(bool $enabled = true): static { $this->settings['bundleVariables'] = $enabled; return $this; }
 
     /**
+     * One JSON line per HTTP request in the web function's CloudWatch logs (`{"arco":"request","status":200,
+     * "method":"GET","path":"/","ms":12,"requestId":"..."}`), written by the runtime for every request, also
+     * those that never reach the app. Off by default: each line is ingested and scanned like any other log line.
+     */
+    public function accessLog(bool $enabled = true): static { $this->settings['accessLog'] = $enabled; return $this; }
+
+    /**
      * An SQS queue with a worker function that consumes it. Options not given keep their defaults
      * (timeout 60, memory 1024, batchSize 1, tries 3, dlq on); repeated calls for a name accumulate.
      * An environment's entry merges over the app's; `queue('name', false)` drops the queue there.

@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const net = require('node:net');
 const path = require('node:path');
+const { pipeAccessLog } = require('./accesslog');
 
 function prepareTmp(dir) {
   for (const sub of [
@@ -29,8 +30,10 @@ function resolveBinary(root, tmp) {
   }
 }
 
-function spawnFrankenphp(binary, caddyfile, env, cwd, log) {
-  const child = spawn(binary, ['run', '--config', caddyfile, '--adapter', 'caddyfile'], { cwd, env, stdio: 'inherit' });
+function spawnFrankenphp(binary, caddyfile, env, cwd, log, { accessLog = false } = {}) {
+  const stdio = accessLog ? ['inherit', 'pipe', 'inherit'] : 'inherit';
+  const child = spawn(binary, ['run', '--config', caddyfile, '--adapter', 'caddyfile'], { cwd, env, stdio });
+  if (accessLog) pipeAccessLog(child.stdout, process.stdout);
   child.on('exit', (code, signal) => {
     log('frankenphp_exit', { code, signal });
     process.exit(code ?? 1);

@@ -80,6 +80,8 @@ final readonly class AppConfig
         public bool $hasArcoPhp = true,
         /** true: the variables live in one S3 object (VariableBundle), the functions keep ARCO_* and a pointer */
         public bool $bundleVariables = false,
+        /** true: the web runtime writes one `{"arco":"request",...}` line per HTTP request */
+        public bool $accessLog = false,
     ) {
     }
 
@@ -156,6 +158,7 @@ final readonly class AppConfig
             notes: $this->notes,
             hasArcoPhp: $hasArcoPhp ?? $this->hasArcoPhp,
             bundleVariables: $this->bundleVariables,
+            accessLog: $this->accessLog,
         );
     }
 

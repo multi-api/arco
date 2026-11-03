@@ -67,3 +67,10 @@ test('security defaults apply unless the app sets the key (CVE-2026-109618/10961
   assert.match(overridden, /php_ini session\.upload_progress\.enabled "1"/);
   assert.doesNotMatch(overridden, /session\.upload_progress\.enabled "0"/);
 });
+
+test('accessLog() sends Caddy access log entries to stdout as JSON', () => {
+  const base = { mode: 'direct', publicDir: 'app/public', workerScript: null, threads: 8, workers: { min: 4, max: 64 }, phpIni: {} };
+  const target = { host: '0.0.0.0', port: 3000, root: '/var/task' };
+  assert.doesNotMatch(buildCaddyfile(base, target), /\blog\b/);
+  assert.match(buildCaddyfile({ ...base, accessLog: true }, target), /\tencode zstd br gzip\n\tlog {\n\t\toutput stdout\n\t\tformat json\n\t}\n\tphp_server\n}/);
+});

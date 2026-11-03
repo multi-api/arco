@@ -42,7 +42,8 @@ final readonly class LogLine
                 return self::platform($data['type'], is_array($data['record'] ?? null) ? Arrays::keyed($data['record']) : []);
             }
             if (is_string($data['arco'] ?? null)) {
-                return new self(self::ARCO, in_array($data['arco'], self::ARCO_ERRORS, true) ? 'error' : 'debug', $line);
+                $requestId = $data['requestId'] ?? null;
+                return new self(self::ARCO, in_array($data['arco'], self::ARCO_ERRORS, true) ? 'error' : 'debug', $line, is_string($requestId) ? $requestId : null);
             }
             if (is_string($data['message'] ?? null) && (isset($data['level_name']) || isset($data['level']))) {
                 return self::app($data['message'], $data);

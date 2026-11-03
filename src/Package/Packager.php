@@ -131,6 +131,9 @@ final class Packager
             'phpIni' => $config->runtime->phpIni === [] ? new \stdClass() : $config->runtime->phpIni,
             // Read by runtime/console.php: commands run as `php <entry> <args>`, or `php <args>` when null.
             'console' => ['entry' => $preset instanceof RunsCommands ? $preset->commandEntry() : null],
+            // accessLog(): runtime/lib/accesslog.js turns Caddy's access log into one `arco: request` line per
+            // request. Only when on, so the package of an app without it keeps its hash.
+            ...($config->accessLog ? ['accessLog' => true] : []),
         ];
     }
 

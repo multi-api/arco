@@ -70,7 +70,13 @@ while (true) {
     $invocation = $api->next();
     try {
         $remaining = $invocation['deadlineMs'] - (int) floor(microtime(true) * 1000);
-        $result = $handler->handle($invocation['body'], $remaining);
+        // The command's Laravel shares them in its log context (multiapi/arco-laravel); _X_AMZN_TRACE_ID is what
+        // Lambda sets for each invocation, which a custom runtime has to pass on itself.
+        $invocationEnv = ['ARCO_REQUEST_ID' => $invocation['requestId']];
+        if ($invocation['traceId'] !== null) {
+            $invocationEnv['_X_AMZN_TRACE_ID'] = $invocation['traceId'];
+        }
+        $result = $handler->handle($invocation['body'], $remaining, $invocationEnv);
         $api->respond($invocation['requestId'], Response::encode($result['exitCode'], $result['output']));
     } catch (InvalidEvent $e) {
         $api->invocationError($invocation['requestId'], 'Arco.InvalidEvent', $e->getMessage());

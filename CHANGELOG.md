@@ -3,6 +3,20 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.19.0
+
+- **Added:** `accessLog()` (environment or app level; `accessLog` in a config layer) makes the web runtime write one
+  JSON line per HTTP request to the web function's log: `{"arco":"request","status":200,"method":"GET","path":"/",
+  "ms":12,"requestId":"..."}`, with the path without its query string and the request id `multiapi/arco-laravel`
+  shares. Caddy writes it, so requests that never reach Laravel are there too. Off by default: it adds CloudWatch
+  ingest ($0.50/GB) and Logs Insights scanning ([Access log](docs/configuration.md#access-log)). `arco info` setting
+  `accessLog`; `arco logs --request=<id>` matches the line.
+- **Added:** `multiapi/arco-laravel` shares `requestId` (the Lambda invocation id) and `traceId` (the X-Ray trace id)
+  in the log context of console commands and queue jobs, and `job` (the job's name) on queue workers; web requests
+  gain `traceId` from `X-Amzn-Trace-Id`. A job's trace is its message's `AWSTraceHeader`, or the trace
+  `multiapi/arco-xray` dispatched it in ([Log context](docs/configuration.md#log-context)). The console runtime
+  passes `ARCO_REQUEST_ID` and `_X_AMZN_TRACE_ID` to each command.
+
 ## 0.18.0
 
 - **Added:** `multiapi/arco-laravel` adds `php artisan arco:failed-jobs`: `--json` prints the failed jobs as one JSON
