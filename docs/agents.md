@@ -214,6 +214,12 @@ There is no command for `variables()`, `permissions()`, `runtime()`, `deployComm
 | `queue:dlq <name>` | Count and a sample (up to 10) of the dead-letter queue | `--env`, `--profile`, `--redrive` (move the messages back: **changes AWS**), `-y/--yes` |
 | `storage:list` | Each storage's bucket, URL and options, and retained buckets no longer in `arco.php` | `--env`, `--profile`, `--json` |
 
+Failed jobs are the app's, not AWS's: read them with `vendor/bin/arco command "arco:failed-jobs --json" --env=<env> -n`
+(`--yes` on a protected environment; one JSON line, `{store, total, queues, jobs}`, the 200 newest with their
+exception), and forget them with
+`arco:failed-jobs --flush [--queue=<url>]`, which works on DynamoDB where `queue:flush` throws
+([Queues](configuration.md#how-it-works)).
+
 ### Existing AWS resources
 
 | Command | What it does | Options |

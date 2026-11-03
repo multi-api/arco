@@ -3,6 +3,14 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.18.0
+
+- **Added:** `multiapi/arco-laravel` adds `php artisan arco:failed-jobs`: `--json` prints the failed jobs as one JSON
+  line (`store`, `total`, `queues`, and `jobs`, the 200 newest with their exception cut to 8 KB), and `--flush`
+  forgets them one by one, which also works on DynamoDB, where `queue:flush` throws; `--queue=<url>` limits either to
+  one queue. A flush honours `FlushFailedCommand::prohibit()`. Arco Cloud's queue panel uses it
+  ([Queues](docs/configuration.md#how-it-works)).
+
 ## 0.17.0
 
 - **Added:** `multiapi/arco-laravel` registers Arco Cloud extensions: the service provider that the `bootstrap.php`

@@ -568,6 +568,15 @@ error is reported and the message is **not** deleted: it comes back, fails again
 queue instead of being lost. `failed()` then runs again on each of those deliveries. Give an app without a
 database for `failed_jobs` the DynamoDB table of [`failedJobsTable()`](#failed-jobs).
 
+`php artisan arco:failed-jobs --json` (from `multiapi/arco-laravel`; on Lambda through `arco command`) lists the
+failed jobs with their exception, and `arco:failed-jobs --flush` forgets them on any failed-jobs store, DynamoDB
+included; Arco Cloud's queue panel uses it. `--queue=<url>` limits either to one queue: failed jobs record the
+queue's full SQS URL. `--json` prints one line,
+`{"store": "database"|"dynamodb", "total": N, "queues": {"<queue URL>": N}, "jobs": [...]}`: `total` and `queues`
+count every matching job, `jobs` holds the 200 newest (`id`, `connection`, `queue`, `job`, `failed_at` and
+`exception`, cut to 8 KB). `--flush` prints `N failed jobs forgotten.` (`{"flushed": N}` with `--json`), and
+refuses, forgetting nothing and exiting with 1, when the app calls `FlushFailedCommand::prohibit()`.
+
 Each queue Arco creates gets a **dead-letter queue** (`<app>-<env>-<name>-dlq`, messages kept 14 days) with
 `maxReceiveCount` = `tries` + 2. It is a safety net, not the retry mechanism: a message only reaches it when
 the worker never answered for it (the function crashed, ran out of memory or hit its Lambda timeout) or the
@@ -1013,7 +1022,8 @@ Stock `config/queue.php` does not read the table's name from the environment, so
 sets `queue.failed` at runtime: driver `dynamodb`, the table, the region and the function's credentials
 (other keys of `queue.failed` stay). Laravel's failed-job handling is unchanged otherwise: `failed()` runs,
 and `queue:failed`, `queue:retry` and `queue:forget` work through `arco command`; `queue:flush` does not
-(Laravel's DynamoDB provider refuses it and points to TTL).
+(Laravel's DynamoDB provider refuses it and points to TTL): use `arco:failed-jobs --flush` instead
+([Queues](#queues)).
 
 Laravel writes each failed job with `expires_at` one week after it failed, and the table's TTL deletes it
 after that: **failed jobs in DynamoDB disappear after about a week**. Retry or copy them before. An
