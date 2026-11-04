@@ -39,6 +39,13 @@ test('worker mode', () => {
     '\tbind 0.0.0.0',
     '\troot * /var/task/app/public',
     '\tencode zstd br gzip',
+    '\t@noRequestId {',
+    '\t\theader !X-Request-ID',
+    '\t\theader !X-Amzn-RequestId',
+    '\t\theader !X-Amz-Request-Id',
+    '\t\theader !X-Amzn-Trace-Id',
+    '\t}',
+    '\trequest_header @noRequestId X-Request-ID {http.request.uuid}',
     '\tphp_server {',
     '\t\tindex frankenphp-worker.php',
     '\t\ttry_files {path} frankenphp-worker.php',
@@ -72,5 +79,5 @@ test('accessLog() sends Caddy access log entries to stdout as JSON', () => {
   const base = { mode: 'direct', publicDir: 'app/public', workerScript: null, threads: 8, workers: { min: 4, max: 64 }, phpIni: {} };
   const target = { host: '0.0.0.0', port: 3000, root: '/var/task' };
   assert.doesNotMatch(buildCaddyfile(base, target), /\blog\b/);
-  assert.match(buildCaddyfile({ ...base, accessLog: true }, target), /\tencode zstd br gzip\n\tlog {\n\t\toutput stdout\n\t\tformat json\n\t}\n\tphp_server\n}/);
+  assert.match(buildCaddyfile({ ...base, accessLog: true }, target), /\trequest_header @noRequestId X-Request-ID {http.request.uuid}\n\tlog {\n\t\toutput stdout\n\t\tformat json\n\t}\n\tlog_append arco_request_id {http.request.uuid}\n\tphp_server\n}/);
 });

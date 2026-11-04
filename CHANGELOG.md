@@ -3,6 +3,14 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.19.1
+
+- **Fixed:** web requests always have a request id. Lambda Web Functions add none of the headers Arco reads it from,
+  so every access log line had `"requestId": null` and Laravel's web log lines had no `context.requestId`. The web
+  runtime now adds `X-Request-ID` (a UUID) to a request that carries none of `X-Request-ID`, `X-Amzn-RequestId`,
+  `X-Amz-Request-Id` and `X-Amzn-Trace-Id`, with or without `accessLog()`; the access line and the app's lines share
+  it. An id the caller sends is kept ([Log context](docs/configuration.md#log-context)).
+
 ## 0.19.0
 
 - **Added:** `accessLog()` (environment or app level; `accessLog` in a config layer) makes the web runtime write one

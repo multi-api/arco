@@ -537,8 +537,9 @@ accepts (1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 18
 - `status` is the response status, `method` the HTTP method, `path` the path without the query string (cut at
   1024 characters), `ms` the time the web server took to answer, in whole milliseconds.
 - `requestId` is the id `multiapi/arco-laravel` puts in the log context of the same request (`context.requestId`
-  of its lines, see [Log context](#log-context)): the caller's `X-Request-ID`, else the id the AWS front end adds.
-  `null` when the request had none.
+  of its lines, see [Log context](#log-context)): the caller's id (`X-Request-ID`, `X-Amzn-RequestId`,
+  `X-Amz-Request-Id` or `X-Amzn-Trace-Id`, in that order), else a UUID the runtime makes up for the request, since
+  Lambda Web Functions add no request id of their own.
 - The line comes from the web server (Caddy, inside FrankenPHP), not from Laravel, so every request is there:
   static files and requests that fail before Laravel boots. Headers, cookies, query strings and the
   client IP are never written.
@@ -559,8 +560,8 @@ work carries them under `context` and the lines of one request, command or job c
 
 | Key | Web function | Console function | Queue workers |
 |---|---|---|---|
-| `requestId` | the caller's `X-Request-ID`, else the id or trace header the AWS front end adds | the Lambda invocation id | the Lambda invocation id (one per SQS batch) |
-| `traceId` | from `X-Amzn-Trace-Id` | from `_X_AMZN_TRACE_ID` | from the message's `AWSTraceHeader`, else `_X_AMZN_TRACE_ID`; with `multiapi/arco-xray`, the trace the job was dispatched in |
+| `requestId` | the caller's `X-Request-ID` (else `X-Amzn-RequestId`, `X-Amz-Request-Id`, `X-Amzn-Trace-Id`); without any, a UUID the runtime adds as `X-Request-ID` (Lambda Web Functions add none), the one in the [access log](#access-log) line | the Lambda invocation id | the Lambda invocation id (one per SQS batch) |
+| `traceId` | from the caller's `X-Amzn-Trace-Id`, when it sends one | from `_X_AMZN_TRACE_ID` | from the message's `AWSTraceHeader`, else `_X_AMZN_TRACE_ID`; with `multiapi/arco-xray`, the trace the job was dispatched in |
 | `job` | | | the job's name (its class, or `displayName()`) |
 
 `traceId` is an X-Ray trace id (`1-<8 hex>-<24 hex>`, the Root of the trace header), left out when there is none.

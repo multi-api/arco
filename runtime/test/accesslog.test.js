@@ -31,6 +31,13 @@ test('takes the request id from the same headers, in the same order, as ShareReq
   assert.equal(requestLine(caddyEntry({ headers: { 'X-Request-Id': ['x'.repeat(300)] } })).requestId.length, 200);
 });
 
+test('without a request id header, takes the one the runtime made up for the request', () => {
+  const uuid = '7dad1fdc-c383-450b-9554-2855bdb8a868';
+  assert.equal(requestLine(caddyEntry({ headers: {} }, { arco_request_id: uuid })).requestId, uuid);
+  assert.equal(requestLine(caddyEntry({ headers: { 'X-Request-Id': ['mine'] } }, { arco_request_id: uuid })).requestId, 'mine', 'the caller\'s id wins, as in Laravel');
+  assert.equal(Object.keys(requestLine(caddyEntry({}, { arco_request_id: uuid }))).length, 6);
+});
+
 test('rounds the duration to whole milliseconds and keeps only the five fields', () => {
   const line = requestLine(caddyEntry({ headers: { Cookie: ['REDACTED'] } }));
   assert.deepEqual(Object.keys(line), ['arco', 'status', 'method', 'path', 'ms', 'requestId']);

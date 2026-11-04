@@ -11,7 +11,7 @@ composer require multiapi/arco-laravel:^0.12
 vendor/bin/arco info --env=staging     # validation runs here: errors and deprecations name the fix
 ```
 
-## Unreleased
+## Upgrading to 0.19
 
 Nothing is required. With the new `multiapi/arco-laravel`, the JSON log lines of console commands and queue jobs
 carry `requestId` and `traceId` in their `context` (jobs also `job`), and web lines gain `traceId`

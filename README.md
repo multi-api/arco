@@ -198,6 +198,9 @@ Messages are in English or Spanish (`--lang=es` or `ARCO_LANG=es`).
 The packages are published from one monorepo. Please open issues in
 [`multi-api/arco`](https://github.com/multi-api/arco/issues).
 
+Questions, ideas and show-and-tell go to
+[GitHub Discussions](https://github.com/multi-api/arco/discussions).
+
 ## License
 
 MIT

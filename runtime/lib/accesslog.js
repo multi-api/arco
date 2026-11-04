@@ -35,7 +35,9 @@ function requestLine(entry) {
     path: uri.split('?', 1)[0].slice(0, MAX_PATH),
     // Caddy reports the duration in seconds.
     ms: typeof entry.duration === 'number' ? Math.round(entry.duration * 1000) : 0,
-    requestId: requestId(request.headers),
+    // lib/caddyfile.js adds X-Request-ID to a request without any of these headers, after Caddy recorded them:
+    // the entry carries that id as arco_request_id.
+    requestId: requestId(request.headers) ?? (typeof entry.arco_request_id === 'string' && entry.arco_request_id !== '' ? entry.arco_request_id : null),
   };
 }
 
