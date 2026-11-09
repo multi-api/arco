@@ -3,6 +3,23 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.19.2
+
+- **Security:** the default runtime build is now `php8.5.12-fp1.13.5-r1` (FrankenPHP 1.13.5, PHP 8.5.12). FrankenPHP
+  1.13.5 fixes 17 vulnerabilities, among them a `php_server` path that could run an uploaded non-PHP file as PHP, an
+  HTTP/2 `Host` spoofing issue and slow request bodies that block every PHP thread, and it moves to Caddy 2.11.9
+  ([FrankenPHP 1.13.5](https://github.com/php/frankenphp/releases/tag/v1.13.5)). Redeploy every environment
+  (`arco deploy`). Apps that pin an older build with `->runtime(fn (Runtime $r) => $r->build(...))` keep it: remove
+  the pin or move it to the new build.
+- **Changed:** in worker mode (Octane), FrankenPHP 1.13.5 resets only the state built from the HTTP request between
+  requests: `error_get_last()`, `libxml` errors, `strtok()` and `http_get_last_response_headers()` now persist like
+  other userland state ([Upgrading](docs/upgrading.md#upgrading-to-0192-security)).
+- **Changed:** the runtime build includes the `msgpack` extension (FrankenPHP 1.13.5 builds it in), on the web
+  function and in the console's PHP CLI.
+- **Changed:** the E2E suite and the [local Floci guide](docs/local-floci.md) now use Floci `nightly-11082026`, which
+  accepts Web Function code up to 512 MiB unzipped as AWS does (the earlier pin refused more than 250 MiB, and the
+  example app with FrankenPHP 1.13.5 unzips to 254 MiB).
+
 ## 0.19.1
 
 - **Fixed:** web requests always have a request id. Lambda Web Functions add none of the headers Arco reads it from,

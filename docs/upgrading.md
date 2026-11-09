@@ -11,6 +11,20 @@ composer require multiapi/arco-laravel:^0.12
 vendor/bin/arco info --env=staging     # validation runs here: errors and deprecations name the fix
 ```
 
+## Upgrading to 0.19.2 (security)
+
+Upgrade and redeploy every environment. The default runtime build becomes `php8.5.12-fp1.13.5-r1`: FrankenPHP 1.13.5
+fixes 17 vulnerabilities ([release notes](https://github.com/php/frankenphp/releases/tag/v1.13.5)). An already
+deployed environment keeps its old binary until you run `arco deploy`.
+
+- If `arco.php` pins a build (`$r->build(...)`) or a FrankenPHP version (`$r->frankenphp('1.13.1')`), remove the pin
+  or move it to `php8.5.12-fp1.13.5-r1`.
+- Worker mode (Octane): between requests FrankenPHP now resets only request state (superglobals except `$_ENV`, the
+  body, response headers and output, the session). `error_get_last()`, `libxml_get_errors()`, `strtok()` and
+  `http_get_last_response_headers()` keep their value from the previous request: call `error_clear_last()`,
+  `libxml_clear_errors()` or `http_clear_last_response_headers()` before reading them if your code relies on a clean
+  state.
+
 ## Upgrading to 0.19
 
 Nothing is required. With the new `multiapi/arco-laravel`, the JSON log lines of console commands and queue jobs

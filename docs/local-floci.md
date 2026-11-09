@@ -8,14 +8,14 @@ staging deploy.
 ## Start Floci
 
 Lambda Web Functions exist only in Floci's `nightly-*` images so far (release 2.3.0 does not have them). Arco's own
-end-to-end suite is tested with `floci/floci:nightly-10192026`; use that tag, or a newer one, until a Floci release
+end-to-end suite is tested with `floci/floci:nightly-11082026`; use that tag, or a newer one, until a Floci release
 ships Web Functions.
 
 ```bash
 docker run --rm -d --name floci -p 4566:4566 \
   -e FLOCI_BASE_URL=http://localhost:4566 \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  floci/floci:nightly-10192026
+  floci/floci:nightly-11082026
 ```
 
 - `FLOCI_BASE_URL` is the URL you reach Floci at from your machine. Floci puts that host and port in the function
