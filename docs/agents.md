@@ -680,7 +680,7 @@ not. The most common ones:
 | `validation.schedule_name`, `validation.schedule_every`, `validation.schedule_timeout` | Bad schedule name, `every` (`5m`, `1h`, `1d` or 5-field cron in UTC) or `timeout` (1 to 900) | Fix the schedule |
 | `validation.queue_variable_collision` | Two queue names give the same `ARCO_QUEUE_<NAME>_URL` | Rename one queue |
 | `validation.queue_route_php`, `validation.schedules_php` | A queue `route` or `schedules` in a PHP app | Remove them; PHP apps use `scheduler()` |
-| `config.layer_adopt_waiting` (note) | A layer `adopt: true` entry waits because `arco.php` still declares the name | Remove the name from `arco.php` |
+| `config.layer_adopt_waiting` (note) | A layer `adopt: true` entry waits because `arco.php` or `arco.json` (`file`) still declares the name | Remove the name from that file |
 | `config.removed_*`, `config.changed_*` | API removed or renamed in 0.9 | Apply the replacement the message gives ([Upgrading](upgrading.md)) |
 | `validation.*` | A value out of range or a bad name (`validation.region`, `validation.timeout`, `validation.queue_name`, `validation.bucket_name_length`, `validation.vpc_id`, ...) | The message names the rule; fix the value in `arco.php`. Name length errors need a shorter app, environment or resource name |
 | `validation.reserved_arco_variable` | A variable named `ARCO*` | Rename it |

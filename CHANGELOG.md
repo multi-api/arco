@@ -3,6 +3,16 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.20.4
+
+- **Added:** a config layer schedule accepts `adopt` (boolean), like queues, storage and tables. While `arco.json`
+  declares the name, `arco.json`'s entry is used and `config.layer_adopt_waiting` is noted instead of
+  `config.layer_conflict`; once it does not, the layer's entry is used. The rule name does not depend on where the
+  schedule is declared, so the same rule is updated in place and the schedule never goes missing between deploys.
+  `adopt` never reaches the resolved schedule (`info --resources --json` still lists `{every, route, timeout}`).
+- **Changed:** `config.layer_adopt_waiting` gains the param `file` (`arco.php`, or `arco.json` for a process app), and
+  its message names that file instead of always saying `arco.php`.
+
 ## 0.20.3
 
 - **Added:** `arco info --resources --json` has `schedules`, appended after `config` (before `error`): the same list as

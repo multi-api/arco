@@ -258,8 +258,12 @@ final class ConfigResolver
             $sources['permissions'] = 'cloud';
         }
 
-        // The params name the file the layer conflicts with: arco.json for a process app, arco.php otherwise.
+        // The params name the file the layer conflicts with (or waits for): arco.json for a process app, arco.php otherwise.
         $file = isset($raw['process']) ? 'arco.json' : 'arco.php';
+        $notes = array_map(
+            static fn (array $note): array => $note['key'] === 'config.layer_adopt_waiting' ? ['key' => $note['key'], 'params' => $note['params'] + ['file' => $file]] : $note,
+            $notes,
+        );
         $errors = array_map(
             static fn (array $error): array => ['key' => $error['key'], 'params' => $error['params'] + ['file' => $file]],
             array_merge(...array_values($conflicts)),

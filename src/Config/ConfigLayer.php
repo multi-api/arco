@@ -29,7 +29,7 @@ final readonly class ConfigLayer
         'timeout' => 'int', 'memory' => 'int', 'maxInstances' => 'int', 'batchSize' => 'int', 'tries' => 'int',
         'dlq' => 'bool', 'fifo' => 'bool', 'default' => 'bool', 'adopt' => 'bool', 'existing' => 'string', 'route' => 'string',
     ];
-    private const SCHEDULE = ['every' => 'string', 'route' => 'string', 'timeout' => 'int'];
+    private const SCHEDULE = ['every' => 'string', 'route' => 'string', 'timeout' => 'int', 'adopt' => 'bool'];
     private const STORAGE = [
         'public' => 'strings', 'expire' => 'intmap', 'cors' => 'strings', 'existing' => 'string',
         'default' => 'bool', 'adopt' => 'bool',

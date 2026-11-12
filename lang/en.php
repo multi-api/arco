@@ -25,7 +25,7 @@ return [
     'config.json_php_runtime' => 'arco.json is for process apps: "runtime.kind" cannot be "php" yet. Use arco.php for PHP apps.',
     'config.layer_environment' => 'The config layer is for environment "{layer}", not "{environment}".',
     'config.layer_conflict' => 'The config layer and {file} both set {kind} "{name}" differently. Remove it from one of them.',
-    'config.layer_adopt_waiting' => '{kind} "{name}" is still declared in arco.php, so the config layer\'s entry waits: remove it from arco.php to hand it over.',
+    'config.layer_adopt_waiting' => '{kind} "{name}" is still declared in {file}, so the config layer\'s entry waits: remove it from {file} to hand it over.',
     'config.env_required' => 'This project declares no environments. Pass the one to use with --env.',
     'config.choose_environment' => 'This project has several environments. Pass one with --env: {available}.',
     'validation.app_name' => 'App name "{name}" must start with a lowercase letter and contain only lowercase letters, digits and hyphens.',

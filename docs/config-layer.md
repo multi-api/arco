@@ -109,10 +109,12 @@ Named entries take the options of the `arco.php` methods, plus `adopt` (see
 | table | `adopt` | boolean |
 | schedule | `every`, `route` | string |
 | schedule | `timeout` | integer |
+| schedule | `adopt` | boolean |
 
 Each entry is an object (`{}` for all defaults). Not accepted: the deprecated queue `concurrency`, `false` (a layer
-cannot remove what `arco.php` declares) and `adopt` together with `existing`. Schedules have no `adopt` (an EventBridge
-rule holds no data), and a layer with `schedules` on a PHP app fails with `validation.schedules_php`. What schedule
+cannot remove what `arco.php` declares) and `adopt` together with `existing`. A schedule's `adopt` only hands the name
+over from `arco.json` (see [Moving a schedule](#moving-a-schedule)), and a layer with `schedules` on a PHP app fails
+with `validation.schedules_php`. What schedule
 and queue route options mean is in [Process runtime (Go)](configuration.md#schedules).
 
 ### Strictness
@@ -175,8 +177,8 @@ with `adopt: true` takes one of them back. It exists only in the layer; `arco.ph
 resources that were not made by Arco.
 
 - While `arco.php` still declares the name, the layer's entry waits: it is ignored and a note
-  `config.layer_adopt_waiting` (`{kind, name}`, an NDJSON `warning`) says so. Remove the name from `arco.php` to hand
-  it over.
+  `config.layer_adopt_waiting` (`{kind, name, file}`, an NDJSON `warning`; `file` is `arco.php`, or `arco.json` for a
+  process app) says so. Remove the name from `arco.php` to hand it over.
 - Otherwise the entry is used like any layer entry, and at deploy the resources step decides:
   - the resources stack already owns it: a normal update (the usual hand-over, because the name left `arco.php` in
     the same deploy);
@@ -209,6 +211,17 @@ written. A read the profile is denied during the checks is reported like it is w
 refused `s3:HeadBucket`, and the usual retained refusal for tags that cannot be read. The permissions an import
 needs are in [Permissions for queues](getting-started.md#permissions-for-queues) and [for storage and
 tables](getting-started.md#permissions-for-storage-and-tables).
+
+### Moving a schedule
+
+A schedule's EventBridge rule holds no data and its name comes from the app, environment and schedule name alone, so
+there is nothing to import: `adopt: true` on a layer schedule only lets the entry wait instead of conflicting. While
+`arco.json` declares the name, `arco.json`'s entry is used and `config.layer_adopt_waiting` (`file` `arco.json`) is
+noted; once `arco.json` no longer declares it, the layer's `{every, route, timeout}` is used. The deploy updates the
+same rule in place (`deploy.schedule_updated`), never deleting and recreating it, and a paused schedule stays paused.
+So the layer can declare the schedule with `adopt: true` before the name leaves `arco.json`, and no deploy runs
+without it. `adopt` is not an option of the resolved schedule: `info --resources --json` lists it as
+`{every, route, timeout}` with source `cloud`.
 
 ## Inventory
 
@@ -285,7 +298,7 @@ $types = $inventory->collect($config, $aws, null, ResourceType::cases(), functio
 | `config.layer_missing` | `key` | No `arco.php` and no `name` or `region` in the layer |
 | `config.layer_environment` | `layer`, `environment` | `--env` is not the layer's environment |
 | `config.layer_conflict` | `kind`, `name`, `file` | The layer sets differently what `arco.php` or `arco.json` (`file`) sets (one error per conflict) |
-| `config.layer_adopt_waiting` | `kind`, `name` | Note: an `adopt` entry waits for `arco.php` to let go of the name |
+| `config.layer_adopt_waiting` | `kind`, `name`, `file` | Note: an `adopt` entry waits for `arco.php` or `arco.json` (`file`) to let go of the name |
 | `config.both_files` | | The project has both `arco.php` and `arco.json` |
 | `config.json_invalid` | `pointer`, `reason` | `arco.json`: parse error, unknown key, wrong type |
 | `config.json_missing` | `key` | Neither `arco.json` nor the layer sets `name` or `region` |
