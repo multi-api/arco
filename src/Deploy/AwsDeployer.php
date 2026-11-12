@@ -75,6 +75,8 @@ final class AwsDeployer implements Deployer
         $guard = new OwnershipGuard($this->aws);
         $names = [];
         $resources = [];
+        /** @var list<NamedResource|null> $classic the console and the workers */
+        $classic = [];
         if ($config->role === null) {
             $role = $guard->role($names[] = ExecutionRole::roleName($config));
             // Before any change (bucket, upload, policy), and even with --force: it overrides ownership, not the region.
@@ -85,9 +87,9 @@ final class AwsDeployer implements Deployer
         }
         $resources[] = $web = $guard->webFunction($names[] = $config->functionName(), self::prefix($config));
         // Checked whether the console is on or off: a deploy updates it, or deletes it once verified.
-        $resources[] = $guard->lambdaFunction($names[] = $config->consoleFunctionName(), OwnershipGuard::CONSOLE_MARKER);
+        $resources[] = $classic[] = $guard->lambdaFunction($names[] = $config->consoleFunctionName(), OwnershipGuard::CONSOLE_MARKER);
         foreach ($config->queues as $queue) {
-            $resources[] = $guard->lambdaFunction($names[] = $config->workerFunctionName($queue->name), OwnershipGuard::WORKER_MARKER);
+            $resources[] = $classic[] = $guard->lambdaFunction($names[] = $config->workerFunctionName($queue->name), OwnershipGuard::WORKER_MARKER);
         }
         $rule = $guard->schedulerRule(SchedulerRule::name($config));
         if ($rule !== null && OwnershipGuard::isUndescribed($rule) && ! ($config->consoleEnabled() && $config->scheduler !== null)) {
@@ -98,10 +100,22 @@ final class AwsDeployer implements Deployer
             $names[] = SchedulerRule::name($config);
         }
         $resources[] = $rule;
+        // A process app's schedule rules, by the names this deploy will put: refused here, before the web
+        // revision moves, rather than in the schedule step. Checked only, never claimed: with --force the
+        // schedule step takes a rule over (and warns), and checks again as it runs.
+        $scheduleRules = [];
+        if ($config->isProcess()) {
+            foreach ($config->schedules as $schedule) {
+                $scheduleRules[] = $guard->schedulerRule(ProcessSchedules::ruleName($config, $schedule->name));
+            }
+        }
         // Read-only, before claim() tags anything: a stack refusal later would come after those tags.
         $this->checkStacks($config);
         // Refusals first: nothing more is read of a resource that is not this environment's.
-        $guard->check($config, array_values(array_filter($resources)), $this->force);
+        $guard->check($config, array_values(array_filter([...$resources, ...$scheduleRules])), $this->force);
+        // Before claim() tags anything, and even with --force: the console or a worker of the other kind (PHP
+        // vs process) would keep its runtime through an update, and run code it cannot start.
+        self::refuseKindChange($config, array_values(array_filter($classic)));
         // prepare() needs the connector the live revision pins: the one to keep with vpc(), or a leftover
         // to remove without it. A lambda-web read; lambda-core is only asked with vpc() or once a revision pins one.
         $live = null;
@@ -128,6 +142,23 @@ final class AwsDeployer implements Deployer
         $guard->claim($config, array_values(array_filter($resources)), $this->force, $onStep);
         foreach ($names as $name) {
             $this->verified[$name] = true;
+        }
+    }
+
+    /**
+     * Refuses an environment whose existing console or worker runs the other kind's runtime family: provided.*
+     * for PHP, nodejs* for a process app. A function whose runtime was not returned is not judged.
+     *
+     * @param list<NamedResource> $functions
+     * @throws DeployException deploy.runtime_kind_changed
+     */
+    private static function refuseKindChange(AppConfig $config, array $functions): void
+    {
+        $family = $config->isProcess() ? 'nodejs' : 'provided.';
+        foreach ($functions as $function) {
+            if ($function->runtime !== null && ! str_starts_with($function->runtime, $family)) {
+                throw DeployException::make('deploy.runtime_kind_changed', ['function' => $function->name, 'runtime' => $function->runtime]);
+            }
         }
     }
 
@@ -734,15 +765,18 @@ final class AwsDeployer implements Deployer
         } catch (AwsException $e) {
             $step('deploy.prune_packages_failed', ['bucket' => $prepared->bucket, 'error' => self::awsError($e)]);
         }
-        try {
-            // Shared by every Arco app of the account and region: a binary goes only when no published
-            // version of any Arco function references it (each can be rolled back to). This deploy's own
-            // binary is kept outright: the tag listing may not show a function created seconds ago.
-            $aws = $this->aws;
-            (new RuntimeBinaries($aws->taggingApi(), $aws->lambda(), $aws->s3()))
-                ->prune($prepared->bucket, (new \DateTimeImmutable())->setTimestamp((int) $this->sleeper->now()), $prepared->binaryKey === null ? [] : [$prepared->binaryKey]);
-        } catch (\Exception $e) {
-            $step('deploy.prune_runtime_failed', ['bucket' => $prepared->bucket, 'error' => $e instanceof AwsException ? self::awsError($e) : $e->getMessage()]);
+        // A process app uses no FrankenPHP binary: the account-wide clean-up is left to the PHP deploys.
+        if (! $config->isProcess()) {
+            try {
+                // Shared by every Arco app of the account and region: a binary goes only when no published
+                // version of any Arco function references it (each can be rolled back to). This deploy's own
+                // binary is kept outright: the tag listing may not show a function created seconds ago.
+                $aws = $this->aws;
+                (new RuntimeBinaries($aws->taggingApi(), $aws->lambda(), $aws->s3()))
+                    ->prune($prepared->bucket, (new \DateTimeImmutable())->setTimestamp((int) $this->sleeper->now()), $prepared->binaryKey === null ? [] : [$prepared->binaryKey]);
+            } catch (\Exception $e) {
+                $step('deploy.prune_runtime_failed', ['bucket' => $prepared->bucket, 'error' => $e instanceof AwsException ? self::awsError($e) : $e->getMessage()]);
+            }
         }
         if ($prepared->leftVpc) {
             // Before the next deploy drops the ENI statements from the execution role, which Lambda needs to delete them.
@@ -1085,6 +1119,8 @@ final class AwsDeployer implements Deployer
                 $networks = null;
             }
         }
+        // A process app's schedule rules, found by tag (so all this environment's), read before anything is deleted.
+        $scheduleRules = $config->isProcess() ? $this->scheduleRulesToRemove($config, $step) : [];
         if ($config->domains !== [] || $this->stackExists($config)) {
             $this->customDomains($config)->remove($config, $step);
         }
@@ -1092,6 +1128,10 @@ final class AwsDeployer implements Deployer
         if ($this->schedulerRuleExists($config, fn (string $error) => $step('remove.scheduler_unreadable', ['rule' => SchedulerRule::name($config), 'error' => $error]))) {
             $step('remove.step_scheduler', ['rule' => SchedulerRule::name($config)]);
             $this->schedulerRule()->delete($config);
+        }
+        foreach ($scheduleRules as $rule) {
+            $step('remove.step_schedule', ['schedule' => $rule['schedule'], 'rule' => $rule['rule']]);
+            $this->processSchedules()->delete($config, $rule['schedule'], $rule['rule']);
         }
         $this->removeWorkers($config, $queues, $step);
         $this->removeResources($config, $step);
@@ -1258,6 +1298,23 @@ final class AwsDeployer implements Deployer
     }
 
     /**
+     * The schedule rules of a process environment (ProcessSchedules::all()). A failed lookup is a warning: the
+     * rules, if any, are left (they then fail to invoke the removed console).
+     *
+     * @param callable(string, array<string, string|int>): void $step
+     * @return list<array{schedule: string, rule: string, state: string}>
+     */
+    private function scheduleRulesToRemove(AppConfig $config, callable $step): array
+    {
+        try {
+            return $this->processSchedules()->all($config);
+        } catch (AwsException $e) {
+            $step('remove.schedule_scan_failed', ['error' => self::errorText($e)]);
+            return [];
+        }
+    }
+
+    /**
      * Deletes the event source mappings and functions of the environment's workers (workerQueues()).
      *
      * @param list<string> $queues
@@ -1312,8 +1369,11 @@ final class AwsDeployer implements Deployer
     public function removeConsole(AppConfig $config, Closure $onStep): void
     {
         $this->claimOne($config, $config->consoleFunctionName(), fn (OwnershipGuard $guard) => $guard->lambdaFunction($config->consoleFunctionName(), OwnershipGuard::CONSOLE_MARKER), $onStep);
-        // The scheduler rule goes before the function it invokes.
-        $this->removeScheduler($config, $onStep);
+        // The scheduler rule goes before the function it invokes. A process app has no Laravel rule: its
+        // schedule rules went in syncScheduler(), which the pipeline runs first.
+        if (! $config->isProcess()) {
+            $this->removeScheduler($config, $onStep);
+        }
         $this->consoleFunction()->delete($config->consoleFunctionName());
         $onStep('deploy.console_removed', ['function' => $config->consoleFunctionName()]);
     }
@@ -1336,6 +1396,11 @@ final class AwsDeployer implements Deployer
 
     public function syncScheduler(AppConfig $config, Closure $onStep): void
     {
+        if ($config->isProcess()) {
+            // Never the Laravel rule: a process app has one rule per schedule.
+            $this->syncProcessSchedules($config, $onStep);
+            return;
+        }
         if ($config->scheduler === null) {
             // Without EventBridge read access, only a rule this console's alias still lets in is worth a warning.
             $unreadable = function (string $error) use ($config, $onStep): void {
@@ -1358,6 +1423,20 @@ final class AwsDeployer implements Deployer
         if ($paused) {
             $onStep('deploy.scheduler_paused', ['environment' => $config->environment]);
         }
+    }
+
+    /**
+     * A process app's schedule rules, pointed at the console's live alias; called after verification, with
+     * or without schedules (none left: only the stale rules go, see ProcessSchedules::sync()).
+     */
+    private function syncProcessSchedules(AppConfig $config, Closure $onStep): void
+    {
+        $alias = null;
+        if ($config->schedules !== []) {
+            $function = $config->consoleFunctionName();
+            $alias = $this->consoleFunction()->aliasArn($function) ?? throw DeployException::make('deploy.console_missing', ['function' => $function]);
+        }
+        $this->processSchedules()->sync($config, $alias, self::tags($config), $onStep, $this->force);
     }
 
     /** Days CloudWatch keeps the logs of an environment without a logRetention() setting. */
@@ -1450,6 +1529,16 @@ final class AwsDeployer implements Deployer
                 // Unknown without EventBridge read access; the rest of the status still shows.
             }
         }
+        $schedules = [];
+        if ($config->isProcess()) {
+            try {
+                foreach ($this->processSchedules()->rules($config) as $name => $rule) {
+                    $schedules[$name] = $rule['state'] === ProcessSchedules::DISABLED;
+                }
+            } catch (AwsException) {
+                // Unknown without tag:GetResources or EventBridge read access; the rest of the status still shows.
+            }
+        }
         $vpc = null;
         if (RevisionFactory::usesVpc($config)) {
             try {
@@ -1479,6 +1568,7 @@ final class AwsDeployer implements Deployer
             $located?->account,
             $vpc,
             $endpoints,
+            $schedules,
         );
     }
 
@@ -1938,6 +2028,11 @@ final class AwsDeployer implements Deployer
     private function workerFunctions(): WorkerFunctions
     {
         return new WorkerFunctions($this->aws->lambda(), $this->sleeper, new Queues($this->aws->sqs(), $this->aws->lambda()), $this->aws->taggingApi());
+    }
+
+    private function processSchedules(): ProcessSchedules
+    {
+        return new ProcessSchedules($this->aws->eventBridge(), $this->aws->lambda(), $this->aws->taggingApi());
     }
 
     private function schedulerRule(): SchedulerRule

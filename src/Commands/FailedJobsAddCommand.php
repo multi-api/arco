@@ -3,6 +3,7 @@
 namespace Multiapi\Arco\Commands;
 
 use Multiapi\Arco\Cli\ArcoCommand;
+use Multiapi\Arco\Cli\LaravelOnly;
 use Multiapi\Arco\Commands\Concerns\EditsTables;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
 use Symfony\Component\Console\Attribute\AsCommand;
@@ -13,7 +14,7 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 use Throwable;
 
 #[AsCommand(name: 'failed-jobs:add', description: 'Turn the DynamoDB failed-jobs table on in arco.php')]
-final class FailedJobsAddCommand extends ArcoCommand
+final class FailedJobsAddCommand extends ArcoCommand implements LaravelOnly
 {
     use ResolvesTarget;
     use EditsTables;

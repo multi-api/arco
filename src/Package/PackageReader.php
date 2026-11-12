@@ -70,7 +70,8 @@ final class PackageReader
             throw BuildException::make('package.wrong_preset', ['path' => $package->path, 'package_preset' => $manifest->preset, 'preset' => $preset->name()]);
         }
 
-        if (! self::hasEntry($package->path, 'bootstrap')) {
+        // The console and workers start from bootstrap (PHP) or worker.js (a process app).
+        if (! self::hasEntry($package->path, $config->isProcess() ? 'worker.js' : 'bootstrap')) {
             throw BuildException::make('package.no_console_runtime', ['path' => $package->path]);
         }
 

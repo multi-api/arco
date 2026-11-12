@@ -3,6 +3,7 @@
 namespace Multiapi\Arco\Commands;
 
 use Multiapi\Arco\Cli\ArcoCommand;
+use Multiapi\Arco\Cli\LaravelOnly;
 use Multiapi\Arco\Commands\Concerns\EditsSettings;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
 use Symfony\Component\Console\Attribute\AsCommand;
@@ -13,7 +14,7 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 use Throwable;
 
 #[AsCommand(name: 'unset', description: 'Remove a setting from arco.php so the inherited or default value applies')]
-final class UnsetCommand extends ArcoCommand
+final class UnsetCommand extends ArcoCommand implements LaravelOnly
 {
     use ResolvesTarget;
     use EditsSettings;

@@ -118,7 +118,8 @@ final class ResourcesStack
             if ($dlqName !== null) {
                 $properties['RedrivePolicy'] = [
                     'deadLetterTargetArn' => ['Fn::GetAtt' => [self::dlqLogicalId($queue->name), 'Arn']],
-                    'maxReceiveCount' => $queue->tries + self::EXTRA_RECEIVES,
+                    // A process sees every receive (the PHP worker spends some on its own guards): tries is the limit.
+                    'maxReceiveCount' => $queue->tries + ($config->isProcess() ? 0 : self::EXTRA_RECEIVES),
                 ];
             }
             $properties['Tags'] = self::tags($config, "queue:{$queue->name}");

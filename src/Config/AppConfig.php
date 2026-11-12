@@ -13,6 +13,7 @@ final readonly class AppConfig
      * @param list<string> $domains
      * @param list<string> $deployCommands
      * @param list<QueueConfig> $queues
+     * @param list<ScheduleConfig> $schedules
      * @param list<StorageConfig> $storage
      * @param list<GenericTableConfig> $tables
      * @param list<array{key: string, params: array<string, string|int>}> $notes
@@ -82,6 +83,10 @@ final readonly class AppConfig
         public bool $bundleVariables = false,
         /** true: the web runtime writes one `{"arco":"request",...}` line per HTTP request */
         public bool $accessLog = false,
+        /** null: the PHP runtime */
+        public ?ProcessRuntime $process = null,
+        /** process apps: declaration order, app level first */
+        public array $schedules = [],
     ) {
     }
 
@@ -159,6 +164,8 @@ final readonly class AppConfig
             hasArcoPhp: $hasArcoPhp ?? $this->hasArcoPhp,
             bundleVariables: $this->bundleVariables,
             accessLog: $this->accessLog,
+            process: $this->process,
+            schedules: $this->schedules,
         );
     }
 
@@ -203,9 +210,18 @@ final readonly class AppConfig
         return null;
     }
 
-    /** Whether the console function is deployed: asked for, or needed by the scheduler. */
+    /** Whether the app runs a process (Go, ...) instead of PHP. */
+    public function isProcess(): bool
+    {
+        return $this->process !== null;
+    }
+
+    /** Whether the console function is deployed: asked for, or needed by the scheduler (a process app: by its schedules). */
     public function consoleEnabled(): bool
     {
+        if ($this->isProcess()) {
+            return $this->schedules !== [];
+        }
         return $this->console === true || $this->scheduler !== null;
     }
 

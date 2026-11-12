@@ -55,6 +55,9 @@ vendor/bin/arco deploy --env=production
   point at one you already have (`existing:`), and removed ones stay in AWS with their data.
 - **Custom domains** in one line: certificate, CloudFront and DNS records, with the DNS zone in the
   same AWS account, another account, Cloudflare, or outside AWS.
+- **Go apps.** A Go HTTP server with an `arco.json` deploys the same way (`composer global require
+  multiapi/arco`, no Composer project needed), with queues and schedules delivered to routes of the app
+  ([Process runtime (Go)](docs/configuration.md#process-runtime-go)).
 
 ## Configuring `arco.php`
 
@@ -136,12 +139,12 @@ Every option, the packaging rules and the Laravel preset are in the
 | Command | What it does |
 |---|---|
 | `arco init` | Create `arco.php` (asks name, region, environments, custom domain) |
-| `arco deploy --env=<env>` | Build, upload, deploy commands, deploy, verify, attach domains; `--migrate` runs migrations first; `--package=<zip>` deploys a prebuilt zip; `--config-layer=<path>` merges a [JSON config layer](docs/config-layer.md) over `arco.php` (also on `package`, `info`, `remove`, `logs`); `--json` streams NDJSON events and a result |
+| `arco deploy --env=<env>` | Build, upload, deploy commands, deploy, verify, attach domains; `--migrate` runs migrations first; `--package=<zip>` deploys a prebuilt zip; `--config-layer=<path>` merges a [JSON config layer](docs/config-layer.md) over `arco.php` (also on `package`, `info`, `remove`, `logs`, `scheduler:pause`, `scheduler:resume`); `--json` streams NDJSON events and a result |
 | `arco console:add --env=<env>` / `console:remove` | Turn the console function on or off in `arco.php` (off deletes it on the next deploy) |
 | `arco command "<args>" --env=<env>` | Run an artisan (or PHP) command, given as one quoted string, on the console function (needs `console()`); exits with its exit code (`--async` to start it and return; `--yes` on a protected environment without a terminal) |
 | `arco tinker --env=<env>` | Tinker on your machine, statements run in Lambda (needs `console()`; `--execute="<code>"` for one statement) |
 | `arco scheduler:set [N] --env=<env>` / `scheduler:remove` | Run Laravel's scheduler every N minutes (suggests N from your tasks; turns the console on) / turn it off; `--apply` (or answer yes) applies it in AWS without a deploy |
-| `arco scheduler:pause --env=<env>` / `scheduler:resume` | Pause or resume the scheduler in AWS at once, without editing `arco.php` (deploys keep it paused) |
+| `arco scheduler:pause --env=<env>` / `scheduler:resume` (both take `--config-layer`) | Pause or resume the scheduler (in a Go app, every schedule) in AWS at once, without editing `arco.php` or `arco.json` (deploys keep it paused) |
 | `arco logs:retention <days\|never> --env=<env>` | Set how long CloudWatch keeps the logs (`--remove` stops managing it) |
 | `arco queue:add <name> --env=<env>` / `queue:set` / `queue:remove` | Add, change or remove a queue in `arco.php` (removed queues stay in AWS with their messages) |
 | `arco queue:list --env=<env>` | Each queue's messages, dead-letter queue and worker version (`--json` too) |

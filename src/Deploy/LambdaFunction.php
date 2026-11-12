@@ -63,9 +63,9 @@ final class LambdaFunction
      * @param array{S3Bucket: string, S3Key: string, S3ObjectVersion?: string} $code
      * @param array<string, string> $tags
      */
-    public function request(string $name, string $handler, array $code, array $settings, array $tags, bool $roleJustCreated = false): FunctionDeploy
+    public function request(string $name, string $handler, array $code, array $settings, array $tags, bool $roleJustCreated = false, string $runtime = self::RUNTIME): FunctionDeploy
     {
-        return new FunctionDeploy($this, $name, $handler, $code, $settings, $tags, $roleJustCreated);
+        return new FunctionDeploy($this, $name, $handler, $code, $settings, $tags, $roleJustCreated, $runtime);
     }
 
     /**
@@ -95,9 +95,9 @@ final class LambdaFunction
             if (! isset($existing[$deploy->name])) {
                 LambdaHelpers::retryRolePropagation($sleeper, $deploy->roleJustCreated, self::ROLE_ERRORS, fn () => $function->execute('CreateFunction', [
                     'FunctionName' => $deploy->name,
-                    'Runtime' => self::RUNTIME,
+                    'Runtime' => $deploy->runtime,
                     'Architectures' => ['arm64'],
-                    // provided.al2023 runs bootstrap; the handler is unused.
+                    // provided.al2023 runs bootstrap and the handler is unused; nodejs24.x runs worker.handler.
                     'Handler' => $deploy->handler,
                     'Code' => $deploy->code,
                     'Tags' => $deploy->tags,

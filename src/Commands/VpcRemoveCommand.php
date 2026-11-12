@@ -3,6 +3,7 @@
 namespace Multiapi\Arco\Commands;
 
 use Multiapi\Arco\Cli\ArcoCommand;
+use Multiapi\Arco\Cli\LaravelOnly;
 use Multiapi\Arco\Commands\Concerns\EditsSettings;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
 use Multiapi\Arco\Config\ArcoFileEditor;
@@ -13,7 +14,7 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 use Throwable;
 
 #[AsCommand(name: 'vpc:remove', description: 'Take the functions out of the VPC: remove vpc() from arco.php')]
-final class VpcRemoveCommand extends ArcoCommand
+final class VpcRemoveCommand extends ArcoCommand implements LaravelOnly
 {
     use ResolvesTarget;
     use EditsSettings;

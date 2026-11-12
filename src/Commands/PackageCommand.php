@@ -41,7 +41,7 @@ final class PackageCommand extends ArcoCommand
         $steps = new StepPrinter($io, $this->t(...), $input->isInteractive() && $output->isDecorated());
         try {
             $config = $this->loadTarget($input, $io);
-            $preset = ($this->presets ?? PresetRegistry::default())->detect($this->projectDir());
+            $preset = ($this->presets ?? PresetRegistry::default())->forConfig($config, $this->projectDir());
             $target = $input->getOption('output');
             $target = is_string($target) ? $target : $this->projectDir() . "/.arco/build/arco-{$config->functionName()}.zip";
             $inside = self::insideProject($this->projectDir(), $target);

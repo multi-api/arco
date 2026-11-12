@@ -3,6 +3,7 @@
 namespace Multiapi\Arco\Commands;
 
 use Multiapi\Arco\Cli\ArcoCommand;
+use Multiapi\Arco\Cli\LaravelOnly;
 use Multiapi\Arco\Commands\Concerns\EditsStorage;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
 use Symfony\Component\Console\Attribute\AsCommand;
@@ -14,7 +15,7 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 use Throwable;
 
 #[AsCommand(name: 'storage:add', description: 'Add an S3 bucket to arco.php')]
-final class StorageAddCommand extends ArcoCommand
+final class StorageAddCommand extends ArcoCommand implements LaravelOnly
 {
     use ResolvesTarget;
     use EditsStorage;

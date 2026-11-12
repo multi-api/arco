@@ -58,4 +58,4 @@ function pipeAccessLog(input, output) {
   return new Promise((resolve) => lines.once('close', resolve));
 }
 
-module.exports = { requestLine, pipeAccessLog };
+module.exports = { REQUEST_ID_HEADERS, MAX_PATH, requestId, requestLine, pipeAccessLog };

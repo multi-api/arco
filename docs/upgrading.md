@@ -11,6 +11,24 @@ composer require multiapi/arco-laravel:^0.12
 vendor/bin/arco info --env=staging     # validation runs here: errors and deprecations name the fix
 ```
 
+## Upgrading to 0.20
+
+Nothing is required for PHP apps: `arco.php`, the Laravel package, the runtime files and every `--json` key behave
+as before. The release adds [Go apps](configuration.md#process-runtime-go) (`arco.json`), and with them a few things
+to know:
+
+- A project with both `arco.php` and `arco.json` now fails with `config.both_files`. If you keep an unrelated
+  `arco.json` at the root of a PHP project, rename it.
+- A deploy driven by a config layer alone (no `arco.php`) in a repository that also has a `go.mod` deploys the Go
+  app, unless `composer.json` requires both `multiapi/arco` and `multiapi/arco-laravel` (Laravel apps deployed with
+  Arco do, so they keep deploying as PHP). A plain PHP app without `multiapi/arco-laravel`, configured by a layer
+  alone, with a `go.mod` at its root: add an `arco.php` to keep it PHP.
+- `arco info --json` gains `runtime` (`{"kind": "php"}` for PHP apps), `schedules` (`[]` for PHP apps) and
+  `route` in each `queues` entry (`null` for PHP apps); `info --resources --json` queue options gain `route`. Keys
+  are only added, as always.
+- An environment cannot change kind in place: moving an environment from Laravel to Go (or back) needs
+  `arco remove --env=<env>` first (`deploy.runtime_kind_changed`).
+
 ## Upgrading to 0.19.2 (security)
 
 Upgrade and redeploy every environment. The default runtime build becomes `php8.5.12-fp1.13.5-r1`: FrankenPHP 1.13.5

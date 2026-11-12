@@ -7,6 +7,7 @@ use Multiapi\Arco\Deploy\OwnershipGuard;
 use Multiapi\Arco\Aws\AwsClients;
 use Multiapi\Arco\Build\PresetRegistry;
 use Multiapi\Arco\Cli\ArcoCommand;
+use Multiapi\Arco\Cli\LaravelOnly;
 use Multiapi\Arco\Cli\UserError;
 use Multiapi\Arco\Commands\Concerns\ConfirmsProtected;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
@@ -26,7 +27,7 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 use Throwable;
 
 #[AsCommand(name: 'tinker', description: 'Open a tinker shell whose statements run on the console function')]
-final class TinkerCommand extends ArcoCommand
+final class TinkerCommand extends ArcoCommand implements LaravelOnly
 {
     use ConfirmsProtected;
     use ResolvesTarget;

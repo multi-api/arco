@@ -18,6 +18,8 @@ final readonly class FunctionDeploy
         public array $settings,
         public array $tags,
         public bool $roleJustCreated,
+        /** the Lambda runtime a new function is created with: provided.al2023 (PHP) or nodejs24.x (process apps) */
+        public string $runtime = LambdaFunction::RUNTIME,
     ) {
     }
 }

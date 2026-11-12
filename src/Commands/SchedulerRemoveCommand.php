@@ -5,6 +5,7 @@ namespace Multiapi\Arco\Commands;
 use Closure;
 use Multiapi\Arco\Aws\AwsClients;
 use Multiapi\Arco\Cli\ArcoCommand;
+use Multiapi\Arco\Cli\LaravelOnly;
 use Multiapi\Arco\Commands\Concerns\AppliesScheduler;
 use Multiapi\Arco\Commands\Concerns\EditsSettings;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
@@ -18,7 +19,7 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 use Throwable;
 
 #[AsCommand(name: 'scheduler:remove', description: 'Turn the Laravel scheduler off (the console function stays as it is)')]
-final class SchedulerRemoveCommand extends ArcoCommand
+final class SchedulerRemoveCommand extends ArcoCommand implements LaravelOnly
 {
     use ResolvesTarget;
     use EditsSettings;

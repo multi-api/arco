@@ -29,7 +29,20 @@ final readonly class QueueConfig
         public bool $conflictingConcurrency = false,
         /** a config layer entry with `adopt: true`: a deploy may import the existing queue (and its DLQ) */
         public bool $adopt = false,
+        /** process apps: the path the queue's messages are posted to; null: /_arco/queues/<name> */
+        public ?string $route = null,
     ) {
+    }
+
+    /** The variable that holds a queue's URL in a process app: ARCO_QUEUE_<NAME>_URL, every non-alphanumeric character a `_`. */
+    public static function urlVariable(string $name): string
+    {
+        return 'ARCO_QUEUE_' . preg_replace('/[^A-Z0-9]/', '_', strtoupper($name)) . '_URL';
+    }
+
+    public function route(): string
+    {
+        return $this->route ?? '/_arco/queues/' . $this->name;
     }
 
     /**

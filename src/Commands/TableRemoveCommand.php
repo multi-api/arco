@@ -3,6 +3,7 @@
 namespace Multiapi\Arco\Commands;
 
 use Multiapi\Arco\Cli\ArcoCommand;
+use Multiapi\Arco\Cli\LaravelOnly;
 use Multiapi\Arco\Commands\Concerns\EditsGenericTables;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
 use Symfony\Component\Console\Attribute\AsCommand;
@@ -13,7 +14,7 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 use Throwable;
 
 #[AsCommand(name: 'table:remove', description: 'Remove a table from arco.php (the DynamoDB table and its items stay in AWS)')]
-final class TableRemoveCommand extends ArcoCommand
+final class TableRemoveCommand extends ArcoCommand implements LaravelOnly
 {
     use ResolvesTarget;
     use EditsGenericTables;

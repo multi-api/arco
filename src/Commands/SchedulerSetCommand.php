@@ -5,6 +5,7 @@ namespace Multiapi\Arco\Commands;
 use Closure;
 use Multiapi\Arco\Build\ScheduleInspector;
 use Multiapi\Arco\Cli\ArcoCommand;
+use Multiapi\Arco\Cli\LaravelOnly;
 use Multiapi\Arco\Cli\UserError;
 use Multiapi\Arco\Commands\Concerns\AppliesScheduler;
 use Multiapi\Arco\Commands\Concerns\EditsSettings;
@@ -21,7 +22,7 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 use Throwable;
 
 #[AsCommand(name: 'scheduler:set', description: 'Run the Laravel scheduler every N minutes (turns the console function on)')]
-final class SchedulerSetCommand extends ArcoCommand
+final class SchedulerSetCommand extends ArcoCommand implements LaravelOnly
 {
     use ResolvesTarget;
     use EditsSettings;

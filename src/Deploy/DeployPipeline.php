@@ -12,9 +12,11 @@ use Multiapi\Arco\Build\Builder;
 use Multiapi\Arco\Build\BuildResult;
 use Multiapi\Arco\Build\CachesPaths;
 use Multiapi\Arco\Build\FrameworkPreset;
+use Multiapi\Arco\Build\ProcessBuilder;
 use Multiapi\Arco\Build\ProcessCommandRunner;
 use Multiapi\Arco\Build\ScheduleInspector;
 use Multiapi\Arco\Config\AppConfig;
+use Multiapi\Arco\Config\QueueConfig;
 use Multiapi\Arco\Config\SchedulerInterval;
 use Multiapi\Arco\Package\ConsoleArtifacts;
 use Multiapi\Arco\Package\ConsolePackager;
@@ -28,14 +30,21 @@ final class DeployPipeline
     /** @var Closure(string): (list<array{task: string, minutes: list<int>}>|null) the app's scheduled tasks, read in the build's app dir */
     private readonly Closure $scheduleInspector;
 
-    /** @param (Closure(string): (list<array{task: string, minutes: list<int>}>|null))|null $scheduleInspector default: ScheduleInspector with this PHP */
+    private readonly ProcessBuilder $processBuilder;
+
+    /**
+     * @param (Closure(string): (list<array{task: string, minutes: list<int>}>|null))|null $scheduleInspector default: ScheduleInspector with this PHP
+     * @param ProcessBuilder|null $processBuilder builds process apps (Go); default: go on PATH
+     */
     public function __construct(
         private readonly Builder $builder,
         private readonly BinaryProvider $binaries,
         private readonly Packager $packager,
         ?Closure $scheduleInspector = null,
+        ?ProcessBuilder $processBuilder = null,
     ) {
         $this->scheduleInspector = $scheduleInspector ?? static fn (string $appDir): ?array => (new ScheduleInspector())->tasks($appDir, PHP_BINARY);
+        $this->processBuilder = $processBuilder ?? new ProcessBuilder(new ProcessCommandRunner());
     }
 
     public static function default(): self
@@ -43,9 +52,12 @@ final class DeployPipeline
         return new self(new Builder(new ProcessCommandRunner()), BinaryProvider::default(), new Packager());
     }
 
-    /** The runtime build id the config resolves to, or null for a custom binary. */
+    /** The runtime build id the config resolves to, or null for a custom binary or a process app (no FrankenPHP). */
     public function runtimeBuild(AppConfig $config): ?string
     {
+        if ($config->isProcess()) {
+            return null;
+        }
         return $this->binaries->describe($config->runtime)?->id;
     }
 
@@ -59,7 +71,8 @@ final class DeployPipeline
     public static function variables(AppConfig $config, FrameworkPreset $preset): array
     {
         return [
-            ...$preset->defaultVariables(),
+            // A process app gets no preset defaults: there is no framework to configure.
+            ...($config->isProcess() ? [] : $preset->defaultVariables()),
             ...self::injectedVariables($config),
             ...$config->variables,
             'ARCO' => '1',
@@ -75,6 +88,11 @@ final class DeployPipeline
      */
     public static function injectedVariables(AppConfig $config): array
     {
+        if ($config->isProcess()) {
+            // No Laravel wiring (QUEUE_CONNECTION, FILESYSTEM_DISK, CACHE_STORE, ...): the process reads Arco's own.
+            $storage = self::storageVariables($config);
+            return [...self::processQueueVariables($config), ...array_intersect_key($storage, ['ARCO_STORAGE' => true]), ...self::genericTableVariables($config), ...self::endpointVariables()];
+        }
         return [...self::queueVariables($config), ...self::storageVariables($config), ...self::tableVariables($config), ...self::genericTableVariables($config), ...self::endpointVariables()];
     }
 
@@ -217,6 +235,25 @@ final class DeployPipeline
     }
 
     /**
+     * A process app's queue variables: ARCO_QUEUE_<NAME>_URL for each queue (QueueConfig::urlVariable()) and
+     * ARCO_QUEUES, name => URL, as for PHP.
+     *
+     * @return array<string, string>
+     */
+    public static function processQueueVariables(AppConfig $config): array
+    {
+        if ($config->queues === []) {
+            return [];
+        }
+        $variables = [];
+        $urls = [];
+        foreach ($config->queues as $queue) {
+            $variables[QueueConfig::urlVariable($queue->name)] = $urls[$queue->name] = $queue->url($config);
+        }
+        return [...$variables, 'ARCO_QUEUES' => json_encode($urls, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES)];
+    }
+
+    /**
      * @param callable(string, array<string, string|int>): void $onStep
      * @param list<string> $exclude more patterns to leave out of the package
      * @return array{0: BuildResult, 1: Package}
@@ -224,6 +261,9 @@ final class DeployPipeline
     public function package(AppConfig $config, FrameworkPreset $preset, string $projectDir, callable $onStep, array $exclude = []): array
     {
         $onStep('build.staging', ['app' => $config->app, 'environment' => $config->environment, 'preset' => $preset->name()]);
+        if ($config->isProcess()) {
+            return $this->packageProcess($config, $preset, $projectDir, $onStep, $exclude);
+        }
         $build = $this->builder->build($config, $preset, $projectDir, $onStep, $exclude);
         try {
             foreach ($build->skipped as $path) {
@@ -237,6 +277,36 @@ final class DeployPipeline
             $binary = $this->binaries->get($config->runtime, $projectDir);
             $onStep('package.writing', []);
             $package = $this->packager->package($build, $binary, $config, $preset, $runtimeBuild?->id, fn (int $percent) => $onStep('package.progress', ['percent' => $percent]));
+            $onStep('package.ready', ['size' => (int) round($package->bytes / 1048576)]);
+        } catch (Throwable $e) {
+            $build->cleanup();
+            throw $e;
+        }
+        return [$build, $package];
+    }
+
+    /**
+     * A process app's package: ProcessBuilder, then the process zip. No runtime binary, no Laravel schedule.
+     *
+     * @param callable(string, array<string, string|int>): void $onStep
+     * @param list<string> $exclude paths (relative to the project) to leave out of the package
+     * @return array{0: BuildResult, 1: Package}
+     */
+    private function packageProcess(AppConfig $config, FrameworkPreset $preset, string $projectDir, callable $onStep, array $exclude): array
+    {
+        $build = $this->processBuilder->build($config, $projectDir, $onStep);
+        try {
+            foreach ($build->skipped as $path) {
+                $onStep('build.symlink_skipped', ['path' => $path]);
+            }
+            // `include` may have matched them (the zip `arco package` writes into the project).
+            foreach ($exclude as $path) {
+                if (is_file("$build->appDir/$path")) {
+                    unlink("$build->appDir/$path");
+                }
+            }
+            $onStep('package.writing', []);
+            $package = $this->packager->package($build, '', $config, $preset, null, fn (int $percent) => $onStep('package.progress', ['percent' => $percent]));
             $onStep('package.ready', ['size' => (int) round($package->bytes / 1048576)]);
         } catch (Throwable $e) {
             $build->cleanup();
@@ -365,7 +435,8 @@ final class DeployPipeline
         if (! $deployer->consoleExists($config)) {
             return false;
         }
-        if ($config->console === null) {
+        // A process app has no console setting: its console follows the schedules, and goes with the last one.
+        if ($config->console === null && ! $config->isProcess()) {
             throw DeployException::make('deploy.console_setting_missing', ['environment' => $config->environment]);
         }
         return true;
@@ -386,12 +457,16 @@ final class DeployPipeline
             }
         }
         // Before any AWS change: workers need arco:work, Laravel's SQS, S3 and DynamoDB drivers need their packages.
-        self::checkPackages($config, $package);
+        if (! $config->isProcess()) {
+            self::checkPackages($config, $package);
+        }
         // The console zip and the binary are derived from the web zip in a scratch directory.
         $work = sys_get_temp_dir() . '/arco-console-' . bin2hex(random_bytes(4));
         try {
             // The queue workers run the console zip too: it is built when queues exist even if the console is off.
-            $console = $config->consoleEnabled() || $config->queues !== [] ? $this->consoleArtifacts($config, $projectDir, $package, $work, $plan, $onStep) : null;
+            $console = $config->isProcess()
+                ? self::processConsole($config, $package)
+                : ($config->consoleEnabled() || $config->queues !== [] ? $this->consoleArtifacts($config, $projectDir, $package, $work, $plan, $onStep) : null);
             if ($console === null && $config->queues !== []) {
                 // Before any AWS change: without the zip there are no workers, and the queues would never be read.
                 throw DeployException::make('deploy.workers_package_too_large', ['max' => (int) round(ConsoleFunction::MAX_UNZIPPED_BYTES / 1048576)]);
@@ -452,7 +527,8 @@ final class DeployPipeline
                     ]);
                 }
             }
-            if ($verification->ok && $config->consoleEnabled()) {
+            // A process app syncs even without schedules: the rules of removed ones go.
+            if ($verification->ok && ($config->consoleEnabled() || $config->isProcess())) {
                 $this->syncScheduler($config, $deployer, $consoleActivated, $onStep);
             }
             // Workers follow the same rule as the console: their aliases and mappings move only to a version whose web revision works.
@@ -525,6 +601,10 @@ final class DeployPipeline
      */
     private function syncScheduler(AppConfig $config, Deployer $deployer, bool $consoleActivated, callable $onStep): void
     {
+        if ($config->isProcess() && $config->schedules !== [] && ! $consoleActivated) {
+            // As for the Laravel rule: the alias may not match the live revision, so the rules stay as they are.
+            return;
+        }
         if ($config->scheduler !== null && ! $consoleActivated) {
             $onStep('deploy.scheduler_skipped', ['function' => $config->consoleFunctionName(), 'every' => $config->scheduler]);
             return;
@@ -532,8 +612,31 @@ final class DeployPipeline
         try {
             $deployer->syncScheduler($config, $onStep(...));
         } catch (Throwable $e) {
-            $onStep('deploy.scheduler_failed', ['rule' => SchedulerRule::name($config), 'error' => self::errorMessage($e)]);
+            // A process app has no Laravel rule to name: its schedule rules are found by tag.
+            $config->isProcess()
+                ? $onStep('deploy.schedules_failed', ['error' => self::errorMessage($e)])
+                : $onStep('deploy.scheduler_failed', ['rule' => SchedulerRule::name($config), 'error' => self::errorMessage($e)]);
         }
+    }
+
+    /**
+     * A process app's console and workers run the web zip itself (worker.js on nodejs24.x), only when there
+     * are queues or schedules. Classic functions take at most 250 MB unzipped; a web-only app keeps 512 MiB.
+     *
+     * @throws DeployException deploy.process_package_too_large, before any AWS change
+     */
+    private static function processConsole(AppConfig $config, Package $package): ?ConsoleArtifacts
+    {
+        if ($config->queues === [] && $config->schedules === []) {
+            return null;
+        }
+        if ($package->bytes > ConsoleFunction::MAX_UNZIPPED_BYTES) {
+            throw DeployException::make('deploy.process_package_too_large', [
+                'size' => (int) round($package->bytes / 1048576),
+                'max' => (int) round(ConsoleFunction::MAX_UNZIPPED_BYTES / 1048576),
+            ]);
+        }
+        return new ConsoleArtifacts($package, null);
     }
 
     /**

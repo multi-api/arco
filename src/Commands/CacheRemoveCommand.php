@@ -3,6 +3,7 @@
 namespace Multiapi\Arco\Commands;
 
 use Multiapi\Arco\Cli\ArcoCommand;
+use Multiapi\Arco\Cli\LaravelOnly;
 use Multiapi\Arco\Commands\Concerns\EditsTables;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
 use Symfony\Component\Console\Attribute\AsCommand;
@@ -12,7 +13,7 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 use Throwable;
 
 #[AsCommand(name: 'cache:remove', description: 'Turn the DynamoDB cache table off in arco.php (the table stays in AWS)')]
-final class CacheRemoveCommand extends ArcoCommand
+final class CacheRemoveCommand extends ArcoCommand implements LaravelOnly
 {
     use ResolvesTarget;
     use EditsTables;

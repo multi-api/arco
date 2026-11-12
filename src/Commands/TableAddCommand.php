@@ -3,6 +3,7 @@
 namespace Multiapi\Arco\Commands;
 
 use Multiapi\Arco\Cli\ArcoCommand;
+use Multiapi\Arco\Cli\LaravelOnly;
 use Multiapi\Arco\Commands\Concerns\EditsGenericTables;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
 use Symfony\Component\Console\Attribute\AsCommand;
@@ -14,7 +15,7 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 use Throwable;
 
 #[AsCommand(name: 'table:add', description: 'Add a DynamoDB table (PK/SK, on demand) to arco.php')]
-final class TableAddCommand extends ArcoCommand
+final class TableAddCommand extends ArcoCommand implements LaravelOnly
 {
     use ResolvesTarget;
     use EditsGenericTables;

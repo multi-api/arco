@@ -10,8 +10,8 @@ use Multiapi\Arco\Config\AppConfig;
 /**
  * The <app>-<env>-console function: a classic Lambda function (provided.al2023, arm64) running the
  * console zip (the web package without FrankenPHP, see ConsolePackager) through the console runtime
- * (bootstrap at the zip root, which downloads the binary from S3). Each deploy
- * publishes a version; the "live" alias marks the version that matches the revision serving traffic.
+ * (bootstrap at the zip root, which downloads the binary from S3). A process app's console runs its web zip on
+ * nodejs24.x (worker.js, for its schedules). Each deploy publishes a version; the "live" alias marks the version that matches the revision serving traffic.
  */
 final class ConsoleFunction
 {
@@ -62,6 +62,15 @@ final class ConsoleFunction
         if ($versionId !== null) {
             $code['S3ObjectVersion'] = $versionId;
         }
+        if ($config->isProcess()) {
+            // worker.js posts each schedule's event to its route, for at most its timeout, read from ARCO_SCHEDULES.
+            $schedules = [];
+            foreach ($config->schedules as $schedule) {
+                $schedules[$schedule->name] = ['route' => $schedule->route(), 'timeout' => $schedule->timeout];
+            }
+            $variables = [...$variables, 'ARCO_SCHEDULES' => json_encode((object) $schedules, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES)];
+            return $this->function->request($config->consoleFunctionName(), WorkerFunctions::PROCESS_HANDLER, $code, self::settings($config, $roleArn, $variables, $detachVpc), $tags, $roleJustCreated, Arco::LAMBDA_RUNTIME);
+        }
         return $this->function->request($config->consoleFunctionName(), 'arco.console', $code, self::settings($config, $roleArn, $variables, $detachVpc), $tags, $roleJustCreated);
     }
 
@@ -77,7 +86,7 @@ final class ConsoleFunction
             'Description' => 'Arco console function (Arco ' . Arco::version() . ')',
             'MemorySize' => $config->consoleMemory,
             'EphemeralStorage' => ['Size' => self::EPHEMERAL_STORAGE_MB],
-            'Timeout' => $config->consoleTimeout,
+            'Timeout' => self::timeout($config),
             // Lambda rejects empty values; an unset variable reads the same way in PHP.
             'Environment' => ['Variables' => array_filter($variables, fn (string $value) => $value !== '')],
         ];
@@ -91,6 +100,22 @@ final class ConsoleFunction
             $settings['VpcConfig'] = ['SubnetIds' => [], 'SecurityGroupIds' => []];
         }
         return $settings;
+    }
+
+    /** Seconds a process console adds to its longest schedule: worker.js's 2 s margin and up to 10 s of process start. */
+    public const PROCESS_OVERHEAD_SECONDS = 12;
+
+    /**
+     * The function's timeout: the console setting, or for a process app the longest schedule's timeout plus
+     * PROCESS_OVERHEAD_SECONDS, at most Lambda's 900 (worker.js bounds each schedule's POST by its own timeout).
+     */
+    public static function timeout(AppConfig $config): int
+    {
+        if (! $config->isProcess() || $config->schedules === []) {
+            return $config->consoleTimeout;
+        }
+        $longest = max(array_map(static fn ($schedule): int => $schedule->timeout, $config->schedules));
+        return min(900, $longest + self::PROCESS_OVERHEAD_SECONDS);
     }
 
     /** Waits until the function is neither being created nor updated. */

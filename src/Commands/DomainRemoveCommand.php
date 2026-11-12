@@ -6,6 +6,7 @@ use Closure;
 use Multiapi\Arco\Aws\AwsClients;
 use Multiapi\Arco\Aws\DnsZoneFinder;
 use Multiapi\Arco\Cli\ArcoCommand;
+use Multiapi\Arco\Cli\LaravelOnly;
 use Multiapi\Arco\Cli\UserError;
 use Multiapi\Arco\Commands\Concerns\ChoosesDns;
 use Multiapi\Arco\Commands\Concerns\EditsDomains;
@@ -19,7 +20,7 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 use Throwable;
 
 #[AsCommand(name: 'domain:remove', description: 'Remove custom domains from an environment in arco.php')]
-final class DomainRemoveCommand extends ArcoCommand
+final class DomainRemoveCommand extends ArcoCommand implements LaravelOnly
 {
     use ResolvesTarget;
     use ChoosesDns;

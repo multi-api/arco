@@ -19,10 +19,11 @@ use Multiapi\Arco\Cli\UserError;
 use Multiapi\Arco\Config\AppConfig;
 use Multiapi\Arco\Config\ConfigException;
 use Multiapi\Arco\Config\ConfigLayer;
-use Multiapi\Arco\Config\ConfigLoader;
 use Multiapi\Arco\Config\ConfigResolver;
+use Multiapi\Arco\Config\Environment;
 use Multiapi\Arco\Config\LayerConflicts;
 use Multiapi\Arco\Config\PermissionsBoundary;
+use Multiapi\Arco\Config\ProjectConfig;
 use Multiapi\Arco\Config\Validator;
 use Multiapi\Arco\Deploy\DeployException;
 use Multiapi\Arco\Deploy\Domains\Route53Dns;
@@ -43,9 +44,9 @@ trait ResolvesTarget
     protected ?string $dnsCredentialProfile = null;
 
     /**
-     * The configuration of the target environment: arco.php, with the config layer merged over it when the
-     * command has --config-layer (or ARCO_CONFIG_LAYER is set for it). Without arco.php the layer alone is
-     * the configuration; with neither, config.not_found.
+     * The configuration of the target environment: arco.php or arco.json (see ProjectConfig), with the config layer merged over
+     * it when the command has --config-layer (or ARCO_CONFIG_LAYER is set for it). Without a config file the
+     * layer alone is the configuration; with neither, config.not_found.
      *
      * @param (Closure(string, array<string, string|int>): void)|null $warn gets each config warning instead of $io (--json)
      */
@@ -58,11 +59,17 @@ trait ResolvesTarget
             $option = $input->getOption(ConfigLayer::OPTION);
             $layer = ConfigLayer::fromInput(is_string($option) ? $option : null, $env);
         }
-        $arcoPhp = $this->projectDir() . '/arco.php';
-        $withoutArcoPhp = $layer !== null && ! is_file($arcoPhp);
-        $raw = $withoutArcoPhp ? ConfigResolver::layerOnly($layer) : (new ConfigLoader())->load($arcoPhp);
+        ['raw' => $raw, 'hasArcoPhp' => $hasArcoPhp] = ProjectConfig::raw($this->projectDir(), $layer);
         $environments = ConfigResolver::environments($raw, $layer);
         $environment = $input->getOption('env');
+        if ($environments === [] && ! $hasArcoPhp && $layer === null) {
+            // An arco.json without environments: any --env names one, as a layer-added environment does.
+            if (! is_string($environment) || $environment === '') {
+                throw $this->userError('config.env_required');
+            }
+            $raw['environments'] = [$environment => (new Environment())->toArray()];
+            $environments = [$environment];
+        }
         if (! is_string($environment) || $environment === '') {
             if ($layer !== null) {
                 $environment = $layer->environment;
@@ -83,7 +90,7 @@ trait ResolvesTarget
                 $e->errors[0]['params'] ?? [],
             );
         }
-        if ($withoutArcoPhp) {
+        if (! $hasArcoPhp) {
             $config = $config->withoutArcoPhp();
         }
         // deploy and info: the deploy host's override, validated with the rest (info shows what deploy uses).

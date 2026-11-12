@@ -21,6 +21,8 @@ final class WorkerFunctions
 {
     public const EPHEMERAL_STORAGE_MB = ConsoleFunction::EPHEMERAL_STORAGE_MB;
     public const HANDLER = 'arco.worker';
+    /** The handler of a process app's worker (and console): runtime/worker.js on nodejs24.x. */
+    public const PROCESS_HANDLER = 'worker.handler';
 
     private readonly LambdaFunction $function;
 
@@ -48,6 +50,22 @@ final class WorkerFunctions
         $environment = [...$variables, 'ARCO_WORKER_QUEUE' => $queue->name, 'ARCO_QUEUE_TRIES' => (string) $queue->tries];
         if ($queue->existing === null && $queue->dlq) {
             $environment['ARCO_QUEUE_MAX_RECEIVES'] = (string) ($queue->tries + ResourcesStack::EXTRA_RECEIVES);
+        }
+        return $environment;
+    }
+
+    /**
+     * A process app's worker environment: the deploy's variables plus the queue and the route worker.js
+     * posts its messages to; ARCO_QUEUE_FIFO keeps a FIFO batch in order. SQS redrive alone counts the tries.
+     *
+     * @param array<string, string> $variables
+     * @return array<string, string>
+     */
+    public static function processEnvironment(QueueConfig $queue, array $variables): array
+    {
+        $environment = [...$variables, 'ARCO_WORKER_QUEUE' => $queue->name, 'ARCO_QUEUE_ROUTE' => $queue->route()];
+        if ($queue->fifo) {
+            $environment['ARCO_QUEUE_FIFO'] = '1';
         }
         return $environment;
     }
@@ -90,6 +108,17 @@ final class WorkerFunctions
         $code = ['S3Bucket' => $bucket, 'S3Key' => $key];
         if ($versionId !== null) {
             $code['S3ObjectVersion'] = $versionId;
+        }
+        if ($config->isProcess()) {
+            return $this->function->request(
+                $config->workerFunctionName($queue->name),
+                self::PROCESS_HANDLER,
+                $code,
+                self::settings($config, $queue, $roleArn, self::processEnvironment($queue, $variables), $detachVpc),
+                $tags,
+                $roleJustCreated,
+                Arco::LAMBDA_RUNTIME,
+            );
         }
         return $this->function->request(
             $config->workerFunctionName($queue->name),

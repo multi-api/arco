@@ -40,6 +40,8 @@ final class TaggedResources
             $filters[] = ['Key' => $key, 'Values' => [$value]];
         }
         $resources = [];
+        // The process schedule rules found, by name: the tag tells them apart, so a stale one counts too.
+        $scheduleRules = [];
         $token = null;
         do {
             $page = Aws::call($this->tagging, 'GetResources', [
@@ -60,6 +62,9 @@ final class TaggedResources
                     continue;
                 }
                 [$type, $name] = self::parse($arn);
+                if ($type === 'events:rule' && ($tags[ProcessSchedules::TAG] ?? '') !== '') {
+                    $scheduleRules[$name] = true;
+                }
                 $resources[] = [
                     'type' => $type,
                     'name' => $name,
@@ -76,7 +81,7 @@ final class TaggedResources
         if ($role !== null) {
             $resources[] = $role;
         }
-        $resources = self::withRelations($config, $resources);
+        $resources = self::withRelations($config, $resources, $scheduleRules);
         usort($resources, static fn (array $a, array $b): int => [$a['type'], $a['name']] <=> [$b['type'], $b['name']]);
         return $resources;
     }
@@ -107,15 +112,16 @@ final class TaggedResources
     /**
      * Fills each resource's outgoing relations from the resolved config and the listing alone (no extra
      * AWS calls): a queue's worker function `worker_of` its queue, a dead-letter queue `dlq_of` its queue,
-     * the scheduler rule `invokes` the console function, the distribution `serves` and a certificate
+     * the scheduler rule and each process schedule rule `invokes` the console function, the distribution `serves` and a certificate
      * `validates` each configured domain, and the execution role `grants` access to each queue, bucket and
      * table its policy names (the ones PolicyBuilder::document() gets at deploy). A target that cannot be
      * resolved is left out, never guessed.
      *
      * @param list<array{type: string, name: string, arn: string, retained: bool, relations: list<array{type: string, target: string}>, source: ?string, options: ?array<string, mixed>}> $resources
+     * @param array<string, true> $scheduleRules the listed rules tagged arco:schedule, by name
      * @return list<array{type: string, name: string, arn: string, retained: bool, relations: list<array{type: string, target: string}>, source: ?string, options: ?array<string, mixed>}>
      */
-    private static function withRelations(AppConfig $config, array $resources): array
+    private static function withRelations(AppConfig $config, array $resources, array $scheduleRules = []): array
     {
         $arns = [];
         foreach ($resources as $resource) {
@@ -176,7 +182,8 @@ final class TaggedResources
             $resource['relations'] = match ($resource['type']) {
                 'lambda:function' => self::relations('worker_of', array_filter([$workers[$resource['name']] ?? null])),
                 'sqs' => self::relations('dlq_of', array_filter([$dlqs[$resource['name']] ?? null])),
-                'events:rule' => $resource['name'] === SchedulerRule::name($config) ? self::relations('invokes', array_filter([$console])) : [],
+                'events:rule' => $resource['name'] === SchedulerRule::name($config) || isset($scheduleRules[$resource['name']])
+                    ? self::relations('invokes', array_filter([$console])) : [],
                 'cloudfront:distribution' => self::relations('serves', $config->domains),
                 'acm:certificate' => self::relations('validates', self::validatesDomains($config, $resource['arn'], $certificates)),
                 'iam:role' => $resource['name'] === ExecutionRole::roleName($config) ? self::relations('grants', $grants) : [],
@@ -253,7 +260,7 @@ final class TaggedResources
 
     /**
      * Whether `arco remove` deletes the resource: the functions (web, console, every worker found by
-     * tag), the scheduler rule, both stacks with what the domain stack made, the managed certificate and
+     * tag), the scheduler rule, the schedule rules, both stacks with what the domain stack made, the managed certificate and
      * the Resource Group. The resources stack's queues, buckets and tables are retained.
      *
      * @param array<string, string> $tags
@@ -266,7 +273,9 @@ final class TaggedResources
             $type === 'lambda:network-connector' => true,
             str_starts_with($type, 'lambda:') => $name === $config->functionName() || $name === $config->consoleFunctionName()
                 || str_starts_with($name, $config->functionName() . '-queue-'),
-            $type === 'events:rule' => $name === SchedulerRule::name($config),
+            // The Laravel scheduler rule, or a process app's schedule rule (ProcessSchedules, tagged arco:schedule):
+            // remove deletes those only for a process app.
+            $type === 'events:rule' => $name === SchedulerRule::name($config) || ($config->isProcess() && ($tags[ProcessSchedules::TAG] ?? '') !== ''),
             $type === 'cloudformation:stack' => in_array($name, [ResourcesStack::name($config), $domainStack], true),
             $type === 'resource-groups:group' => $name === EnvironmentGroup::name($config),
             $type === 'iam:role' => $name === ExecutionRole::roleName($config),

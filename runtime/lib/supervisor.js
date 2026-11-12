@@ -4,15 +4,16 @@ const fs = require('node:fs');
 const http = require('node:http');
 const net = require('node:net');
 const path = require('node:path');
-const { pipeAccessLog } = require('./accesslog');
+const crypto = require('node:crypto');
+const { MAX_PATH, requestId: requestIdOf, pipeAccessLog } = require('./accesslog');
 
-function prepareTmp(dir) {
-  for (const sub of [
-    'storage/app/public', 'storage/framework/cache/data', 'storage/framework/sessions',
-    'storage/framework/views', 'storage/logs', 'caddy/config', 'caddy/data',
-  ]) {
-    fs.mkdirSync(path.join(dir, sub), { recursive: true });
-  }
+const PHP_TMP_SUBDIRS = [
+  'storage/app/public', 'storage/framework/cache/data', 'storage/framework/sessions',
+  'storage/framework/views', 'storage/logs', 'caddy/config', 'caddy/data',
+];
+
+function prepareTmp(dir, subdirs = PHP_TMP_SUBDIRS) {
+  for (const sub of subdirs) fs.mkdirSync(path.join(dir, sub), { recursive: true });
 }
 
 function resolveBinary(root, tmp) {
@@ -30,19 +31,32 @@ function resolveBinary(root, tmp) {
   }
 }
 
-function spawnFrankenphp(binary, caddyfile, env, cwd, log, { accessLog = false } = {}) {
-  const stdio = accessLog ? ['inherit', 'pipe', 'inherit'] : 'inherit';
-  const child = spawn(binary, ['run', '--config', caddyfile, '--adapter', 'caddyfile'], { cwd, env, stdio });
-  if (accessLog) pipeAccessLog(child.stdout, process.stdout);
+// Starts a child, forwards SIGTERM/SIGINT to it and reports its end through onExit(code, signal).
+function spawnProcess(command, args, { env, cwd, stdio, onExit } = {}) {
+  const child = spawn(command, args, { cwd, env, stdio });
   child.on('exit', (code, signal) => {
-    log('frankenphp_exit', { code, signal });
-    process.exit(code ?? 1);
+    if (onExit) onExit(code, signal);
   });
   for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => child.kill(signal));
   return child;
 }
 
-function waitForPort(host, port, timeoutMs = 9000) {
+function spawnFrankenphp(binary, caddyfile, env, cwd, log, { accessLog = false } = {}) {
+  const stdio = accessLog ? ['inherit', 'pipe', 'inherit'] : 'inherit';
+  const child = spawnProcess(binary, ['run', '--config', caddyfile, '--adapter', 'caddyfile'], {
+    cwd,
+    env,
+    stdio,
+    onExit: (code, signal) => {
+      log('frankenphp_exit', { code, signal });
+      process.exit(code ?? 1);
+    },
+  });
+  if (accessLog) pipeAccessLog(child.stdout, process.stdout);
+  return child;
+}
+
+function waitForPort(host, port, timeoutMs = 9000, name = 'FrankenPHP') {
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolve, reject) => {
     const attempt = () => {
@@ -50,7 +64,7 @@ function waitForPort(host, port, timeoutMs = 9000) {
       socket.once('connect', () => { socket.destroy(); resolve(); });
       socket.once('error', () => {
         socket.destroy();
-        if (Date.now() > deadline) reject(new Error(`FrankenPHP did not listen on ${host}:${port} within ${timeoutMs} ms`));
+        if (Date.now() > deadline) reject(new Error(`${name} did not listen on ${host}:${port} within ${timeoutMs} ms`));
         else setTimeout(attempt, 25);
       });
     };
@@ -58,11 +72,96 @@ function waitForPort(host, port, timeoutMs = 9000) {
   });
 }
 
+// The path of a request target, without query or fragment: origin-form (`/a?b`) as is, absolute-form
+// (`http://host/a?b`, which Go's net/http routes by its path) by its pathname. Anything else (`*`, authority-form,
+// garbage) has no path: null.
+function targetPath(rawUrl) {
+  const target = String(rawUrl);
+  if (target.startsWith('/')) return target.split(/[?#]/, 1)[0];
+  if (/^https?:\/\//i.test(target)) {
+    try {
+      return new URL(target).pathname;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+// At most this many decodes, the last of which must change nothing (so up to 4 levels of percent-encoding).
+const MAX_DECODES = 5;
+
+// True for /_arco and /_arco/..., however the target is spelled: absolute-form, percent-encoded (at any depth: a
+// router that unescapes twice must not reach it either), with repeated slashes or with dot segments. Every decoding
+// level is checked. A target without a usable path, one that does not decode at all, or one still changing after
+// MAX_DECODES counts as internal (fail closed); a level that does not decode further is final (a literal `%` such
+// as /files/100%25 is an ordinary path). The validator's healthPath check (Validator::isInternalPath) follows the
+// same rule.
+function isInternalPath(rawUrl) {
+  const raw = targetPath(rawUrl);
+  if (raw === null) return true;
+  let decoded = raw;
+  for (let round = 0; round < MAX_DECODES; round++) {
+    if (firstSegment(decoded) === '_arco') return true;
+    let next;
+    try {
+      next = decodeURIComponent(decoded);
+    } catch {
+      return round === 0;
+    }
+    if (next === decoded) return false;
+    decoded = next;
+  }
+  return true;
+}
+
+function firstSegment(path) {
+  const segments = [];
+  for (const segment of path.split('/')) {
+    if (segment === '' || segment === '.') continue;
+    if (segment === '..') segments.pop();
+    else segments.push(segment);
+  }
+  return segments[0];
+}
+
 const HOP_BY_HOP = new Set(['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'te', 'trailer']);
 
-function startProxy(host, port, upstreamHost, upstreamPort) {
+// options is for the process kind (PHP passes none): blockInternal answers 404 for /_arco/ paths, requestIds adds an
+// X-Request-ID when the request carries no id, accessLog writes one {"arco":"request",...} line per response to `output`.
+function startProxy(host, port, upstreamHost, upstreamPort, options = {}) {
+  const { blockInternal = false, requestIds = false, accessLog = false, output = process.stdout } = options;
   const agent = new http.Agent({ keepAlive: true, maxSockets: 256 });
   const server = http.createServer((req, res) => {
+    const startedAt = process.hrtime.bigint();
+    const state = { requestId: null };
+    if (accessLog) {
+      res.once('close', () => {
+        // A client that went away before the answer finished is not a response: nothing to log.
+        if (!res.writableFinished) return;
+        const path = targetPath(req.url) ?? '';
+        output.write(`${JSON.stringify({
+          arco: 'request',
+          status: res.statusCode,
+          method: req.method,
+          path: path.slice(0, MAX_PATH),
+          ms: Math.round(Number(process.hrtime.bigint() - startedAt) / 1e6),
+          requestId: state.requestId,
+        })}\n`);
+      });
+    }
+    if (requestIds) {
+      state.requestId = requestIdOf(req.headers);
+      if (state.requestId === null) {
+        state.requestId = crypto.randomUUID();
+        req.headers['x-request-id'] = state.requestId;
+      }
+    }
+    if (blockInternal && isInternalPath(req.url)) {
+      res.writeHead(404, { 'content-type': 'text/plain' });
+      res.end('Not Found');
+      return;
+    }
     const headers = {};
     for (const [name, value] of Object.entries(req.headers)) if (!HOP_BY_HOP.has(name)) headers[name] = value;
     const remote = req.socket.remoteAddress;
@@ -87,4 +186,4 @@ function startProxy(host, port, upstreamHost, upstreamPort) {
   return new Promise((resolve) => server.listen(port, host, () => resolve(server)));
 }
 
-module.exports = { prepareTmp, resolveBinary, spawnFrankenphp, waitForPort, startProxy };
+module.exports = { prepareTmp, resolveBinary, spawnProcess, spawnFrankenphp, waitForPort, startProxy, isInternalPath };

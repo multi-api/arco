@@ -8,6 +8,7 @@ use Multiapi\Arco\Aws\DnsZoneFinder;
 use Multiapi\Arco\Aws\LocalState;
 use Multiapi\Arco\Aws\ProfileResolver;
 use Multiapi\Arco\Cli\ArcoCommand;
+use Multiapi\Arco\Cli\LaravelOnly;
 use Multiapi\Arco\Cli\UserError;
 use Multiapi\Arco\Commands\Concerns\ChoosesDns;
 use Multiapi\Arco\Commands\Concerns\EditsDomains;
@@ -24,7 +25,7 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 use Throwable;
 
 #[AsCommand(name: 'domain:add', description: 'Add custom domains to an environment in arco.php')]
-final class DomainAddCommand extends ArcoCommand
+final class DomainAddCommand extends ArcoCommand implements LaravelOnly
 {
     use ResolvesTarget;
     use ChoosesDns;

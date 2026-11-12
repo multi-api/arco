@@ -19,6 +19,8 @@ use Multiapi\Arco\Config\ConfigLayer;
 use Multiapi\Arco\Config\GenericTableConfig;
 use Multiapi\Arco\Deploy\RevisionFactory;
 use Multiapi\Arco\Config\PermissionsBoundary;
+use Multiapi\Arco\Config\ScheduleConfig;
+use Multiapi\Arco\Config\ScheduleExpression;
 use Multiapi\Arco\Config\VpcConfig;
 use Multiapi\Arco\Config\StorageConfig;
 use Multiapi\Arco\Config\TableConfig;
@@ -27,6 +29,7 @@ use Multiapi\Arco\Deploy\AwsDeployer;
 use Multiapi\Arco\Deploy\Deployer;
 use Multiapi\Arco\Deploy\DeployPipeline;
 use Multiapi\Arco\Deploy\EnvironmentGroup;
+use Multiapi\Arco\Deploy\ProcessSchedules;
 use Multiapi\Arco\Secrets\SecretReference;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Input\InputInterface;
@@ -40,6 +43,9 @@ use Throwable;
 final class InfoCommand extends ArcoCommand
 {
     use ResolvesTarget;
+
+    /** Settings rows the table leaves out for a process app (the --json `settings` keeps every key). */
+    private const PHP_ONLY_SETTINGS = ['runtime.build', 'runtime.binary', 'runtime.workers', 'runtime.maxThreads', 'runtime.threads', 'runtime.mode', 'scheduler', 'consoleTimeout', 'deployCommands'];
 
     /** @var Closure(AwsClients): Deployer */
     private Closure $deployerFactory;
@@ -123,13 +129,25 @@ final class InfoCommand extends ArcoCommand
                 // 0.12.1: its gateway endpoints per service ([] without any, null when unreadable or not read).
                 'vpc' => $config->vpc === null ? null : ['subnets' => $config->vpc->subnets, 'security_groups' => $config->vpc->securityGroups] + ($status->vpc ?? [])
                     + ['endpoints' => $config->vpc->endpointIds() === [] ? [] : $status?->endpoints],
+                // Additive (process runtime), last: {"kind":"php"} or the process runtime; the schedules of a
+                // process app ([] for PHP apps), paused from the rule (null when unknown or not deployed).
+                'runtime' => self::jsonRuntime($config),
+                'schedules' => self::jsonSchedules($config, $status),
             ] + ($remoteError !== null ? ['error' => $remoteError] : []), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
             return $remoteError === null ? self::SUCCESS : self::FAILURE;
         }
 
         $io->title($config->functionName());
+        $io->writeln($config->process === null ? $this->t('info.runtime_php') : $this->t('info.runtime_process', [
+            'language' => $config->process->language,
+            'command' => implode(' ', $config->process->command),
+            'path' => $config->process->healthPath,
+        ]));
         $rows = [];
         foreach ($settings as $key => $row) {
+            if ($config->isProcess() && in_array($key, self::PHP_ONLY_SETTINGS, true)) {
+                continue;
+            }
             $value = $this->display($key, $row[0], $status);
             if ($key === 'auth' && RevisionFactory::protectsEndpoint($config)) {
                 // domain() makes the endpoint IamAuth whatever auth() says: only CloudFront may invoke it.
@@ -151,6 +169,32 @@ final class InfoCommand extends ArcoCommand
             $rows[] = [$name, SecretReference::isReference($value) || ! preg_match('/(_KEY|_SECRET|_PASSWORD|_TOKEN)$/', $name) ? $value : '••••••'];
         }
         $io->table([$this->t('info.variable'), $this->t('info.value')], $rows);
+
+        if ($config->isProcess() && $config->queues !== []) {
+            $io->section($this->t('info.queue_routes'));
+            $io->table(
+                [$this->t('info.queue_name'), $this->t('info.schedule_route')],
+                array_map(fn ($queue) => [$queue->name, $queue->route()], $config->queues),
+            );
+        }
+        if ($config->schedules !== []) {
+            $io->section($this->t('info.schedules'));
+            $io->table(
+                [$this->t('info.schedule'), $this->t('info.schedule_every'), $this->t('info.schedule_expression'), $this->t('info.schedule_route'), $this->t('info.schedule_timeout'), $this->t('info.schedule_state')],
+                array_map(fn (array $schedule) => [
+                    $schedule['name'],
+                    $schedule['every'],
+                    $schedule['expression'] ?? '-',
+                    $schedule['route'],
+                    (string) $schedule['timeout'],
+                    match ($schedule['paused']) {
+                        true => $this->t('info.schedule_paused'),
+                        false => $this->t('info.schedule_active'),
+                        null => '-',
+                    },
+                ], self::jsonSchedules($config, $status)),
+            );
+        }
 
         if ($remoteError !== null) {
             $io->error($remoteError);
@@ -268,7 +312,39 @@ final class InfoCommand extends ArcoCommand
             // Like the console: error only when the version could not be read (unknown, not missing).
             'worker' => ['function' => $config->workerFunctionName($queue->name), 'version' => $status?->queues[$queue->name]['version'] ?? null]
                 + (($status?->queues[$queue->name]['error'] ?? null) !== null ? ['error' => $status->queues[$queue->name]['error']] : []),
+            // Additive (process runtime), last: the route a process app's queue messages are posted to; null for PHP apps.
+            'route' => $config->isProcess() ? $queue->route() : null,
         ], $config->queues);
+    }
+
+    /** @return array<string, mixed> */
+    private static function jsonRuntime(AppConfig $config): array
+    {
+        return $config->process === null ? ['kind' => 'php'] : [
+            'kind' => $config->process->kind(),
+            'language' => $config->process->language,
+            'command' => $config->process->command,
+            'healthPath' => $config->process->healthPath,
+        ];
+    }
+
+    /**
+     * A process app's schedules with the EventBridge expression, the rule's name and whether the rule is
+     * disabled (null when it was not read: not deployed, no profile or no read access).
+     *
+     * @return list<array{name: string, every: string, expression: ?string, route: string, timeout: int, rule: string, paused: ?bool}>
+     */
+    private static function jsonSchedules(AppConfig $config, ?AppStatus $status): array
+    {
+        return array_map(static fn (ScheduleConfig $schedule): array => [
+            'name' => $schedule->name,
+            'every' => $schedule->every,
+            'expression' => ScheduleExpression::toEventBridge($schedule->every),
+            'route' => $schedule->route(),
+            'timeout' => $schedule->timeout,
+            'rule' => ProcessSchedules::ruleName($config, $schedule->name),
+            'paused' => $status?->schedules[$schedule->name] ?? null,
+        ], $config->schedules);
     }
 
     /** The config with the account AWS reported, when arco.php has none (needed for created bucket names). */

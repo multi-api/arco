@@ -6,6 +6,7 @@ use Closure;
 use Aws\Exception\AwsException;
 use Multiapi\Arco\Aws\AwsClients;
 use Multiapi\Arco\Cli\ArcoCommand;
+use Multiapi\Arco\Cli\LaravelOnly;
 use Multiapi\Arco\Cli\UserError;
 use Multiapi\Arco\Commands\Concerns\EditsSettings;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
@@ -21,7 +22,7 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 use Throwable;
 
 #[AsCommand(name: 'vpc:set', description: 'Set the VPC (subnets, security groups, gateway endpoints) of the functions in arco.php')]
-final class VpcSetCommand extends ArcoCommand
+final class VpcSetCommand extends ArcoCommand implements LaravelOnly
 {
     use ResolvesTarget;
     use EditsSettings;

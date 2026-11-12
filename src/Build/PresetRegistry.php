@@ -2,6 +2,7 @@
 
 namespace Multiapi\Arco\Build;
 
+use Multiapi\Arco\Config\AppConfig;
 use Composer\Autoload\ClassLoader;
 use ReflectionClass;
 
@@ -37,6 +38,12 @@ final class PresetRegistry
             }
         }
         return new self($presets);
+    }
+
+    /** The preset of a resolved config: a process app's own (its language), else the one detect() finds. */
+    public function forConfig(AppConfig $config, string $projectDir): FrameworkPreset
+    {
+        return $config->process !== null ? new ProcessPreset($config->process) : $this->detect($projectDir);
     }
 
     public function detect(string $projectDir): FrameworkPreset

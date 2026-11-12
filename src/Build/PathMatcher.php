@@ -17,8 +17,10 @@ final class PathMatcher
      * @param list<string> $exclude
      * @param list<string> $include
      * @param list<string> $deny patterns never packaged, even when matched by $include
+     * @param bool $descend true: no directory is pruned by $exclude (only by $deny), so an include pattern that starts
+     *                      with a wildcard (`**\/*.html`) finds files at any depth; $exclude still decides per file
      */
-    public function __construct(array $exclude, array $include, array $deny = [])
+    public function __construct(array $exclude, array $include, array $deny = [], private readonly bool $descend = false)
     {
         $this->deny = array_map(self::toRegex(...), $deny);
         $this->exclude = array_map(self::toRegex(...), $exclude);
@@ -37,6 +39,9 @@ final class PathMatcher
             return true;
         }
         if ($this->matchesAny($this->include, $candidates)) {
+            return false;
+        }
+        if ($isDir && $this->descend) {
             return false;
         }
         if ($isDir) {

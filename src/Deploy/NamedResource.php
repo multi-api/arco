@@ -20,6 +20,7 @@ final class NamedResource
      * @param bool $arcoMade a description Arco writes shows Arco made it
      * @param array{action: string, error: string}|null $unreadable the tag lookup was refused
      * @param string|null $fullArn the role's real ARN, when IAM returned it (`$arn` is its name)
+     * @param string|null $runtime a classic function's Lambda runtime, as GetFunctionConfiguration returned it
      */
     public function __construct(
         public readonly string $type,
@@ -29,6 +30,7 @@ final class NamedResource
         public readonly bool $arcoMade,
         public readonly ?array $unreadable = null,
         public readonly ?string $fullArn = null,
+        public readonly ?string $runtime = null,
     ) {
     }
 }

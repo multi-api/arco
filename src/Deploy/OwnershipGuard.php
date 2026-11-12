@@ -104,12 +104,13 @@ final class OwnershipGuard
         }
         $arn = (string) Aws::string($function['FunctionArn'] ?? null);
         $description = (string) Aws::string($function['Description'] ?? null);
+        $runtime = Aws::string($function['Runtime'] ?? null);
         try {
             $tags = self::tagMap($lambda->listTags(['Resource' => $arn])['Tags'] ?? []);
         } catch (AwsException $e) {
-            return self::unreadable(NamedResource::LAMBDA, $name, $arn, 'lambda:ListTags', $e);
+            return self::unreadable(NamedResource::LAMBDA, $name, $arn, 'lambda:ListTags', $e, $runtime);
         }
-        return new NamedResource(NamedResource::LAMBDA, $name, $arn, $tags, str_starts_with($description, $marker));
+        return new NamedResource(NamedResource::LAMBDA, $name, $arn, $tags, str_starts_with($description, $marker), runtime: $runtime);
     }
 
     /**
@@ -259,12 +260,12 @@ final class OwnershipGuard
      *
      * @param NamedResource::ROLE|NamedResource::WEB|NamedResource::LAMBDA|NamedResource::RULE $type
      */
-    private static function unreadable(string $type, string $name, string $arn, string $action, AwsException $e): NamedResource
+    private static function unreadable(string $type, string $name, string $arn, string $action, AwsException $e, ?string $runtime = null): NamedResource
     {
         if (! in_array($e->getAwsErrorCode(), self::DENIED, true)) {
             throw $e;
         }
-        return new NamedResource($type, $name, $arn, [], false, ['action' => $action, 'error' => self::error($e)]);
+        return new NamedResource($type, $name, $arn, [], false, ['action' => $action, 'error' => self::error($e)], runtime: $runtime);
     }
 
     private static function error(AwsException $e): string

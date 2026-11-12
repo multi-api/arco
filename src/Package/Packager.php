@@ -32,19 +32,25 @@ final class Packager
     {
         // zip entry name => [source path, unix mode]
         $entries = [];
+        $process = $config->isProcess();
         $entries['index.js'] = [$this->runtimeDir . '/index.js', 0644];
         foreach (glob($this->runtimeDir . '/lib/*.js') ?: [] as $file) {
             $entries['lib/' . basename($file)] = [$file, 0644];
         }
-        // Console function: custom-runtime bootstrap plus the PHP console runtime.
-        $entries['bootstrap'] = [$this->runtimeDir . '/bootstrap', 0755];
-        $entries['runtime/console.php'] = [$this->runtimeDir . '/console.php', 0644];
-        $entries['runtime/console-cli.php'] = [$this->runtimeDir . '/console-cli.php', 0644];
-        $entries['runtime/worker.php'] = [$this->runtimeDir . '/worker.php', 0644];
-        foreach (glob($this->runtimeDir . '/console/*.php') ?: [] as $file) {
-            $entries['runtime/console/' . basename($file)] = [$file, 0644];
+        if ($process) {
+            // Console and queue functions run worker.js from the same zip; there is no PHP and no FrankenPHP.
+            $entries['worker.js'] = [$this->runtimeDir . '/worker.js', 0644];
+        } else {
+            // Console function: custom-runtime bootstrap plus the PHP console runtime.
+            $entries['bootstrap'] = [$this->runtimeDir . '/bootstrap', 0755];
+            $entries['runtime/console.php'] = [$this->runtimeDir . '/console.php', 0644];
+            $entries['runtime/console-cli.php'] = [$this->runtimeDir . '/console-cli.php', 0644];
+            $entries['runtime/worker.php'] = [$this->runtimeDir . '/worker.php', 0644];
+            foreach (glob($this->runtimeDir . '/console/*.php') ?: [] as $file) {
+                $entries['runtime/console/' . basename($file)] = [$file, 0644];
+            }
+            $entries[self::BINARY] = [$binaryPath, 0755];
         }
-        $entries[self::BINARY] = [$binaryPath, 0755];
         foreach ($this->files($build->appDir) as $relative => $file) {
             $entries["app/$relative"] = [$file->getPathname(), $file->getPerms() & 0777];
         }
@@ -120,6 +126,14 @@ final class Packager
     /** @return array<string, mixed> the arco-runtime.json the package carries */
     public static function runtimeConfig(AppConfig $config, FrameworkPreset $preset): array
     {
+        if ($config->process !== null) {
+            return [
+                'kind' => 'process',
+                'command' => $config->process->command,
+                'healthPath' => $config->process->healthPath,
+                ...($config->accessLog ? ['accessLog' => true] : []),
+            ];
+        }
         $worker = $preset->workerScript();
         return [
             'mode' => $config->runtime->mode,

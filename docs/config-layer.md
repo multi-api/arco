@@ -1,6 +1,7 @@
 # Config layer
 
-The config layer is a JSON document that Arco merges over `arco.php`, or uses alone when there is no `arco.php`.
+The config layer is a JSON document that Arco merges over `arco.php` (or, for a [process app](configuration.md#process-runtime-go),
+over `arco.json`), or uses alone when there is neither.
 It exists for tools that manage resources outside your code (a dashboard, a platform such as Arco Cloud): they write
 the queues, buckets, tables, variables and domains they own into a layer and pass it to Arco at deploy time, and
 never edit `arco.php`. Without a layer Arco behaves exactly as before; nothing here changes a deploy that does not
@@ -18,7 +19,7 @@ ARCO_CONFIG_LAYER=layer.json vendor/bin/arco deploy
 
 - `--config-layer=<path>` wins over `ARCO_CONFIG_LAYER`. Surrounding whitespace is trimmed, and an empty or blank
   value falls back to the other one: there is no layer only when both are empty.
-- Only `deploy`, `package`, `info`, `remove`, `logs` and `resources` read the layer. Every other command (`tinker`, `command`,
+- Only `deploy`, `package`, `info`, `remove`, `logs`, `resources`, `scheduler:pause` and `scheduler:resume` read the layer. Every other command (`tinker`, `command`,
   `queue:list`, the `arco.php`-editing commands, ...) ignores both the flag and the variable, and the editing commands
   change `arco.php` only.
 - A missing or unreadable file is `config.layer_not_found` (`{path}`).
@@ -73,6 +74,7 @@ code:
 | `queues` | object of queue name to options |
 | `storage` | object of storage name to options |
 | `tables` | object of table name to options |
+| `schedules` | object of schedule name to options; process apps only |
 
 ### `settings`
 
@@ -88,7 +90,7 @@ Each key has the type the `arco.php` method stores:
 | `cache`, `failedJobsTable` | `true`, `false` or `{"existing": "<table>"}` |
 | `vpc` | `false` or `{"subnets": [...], "securityGroups": [...], "endpoints": [...]}`, as `vpc()` stores it (`endpoints` a list of services, or `service => id`) |
 
-### Queues, storage and tables
+### Queues, storage, tables and schedules
 
 Named entries take the options of the `arco.php` methods, plus `adopt` (see
 [Adopting retained resources](#adopting-retained-resources)):
@@ -98,15 +100,20 @@ Named entries take the options of the `arco.php` methods, plus `adopt` (see
 | queue | `timeout`, `memory`, `maxInstances`, `batchSize`, `tries` | integer |
 | queue | `dlq`, `fifo`, `default`, `adopt` | boolean |
 | queue | `existing` | string |
+| queue | `route` | string; process apps only (`validation.queue_route_php` for PHP apps) |
 | storage | `public`, `cors` | list of strings |
 | storage | `expire` | object of prefix to integer (days) |
 | storage | `existing` | string |
 | storage | `default`, `adopt` | boolean |
 | table | `ttl`, `existing` | string |
 | table | `adopt` | boolean |
+| schedule | `every`, `route` | string |
+| schedule | `timeout` | integer |
 
 Each entry is an object (`{}` for all defaults). Not accepted: the deprecated queue `concurrency`, `false` (a layer
-cannot remove what `arco.php` declares) and `adopt` together with `existing`.
+cannot remove what `arco.php` declares) and `adopt` together with `existing`. Schedules have no `adopt` (an EventBridge
+rule holds no data), and a layer with `schedules` on a PHP app fails with `validation.schedules_php`. What schedule
+and queue route options mean is in [Process runtime (Go)](configuration.md#schedules).
 
 ### Strictness
 
@@ -129,7 +136,7 @@ count). The layer never overrides: a different value is a conflict and the comma
 | `name`, `region` | The layer's value must equal `arco.php`'s when both are set |
 | each `settings` key | Not set by `arco.php` (default) takes the layer's value; equal is fine; different is a conflict. A setting `arco.php` sets to `false` (`scheduler(false)`, `vpc(false)`) counts as set |
 | each variable | The same, per name |
-| `queues`, `storage`, `tables` | A name `arco.php` does not declare is added after `arco.php`'s entries; the same name is a conflict, except `adopt`. An environment-level `queue('x', false)` in `arco.php` frees the name: the layer may then declare `x` |
+| `queues`, `storage`, `tables`, `schedules` | A name `arco.php` does not declare is added after `arco.php`'s entries; the same name is a conflict, except `adopt`. An environment-level `queue('x', false)` in `arco.php` (`"x": false` in an `arco.json` environment) frees the name: the layer may then declare `x` |
 | `domains` | Appended after `arco.php`'s list. A domain in both is not a conflict: it is listed once, with `arco.php` as its source |
 | `permissions` | Appended |
 
@@ -137,15 +144,26 @@ count). The layer never overrides: a different value is a conflict and the comma
 asks, so `arco.php`'s first queue stays the default.
 
 Every conflict is listed, one per line, in this order of kinds. Each is `config.layer_conflict` with params
-`{kind, name}`, where `kind` is `name`, `region`, `setting`, `variable`, `queue`, `storage` or `table` and `name` is
-the layer's name or region, the setting's key, the variable's name (never its value) or the queue, storage or table
-name. In `--json`, the error carries the first conflict's key and params.
+`{kind, name}`, where `kind` is `name`, `region`, `setting`, `variable`, `queue`, `storage`, `table` or `schedule` and
+`name` is the layer's name or region, the setting's key, the variable's name (never its value) or the queue, storage,
+table or schedule name. In `--json`, the error carries the first conflict's key and params.
+
+### Over `arco.json`
+
+A process app's `arco.json` is the base configuration, exactly where `arco.php` would be: every rule above applies to
+it (read `arco.php` as `arco.json`), and its `name` and `region` may be left to the layer. `runtime` is not a layer key:
+the layer cannot change a process app's language, main package or command. `arco.php` and `arco.json` together are
+`config.both_files`. The settings a process app cannot use (`console`, `scheduler`, `consoleTimeout`, `consoleMemory`,
+`cache`, `failedJobsTable`) are valid layer keys but fail validation with `validation.process_unsupported` (`{key}`):
+a tool must not send them for a process app. See [Process runtime (Go)](configuration.md#process-runtime-go).
 
 ### Without `arco.php`
 
-With a layer and no `arco.php`, the layer alone is the configuration: `name` and `region` are required
+With a layer and no `arco.php` (and no `arco.json`), the layer alone is the configuration: `name` and `region` are required
 (`config.layer_missing`, `{key}`), the environment is the layer's, and app-level values are Arco's defaults. With
 neither, `config.not_found` as always. The prompt to lock the account in `arco.php` after a deploy is skipped.
+When the project root also has a `go.mod`, the layer configures a Go [process app](configuration.md#detection),
+unless `composer.json` requires both `multiapi/arco` and `multiapi/arco-laravel`.
 
 An environment that `arco.php` does not declare is allowed: the layer adds it, as if `arco.php` had an empty
 `->environment('<env>')`.
@@ -206,9 +224,17 @@ tables](getting-started.md#permissions-for-storage-and-tables).
   The console function reports the stored value: `console: null` when only the scheduler turns the console on.
 - `variables`: `[{"name", "source"}]`, sorted by name. Never values.
 - `config`: every item the resolved configuration declares, deployed or not, `[{kind, name, source, options}]` with
-  `kind` one of `queue`, `storage`, `table`, `cache`, `failedJobsTable`, `console`, `scheduler`, `domain`, `vpc`
-  (`name` is the queue, storage or table name as configured, the domain, or the kind for the singletons; a domain's options are
-  `{domain, dns, certificate}`).
+  `kind` one of `queue`, `storage`, `table`, `cache`, `failedJobsTable`, `console`, `scheduler`, `domain`, `vpc`,
+  `schedule` (`name` is the queue, storage, table or schedule name as configured, the domain, or the kind for the
+  singletons; a domain's options are `{domain, dns, certificate}`, a schedule's `{every, route, timeout}`). A queue's
+  options have `route`: its route in a process app, `null` in a PHP app. Schedule rules (`events:rule`) are listed as
+  resources with their schedule's options.
+
+`arco info --json` has `runtime` (`{"kind": "php"}`, or `{"kind": "process", "language": "go", "command": [...],
+"healthPath": "/"}`) and `schedules`, the resolved schedules: `[{name, every, expression, route, timeout, rule,
+paused}]`, where `expression` is the EventBridge expression, `rule` the rule's name and `paused` `true` or `false` from
+the rule in AWS (`null` when it is not deployed or cannot be read; `[]` for PHP apps). Each `queues` entry has `route`
+(`null` for PHP apps). These keys are added at the end of the document.
 
 `variables` and `config` are present with or without a layer. `arco info` (the table) shows `cloud` in the source
 column for what the layer set.
@@ -258,6 +284,11 @@ $types = $inventory->collect($config, $aws, null, ResourceType::cases(), functio
 | `config.layer_environment` | `layer`, `environment` | `--env` is not the layer's environment |
 | `config.layer_conflict` | `kind`, `name` | The layer sets differently what `arco.php` sets (one error per conflict) |
 | `config.layer_adopt_waiting` | `kind`, `name` | Note: an `adopt` entry waits for `arco.php` to let go of the name |
+| `config.both_files` | | The project has both `arco.php` and `arco.json` |
+| `config.json_invalid` | `pointer`, `reason` | `arco.json`: parse error, unknown key, wrong type |
+| `config.json_missing` | `key` | Neither `arco.json` nor the layer sets `name` or `region` |
+| `config.json_runtime_missing`, `config.json_php_runtime` | | `arco.json` without `runtime` and without `go.mod`; `runtime.kind` `php` |
+| `config.env_required` | | `arco.json` declares no environments and the command has neither `--env` nor a layer |
 
 With `--json`, an error's `error` object carries `params` when the error has any (so far `config.layer_conflict`,
 with `{kind, name}`); the key is always there. Params are only ever added to.

@@ -1,39 +1,38 @@
 'use strict';
-// Arco runtime for AWS Lambda Web Functions: loads the variable bundle, resolves secrets, then runs FrankenPHP.
-const fs = require('node:fs');
+// Arco runtime for AWS Lambda Web Functions: loads the variable bundle, resolves secrets, then runs FrankenPHP (or, for the process kind, the customer's binary).
+const nodeFs = require('node:fs');
 const path = require('node:path');
-const { resolveSecrets } = require('./lib/secrets');
-const { POINTER, loadVariables } = require('./lib/variables');
-const { createFetchers } = require('./lib/aws');
+const { loadEnvironment } = require('./lib/boot');
 const { buildCaddyfile } = require('./lib/caddyfile');
 const supervisor = require('./lib/supervisor');
+const processKind = require('./lib/process');
 
 const ROOT = __dirname;
 const TMP = '/tmp/arco';
 const started = Date.now();
-const log = (phase, data = {}) => console.log(JSON.stringify({ arco: phase, ms: Date.now() - started, ...data }));
+const defaultLog = (phase, data = {}) => console.log(JSON.stringify({ arco: phase, ms: Date.now() - started, ...data }));
 
-async function main() {
+// deps: { fs, log } are injectable so tests can run the startup path without touching the disk.
+async function main({ fs = nodeFs, log = defaultLog } = {}) {
   const config = JSON.parse(fs.readFileSync(path.join(ROOT, 'arco-runtime.json'), 'utf8'));
   const [host, portString] = (process.env.AWS_LAMBDA_HTTP_ENDPOINT || '0.0.0.0:3000').split(':');
   const port = Number(portString);
   log('boot', { mode: config.mode, endpoint: `${host}:${port}` });
 
-  const region = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION;
-  const fetchers = createFetchers(region);
-  if (process.env[POINTER]) {
-    // bundleVariables(): before the secrets, so references inside the bundle are resolved too.
-    const loaded = await loadVariables(process.env, fetchers.getObject);
-    Object.assign(process.env, loaded);
-    log('variables', { loaded: Object.keys(loaded).length });
+  await loadEnvironment(log);
+
+  if (config.kind === 'process') {
+    // No Laravel storage/ or caddy/ folders: only bin/ for an executable copy.
+    supervisor.prepareTmp(TMP, ['bin']);
+    await processKind.startProcess(ROOT, config, process.env, log);
+    await supervisor.startProxy(host, port, processKind.HOST, processKind.PORT, {
+      blockInternal: true,
+      requestIds: true,
+      accessLog: config.accessLog === true,
+    });
+    log('proxy_ready');
+    return;
   }
-  const { resolved, missing } = await resolveSecrets(process.env, fetchers);
-  if (missing.length > 0) {
-    log('secrets_missing', { missing });
-    process.exit(1);
-  }
-  Object.assign(process.env, resolved);
-  log('secrets', { resolved: Object.keys(resolved).length });
 
   supervisor.prepareTmp(TMP);
   const proxy = config.mode === 'proxy';
@@ -59,7 +58,13 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  log('fatal', { error: error.message });
-  process.exit(1);
-});
+// Start on load, whoever loads this file: the Lambda Web Functions runtime may launch it as the main module or
+// through require(), and a runtime that never starts would break every app. Tests set the opt-out before requiring.
+if (globalThis.__ARCO_NO_AUTOSTART__ !== true) {
+  main().catch((error) => {
+    defaultLog('fatal', { error: error.message });
+    process.exit(1);
+  });
+}
+
+module.exports = { main };

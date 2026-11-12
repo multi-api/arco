@@ -3,7 +3,11 @@
 namespace Multiapi\Arco\Commands\Concerns;
 
 use Multiapi\Arco\Cli\UserError;
+use Multiapi\Arco\Config\AppConfig;
+use Multiapi\Arco\Config\ConfigLayer;
+use Multiapi\Arco\Aws\AwsClients;
 use Multiapi\Arco\Deploy\OwnershipGuard;
+use Multiapi\Arco\Deploy\ProcessSchedules;
 use Multiapi\Arco\Deploy\SchedulerRule;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
@@ -14,6 +18,7 @@ use Throwable;
 /**
  * Shared by `arco scheduler:pause` and `arco scheduler:resume`: disables or enables the environment's
  * EventBridge rule in AWS at once, without editing arco.php (deploys keep the state, see SchedulerRule::put()).
+ * In a process project, every schedule rule of the environment (found by tag, ProcessSchedules) instead.
  */
 trait ChangesSchedulerState
 {
@@ -22,7 +27,8 @@ trait ChangesSchedulerState
     private function addSchedulerStateOptions(): void
     {
         $this->addOption('env', 'e', InputOption::VALUE_REQUIRED, 'Environment')
-            ->addOption('profile', 'p', InputOption::VALUE_REQUIRED, 'AWS profile to use');
+            ->addOption('profile', 'p', InputOption::VALUE_REQUIRED, 'AWS profile to use')
+            ->addOption(ConfigLayer::OPTION, null, InputOption::VALUE_REQUIRED, ConfigLayer::DESCRIPTION);
     }
 
     private function changeSchedulerState(InputInterface $input, OutputInterface $output, bool $pause): int
@@ -31,6 +37,9 @@ trait ChangesSchedulerState
         try {
             $config = $this->loadTarget($input, $io);
             $aws = $this->awsClients($config, $input, $io);
+            if ($config->isProcess()) {
+                return $this->changeScheduleRules($config, $aws, $io, $pause);
+            }
             $rule = new SchedulerRule($aws->eventBridge(), $aws->lambda());
             $params = ['environment' => $config->environment, 'rule' => SchedulerRule::name($config)];
             $state = $rule->state($config);
@@ -52,5 +61,28 @@ trait ChangesSchedulerState
             $io->error($this->describeError($e) ?? throw $e);
             return self::FAILURE;
         }
+    }
+
+    /**
+     * A process app: disables or enables every schedule rule tagged for the environment (tags are the
+     * ownership check: only this app and environment's rules are listed), one line per schedule.
+     */
+    private function changeScheduleRules(AppConfig $config, AwsClients $aws, SymfonyStyle $io, bool $pause): int
+    {
+        $schedules = new ProcessSchedules($aws->eventBridge(), $aws->lambda(), $aws->taggingApi());
+        $params = ['environment' => $config->environment];
+        $rules = $pause ? $schedules->pauseAll($config) : $schedules->resumeAll($config);
+        if ($rules === []) {
+            throw new UserError($this->t('scheduler.no_schedule_rules', $params));
+        }
+        foreach ($rules as $rule) {
+            $key = match (true) {
+                ! $rule['changed'] => $pause ? 'scheduler.schedule_already_paused' : 'scheduler.schedule_already_active',
+                default => $pause ? 'scheduler.schedule_paused_now' : 'scheduler.schedule_resumed_now',
+            };
+            $io->writeln(' • ' . $this->t($key, ['schedule' => $rule['schedule'], 'rule' => $rule['rule']]));
+        }
+        $io->success($this->t($pause ? 'scheduler.schedules_paused_now' : 'scheduler.schedules_resumed_now', $params));
+        return self::SUCCESS;
     }
 }

@@ -89,7 +89,7 @@ final class ConfigResolver
      */
     public static function resolve(array $raw, string $environment, ?ConfigLayer $layer = null): AppConfig
     {
-        /** @var array<string, array{settings: array<string, mixed>, variables: array<string, string>, runtime: array<string, mixed>, permissions?: list<array<string, mixed>>, domains?: list<string>|null, deployCommands?: list<string>|null, queues?: array<string, array<string, mixed>|false>, storage?: array<string, array<string, mixed>|false>, tables?: array<string, array<string, mixed>|false>}> $environments */
+        /** @var array<string, array{settings: array<string, mixed>, variables: array<string, string>, runtime: array<string, mixed>, permissions?: list<array<string, mixed>>, domains?: list<string>|null, deployCommands?: list<string>|null, queues?: array<string, array<string, mixed>|false>, schedules?: array<string, array<string, mixed>|false>, storage?: array<string, array<string, mixed>|false>, tables?: array<string, array<string, mixed>|false>}> $environments */
         $environments = $raw['environments'] ?? [];
         if ($layer !== null) {
             if ($layer->environment !== $environment) {
@@ -119,7 +119,7 @@ final class ConfigResolver
         $cloud = $layer->entry ?? [];
         $cloudSettings = $cloud['settings'] ?? [];
         /** @var array<string, list<array{key: string, params: array<string, string>}>> $conflicts by kind, reported in this order */
-        $conflicts = ['name' => [], 'region' => [], 'setting' => [], 'variable' => [], 'queue' => [], 'storage' => [], 'table' => []];
+        $conflicts = ['name' => [], 'region' => [], 'setting' => [], 'variable' => [], 'queue' => [], 'storage' => [], 'table' => [], 'schedule' => []];
         /** @var list<array{key: string, params: array<string, string|int>}> $notes */
         $notes = [];
 
@@ -222,6 +222,13 @@ final class ConfigResolver
         [$mergedQueues, $adoptedQueues] = self::layerNamed('queue', self::mergeNamed(self::normalizedQueues($appQueues), $envQueues), $envQueues, $cloud['queues'] ?? [], $sources, $conflicts, $notes);
         $queues = self::queues($mergedQueues, $adoptedQueues);
         $sources['queues'] = ($env['queues'] ?? []) !== [] ? 'environment' : ($appQueues !== [] ? 'app' : (($cloud['queues'] ?? []) !== [] ? 'cloud' : 'default'));
+        /** @var array<string, array<string, mixed>|false> $appSchedules */
+        $appSchedules = $raw['schedules'] ?? [];
+        $envSchedules = $env['schedules'] ?? [];
+        [$mergedSchedules] = self::layerNamed('schedule', self::mergeNamed($appSchedules, $envSchedules), $envSchedules, $cloud['schedules'] ?? [], $sources, $conflicts, $notes);
+        $schedules = self::schedules($mergedSchedules);
+        $sources['schedules'] = ($env['schedules'] ?? []) !== [] ? 'environment' : ($appSchedules !== [] ? 'app' : (($cloud['schedules'] ?? []) !== [] ? 'cloud' : 'default'));
+        $process = self::process($raw['process'] ?? null);
         /** @var array<string, array<string, mixed>|false> $appStorage */
         $appStorage = $raw['storage'] ?? [];
         $envStorage = $env['storage'] ?? [];
@@ -299,6 +306,8 @@ final class ConfigResolver
             notes: $notes,
             bundleVariables: $bundleVariables,
             accessLog: $accessLog,
+            process: $process,
+            schedules: $schedules,
         );
 
         return $config;
@@ -394,7 +403,7 @@ final class ConfigResolver
      * declares is a conflict, except for an `adopt` entry, which waits (a note) until arco.php lets it go.
      * `adopt` never reaches the options: the names to adopt are returned apart. Also records each name's source.
      *
-     * @param 'queue'|'storage'|'table' $kind
+     * @param 'queue'|'storage'|'table'|'schedule' $kind
      * @param array<string, array<string, mixed>> $merged arco.php's entries, environment level merged over the app's
      * @param array<string, array<string, mixed>|false> $envLevel arco.php's environment level, for the sources
      * @param array<string, array<string, mixed>> $layerEntries
@@ -544,9 +553,45 @@ final class ConfigResolver
                 deprecatedConcurrency: isset($o['_deprecated']),
                 conflictingConcurrency: isset($o['_conflict']),
                 adopt: in_array((string) $name, $adopted, true),
+                route: self::nullableString($o['route'] ?? null),
             );
         }
         return $queues;
+    }
+
+    /**
+     * The resolved schedules, in order.
+     *
+     * @param array<string, array<string, mixed>> $merged
+     * @return list<ScheduleConfig>
+     */
+    private static function schedules(array $merged): array
+    {
+        $schedules = [];
+        foreach ($merged as $name => $o) {
+            $schedules[] = new ScheduleConfig(
+                name: (string) $name,
+                every: self::nullableString($o['every'] ?? null) ?? '',
+                route: self::nullableString($o['route'] ?? null),
+                timeout: self::nullableInt($o['timeout'] ?? null) ?? 60,
+            );
+        }
+        return $schedules;
+    }
+
+    /** The raw `process` key; null (or anything that is not an object): the PHP runtime. */
+    private static function process(mixed $value): ?ProcessRuntime
+    {
+        if (! is_array($value)) {
+            return null;
+        }
+        $command = is_array($value['command'] ?? null) ? array_values(array_filter($value['command'], 'is_string')) : [];
+        return new ProcessRuntime(
+            language: self::nullableString($value['language'] ?? null) ?? '',
+            main: self::nullableString($value['main'] ?? null),
+            command: $command !== [] ? $command : ['bin/app'],
+            healthPath: self::nullableString($value['healthPath'] ?? null) ?? '/',
+        );
     }
 
     /**

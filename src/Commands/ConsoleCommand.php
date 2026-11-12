@@ -6,6 +6,7 @@ use Closure;
 use Multiapi\Arco\Deploy\OwnershipGuard;
 use Multiapi\Arco\Aws\AwsClients;
 use Multiapi\Arco\Cli\ArcoCommand;
+use Multiapi\Arco\Cli\LaravelOnly;
 use Multiapi\Arco\Cli\UserError;
 use Multiapi\Arco\Commands\Concerns\ConfirmsProtected;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
@@ -23,7 +24,7 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 use Throwable;
 
 #[AsCommand(name: 'command', description: 'Run an artisan (or PHP) command on the console function')]
-final class ConsoleCommand extends ArcoCommand
+final class ConsoleCommand extends ArcoCommand implements LaravelOnly
 {
     use ConfirmsProtected;
     use ResolvesTarget;

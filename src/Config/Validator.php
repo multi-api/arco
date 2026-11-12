@@ -104,47 +104,8 @@ final class Validator
         }
     }
 
-    public function validate(AppConfig $config, string $projectDir): ValidationResult
+    private function validatePhpRuntime(AppConfig $config, string $projectDir, ValidationResult $result): void
     {
-        $result = new ValidationResult();
-
-        if (! preg_match(self::NAME, $config->app)) {
-            $result->error('validation.app_name', ['name' => $config->app]);
-        }
-        if (! preg_match(self::NAME, $config->environment)) {
-            $result->error('validation.environment_name', ['name' => $config->environment]);
-        }
-        self::addReservedNameErrors($config, $result);
-        if (strlen($config->functionName()) > 64) {
-            $result->error('validation.function_name_length', ['name' => $config->functionName()]);
-        } elseif (strlen($config->consoleFunctionName()) > 64) {
-            $result->error('validation.console_function_name_length', ['name' => $config->consoleFunctionName()]);
-        }
-        if ($config->region === null) {
-            $result->error('validation.region_missing');
-        } elseif (! in_array($config->region, Arco::REGIONS, true)) {
-            $result->error('validation.region', ['region' => $config->region, 'regions' => implode(', ', Arco::REGIONS)]);
-        }
-        $limits = ['concurrency' => $config->concurrency, 'timeout' => $config->timeout, 'maxInstances' => $config->maxInstances, 'rateLimit' => $config->rateLimit, 'consoleTimeout' => $config->consoleTimeout, 'consoleMemory' => $config->consoleMemory];
-        foreach ($limits as $setting => $value) {
-            self::addSettingError($result, $setting, $value);
-        }
-        if (! in_array($config->auth, ['public', 'iam'], true)) {
-            $result->error('validation.auth', ['value' => $config->auth]);
-        }
-        if ($config->cacheDriver !== null) {
-            $result->error('validation.cache_driver', ['value' => $config->cacheDriver]);
-        }
-        self::addSettingError($result, 'logLevel', $config->logLevel);
-        self::addSettingError($result, 'scheduler', $config->scheduler);
-        self::addSettingError($result, 'logRetention', $config->logRetention === false ? null : $config->logRetention);
-        if ($config->scheduler !== null && $config->console === false) {
-            $result->error('validation.scheduler_needs_console');
-        }
-        if ($config->account !== null && ! preg_match('/^\d{12}$/', $config->account)) {
-            $result->error('validation.account', ['value' => $config->account]);
-        }
-
         $runtime = $config->runtime;
         if ($runtime->workers < 1 || $runtime->maxThreads < $runtime->workers) {
             $result->error('validation.workers', ['workers' => $runtime->workers, 'maxThreads' => $runtime->maxThreads]);
@@ -190,6 +151,58 @@ final class Validator
                 $result->error($e->key, $e->params);
             }
         }
+    }
+
+    public function validate(AppConfig $config, string $projectDir): ValidationResult
+    {
+        $result = new ValidationResult();
+
+        if (! preg_match(self::NAME, $config->app)) {
+            $result->error('validation.app_name', ['name' => $config->app]);
+        }
+        if (! preg_match(self::NAME, $config->environment)) {
+            $result->error('validation.environment_name', ['name' => $config->environment]);
+        }
+        self::addReservedNameErrors($config, $result);
+        if (strlen($config->functionName()) > 64) {
+            $result->error('validation.function_name_length', ['name' => $config->functionName()]);
+        } elseif (strlen($config->consoleFunctionName()) > 64) {
+            $result->error('validation.console_function_name_length', ['name' => $config->consoleFunctionName()]);
+        }
+        if ($config->region === null) {
+            $result->error('validation.region_missing');
+        } elseif (! in_array($config->region, Arco::REGIONS, true)) {
+            $result->error('validation.region', ['region' => $config->region, 'regions' => implode(', ', Arco::REGIONS)]);
+        }
+        // A process app has no console function or scheduler: those settings are refused (validateProcess), not checked.
+        $limits = ['concurrency' => $config->concurrency, 'timeout' => $config->timeout, 'maxInstances' => $config->maxInstances, 'rateLimit' => $config->rateLimit];
+        if (! $config->isProcess()) {
+            $limits += ['consoleTimeout' => $config->consoleTimeout, 'consoleMemory' => $config->consoleMemory];
+        }
+        foreach ($limits as $setting => $value) {
+            self::addSettingError($result, $setting, $value);
+        }
+        if (! in_array($config->auth, ['public', 'iam'], true)) {
+            $result->error('validation.auth', ['value' => $config->auth]);
+        }
+        if ($config->cacheDriver !== null) {
+            $result->error('validation.cache_driver', ['value' => $config->cacheDriver]);
+        }
+        self::addSettingError($result, 'logLevel', $config->logLevel);
+        if (! $config->isProcess()) {
+            self::addSettingError($result, 'scheduler', $config->scheduler);
+        }
+        self::addSettingError($result, 'logRetention', $config->logRetention === false ? null : $config->logRetention);
+        if (! $config->isProcess() && $config->scheduler !== null && $config->console === false) {
+            $result->error('validation.scheduler_needs_console');
+        }
+        if ($config->account !== null && ! preg_match('/^\d{12}$/', $config->account)) {
+            $result->error('validation.account', ['value' => $config->account]);
+        }
+
+        if (! $config->isProcess()) {
+            $this->validatePhpRuntime($config, $projectDir, $result);
+        }
 
         foreach ($config->permissions as $index => $statement) {
             $field = self::invalidStatementField($statement);
@@ -214,20 +227,22 @@ final class Validator
         self::validateDomains($config, $result);
         self::validateQueues($config, $result);
         self::validateStorage($config, $result);
-        foreach ([$config->cacheTable, $config->failedJobsTable] as $table) {
+        foreach ($config->isProcess() ? [] : [$config->cacheTable, $config->failedJobsTable] as $table) {
             if ($table?->existing !== null && ! TableConfig::isTableName($table->existing)) {
                 $result->error('validation.table_existing', ['table' => $table->kind, 'value' => $table->existing]);
             }
         }
         self::validateGenericTables($config, $result);
+        self::validateProcess($config, $result);
 
         // The script every command goes through (artisan), as the console runtime runs it: php <entry> <args>.
         $entry = null;
-        if ($config->deployCommands !== []) {
+        $deployCommands = $config->isProcess() ? [] : $config->deployCommands;
+        if ($deployCommands !== []) {
             $preset = ($this->presets ?? PresetRegistry::default())->detect($projectDir);
             $entry = $preset instanceof RunsCommands ? $preset->commandEntry() : null;
         }
-        foreach ($config->deployCommands as $index => $command) {
+        foreach ($deployCommands as $index => $command) {
             if (trim($command) === '') {
                 $result->error('validation.deploy_command_empty', ['index' => $index]);
                 continue;
@@ -274,6 +289,148 @@ final class Validator
         }
 
         return $result;
+    }
+
+    /** PHP-only settings a process app sets (any source), as the keys the error names. */
+    private const PROCESS_UNSUPPORTED = [
+        'console', 'scheduler', 'consoleTimeout', 'consoleMemory', 'cache', 'failedJobsTable', 'deployCommands',
+        'runtime.php', 'runtime.frankenphp', 'runtime.build', 'runtime.binary', 'runtime.phpBinary',
+        'runtime.workers', 'runtime.maxThreads', 'runtime.threads', 'runtime.mode',
+    ];
+
+    /** Process apps refuse the PHP-only settings and check their own keys; PHP apps refuse the process-only ones. */
+    private static function validateProcess(AppConfig $config, ValidationResult $result): void
+    {
+        $queueRoutes = [];
+        foreach ($config->queues as $queue) {
+            if ($queue->route !== null) {
+                $queueRoutes[] = $queue;
+            }
+        }
+        if (! $config->isProcess()) {
+            foreach ($queueRoutes as $queue) {
+                $result->error('validation.queue_route_php', ['queue' => $queue->name]);
+            }
+            if ($config->schedules !== []) {
+                $result->error('validation.schedules_php', ['schedules' => implode(', ', array_map(fn (ScheduleConfig $s): string => $s->name, $config->schedules))]);
+            }
+            return;
+        }
+
+        foreach (self::PROCESS_UNSUPPORTED as $key) {
+            if (($config->sources[$key] ?? 'default') !== 'default') {
+                $result->error('validation.process_unsupported', ['key' => $key]);
+            }
+        }
+        if ($config->runtime->phpIni !== []) {
+            $result->error('validation.process_unsupported', ['key' => 'runtime.phpIni']);
+        }
+
+        $process = $config->process;
+        if ($process !== null) {
+            if ($process->language !== 'go') {
+                $result->error('validation.process_language', ['language' => $process->language]);
+            }
+            if ($process->main !== null && trim($process->main) === '') {
+                $result->error('validation.process_main');
+            } elseif ($process->main !== null && str_starts_with($process->main, '-')) {
+                // `go build` would read it as a flag.
+                $result->error('validation.process_main_flag', ['main' => $process->main]);
+            }
+            if (! self::isRoute($process->healthPath)) {
+                $result->error('validation.route', ['kind' => 'healthPath', 'name' => $process->healthPath]);
+            } elseif (self::isInternalPath($process->healthPath)) {
+                // The proxy answers 404 there: the deploy's check would fail and roll back.
+                $result->error('validation.health_path_internal', ['path' => $process->healthPath]);
+            }
+            foreach ($process->command as $part) {
+                if (trim($part) === '') {
+                    $result->error('validation.process_command');
+                    break;
+                }
+            }
+        }
+
+        foreach ($config->queues as $queue) {
+            if (! self::isRoute($queue->route())) {
+                $result->error('validation.route', ['kind' => 'queue', 'name' => $queue->name]);
+            }
+        }
+        $byVariable = [];
+        foreach ($config->queues as $queue) {
+            $byVariable[QueueConfig::urlVariable($queue->name)][] = $queue->name;
+        }
+        foreach ($byVariable as $variable => $names) {
+            if (count($names) > 1) {
+                $result->error('validation.queue_variable_collision', ['queues' => implode(', ', $names), 'variable' => $variable]);
+            }
+        }
+
+        foreach ($config->schedules as $schedule) {
+            if (preg_match('/^[a-z0-9][a-z0-9-]*$/', $schedule->name) !== 1 || strlen($schedule->name) > 40) {
+                $result->error('validation.schedule_name', ['name' => $schedule->name]);
+            }
+            if (ScheduleExpression::toEventBridge($schedule->every) === null) {
+                $result->error('validation.schedule_every', ['schedule' => $schedule->name, 'every' => $schedule->every]);
+            }
+            if ($schedule->timeout < 1 || $schedule->timeout > 900) {
+                $result->error('validation.schedule_timeout', ['schedule' => $schedule->name, 'value' => $schedule->timeout]);
+            }
+            if (! self::isRoute($schedule->route())) {
+                $result->error('validation.route', ['kind' => 'schedule', 'name' => $schedule->name]);
+            }
+        }
+    }
+
+    /**
+     * An origin-form path Node can send as a request target: a leading `/`, then only RFC 3986 path characters
+     * (unreserved, sub-delims, `:`, `@`, `/`) and `%XX` escapes. No whitespace, control characters, `?` or `#`.
+     */
+    private static function isRoute(string $route): bool
+    {
+        return preg_match("~^/(?:[A-Za-z0-9\\-._\\~!$&'()*+,;=:@/]|%[0-9A-Fa-f]{2})*\\z~", $route) === 1;
+    }
+
+    /**
+     * Whether the process proxy treats the path as /_arco or /_arco/... and answers 404 (runtime/lib/supervisor.js
+     * isInternalPath): every decoding level is checked (at most 5 decodes), with empty and `.` segments dropped and
+     * `..` applied. A path that does not decode at all, or is still changing, counts as internal; a level that does
+     * not decode further is final (a literal `%`, as in /files/100%25, is an ordinary path).
+     */
+    private static function isInternalPath(string $path): bool
+    {
+        $decoded = $path;
+        for ($round = 0; $round < 5; $round++) {
+            if (self::firstSegment($decoded) === '_arco') {
+                return true;
+            }
+            // decodeURIComponent() throws on a `%` without two hex digits, and on bytes that are not UTF-8.
+            $next = rawurldecode($decoded);
+            if (preg_match('/%(?![0-9A-Fa-f]{2})/', $decoded) === 1 || preg_match('//u', $next) !== 1) {
+                return $round === 0;
+            }
+            if ($next === $decoded) {
+                return false;
+            }
+            $decoded = $next;
+        }
+        return true;
+    }
+
+    private static function firstSegment(string $path): ?string
+    {
+        $segments = [];
+        foreach (explode('/', $path) as $segment) {
+            if ($segment === '' || $segment === '.') {
+                continue;
+            }
+            if ($segment === '..') {
+                array_pop($segments);
+            } else {
+                $segments[] = $segment;
+            }
+        }
+        return $segments[0] ?? null;
     }
 
     /**

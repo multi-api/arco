@@ -3,6 +3,7 @@
 namespace Multiapi\Arco\Commands;
 
 use Multiapi\Arco\Cli\ArcoCommand;
+use Multiapi\Arco\Cli\LaravelOnly;
 use Multiapi\Arco\Cli\UserError;
 use Multiapi\Arco\Commands\Concerns\EditsQueues;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
@@ -16,7 +17,7 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 use Throwable;
 
 #[AsCommand(name: 'queue:set', description: 'Change an option of a queue in arco.php')]
-final class QueueSetCommand extends ArcoCommand
+final class QueueSetCommand extends ArcoCommand implements LaravelOnly
 {
     use ResolvesTarget;
     use EditsQueues;

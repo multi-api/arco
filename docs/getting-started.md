@@ -19,6 +19,75 @@ downloads a checksum-verified FrankenPHP binary on first use (cached under `~/.a
 Keep `multiapi/arco` and `multiapi/arco-laravel` on the same release line (0.9 with 0.9; any 1.x with any 1.x).
 Upgrading an app deployed with an earlier Arco: read [Upgrading](upgrading.md) first.
 
+## Go apps
+
+Arco also deploys a Go HTTP server (a [process app](configuration.md#process-runtime-go)): one static `linux/arm64`
+binary behind the same Lambda Web Function, with queues, schedules, storage, tables, domains and secrets. The project
+needs no `composer.json`, no `vendor/` and no `arco.php`, so install Arco globally (PHP 8.3+ and Composer still run
+the CLI; Go 1.21 or later must be on `PATH`, and with `GOTOOLCHAIN=auto` it fetches the version `go.mod` asks for):
+
+```bash
+composer global require multiapi/arco
+export PATH="$(composer global config bin-dir --absolute 2>/dev/null):$PATH"
+```
+
+Your app listens on `127.0.0.1` and the port in `PORT`:
+
+```go
+package main
+
+import (
+	"log"
+	"net/http"
+	"os"
+)
+
+func main() {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("Hello from Go\n"))
+	})
+	log.Fatal(http.ListenAndServe("127.0.0.1:"+os.Getenv("PORT"), mux))
+}
+```
+
+Add an `arco.json` at the project root (there is no `arco init` for it):
+
+```json
+{
+  "name": "orders",
+  "region": "us-east-1",
+  "environments": { "production": {} }
+}
+```
+
+Then deploy as for any app:
+
+```bash
+arco deploy --env=production
+arco info --env=production
+arco logs --env=production --since=10m
+```
+
+- Arco builds `CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath` of the root package, or of the only
+  `cmd/<name>` with `package main`; set `runtime.main` (`"runtime": {"main": "./cmd/api"}`) when there are several.
+- Only the binary is packaged. Files the app reads at run time (templates, migrations) go in `include`.
+- The first deploy checks `/` (set `runtime.healthPath` for another path): it must answer `2xx`.
+- Queues and schedules call routes of the app over local HTTP; keep them under `/_arco/`, which the public endpoint
+  never serves. See [Queues for process apps](configuration.md#queues-for-process-apps) and
+  [Schedules](configuration.md#schedules).
+- `arco command`, `arco tinker`, the console and Laravel's scheduler, cache and failed-jobs table are PHP features;
+  the commands that edit `arco.php` do not edit `arco.json`
+  ([What process apps cannot use](configuration.md#what-process-apps-cannot-use)).
+
+**Permissions.** A Go app needs no IAM action that a Laravel app with the same features does not: the
+[minimal deploy permissions](#minimal-iam-permissions) cover the web function, and with queues or schedules the
+statements for the console function (`*-console`, including `lambda:AddPermission`), the queue workers (`*-queue-*`
+and the event source mappings), the scheduler rules (`rule/arco-*-scheduler`, which every schedule rule matches) and
+`tag:GetResources` (to find schedule rules that left the configuration) are the ones Arco already lists. `deploy`,
+`remove`, `scheduler:pause` and `scheduler:resume` rely on `tag:GetResources` to find the schedule rules, and
+`deploy --force` takes over a schedule rule of the same name that another environment owns, as for other resources.
+
 ## `arco init`
 
 ```bash

@@ -29,6 +29,9 @@ return App::make('myapp')
 
 The file is loaded in a separate PHP process. Validation runs before any build or AWS call.
 
+A Go app (or another program that serves HTTP on a port) uses `arco.json` instead: see
+[Process runtime (Go)](#process-runtime-go).
+
 Upgrading from an earlier Arco? [Upgrading](upgrading.md) lists every change to `arco.php` per version, and what
 1.x keeps stable.
 
@@ -84,9 +87,9 @@ like the others (an environment's call replaces the app's, and `cache(false)` tu
 
 ## Config layer
 
-`deploy`, `package`, `info`, `remove` and `logs` also accept a JSON config layer (`--config-layer=<path>` or
-`ARCO_CONFIG_LAYER`) that adds queues, buckets, tables, variables, domains and settings on top of `arco.php`, or
-replaces it when there is none. It never overrides `arco.php`: a different value is an error. The format, the merge
+`deploy`, `package`, `info`, `remove`, `logs`, `scheduler:pause` and `scheduler:resume` also accept a JSON config layer (`--config-layer=<path>` or
+`ARCO_CONFIG_LAYER`) that adds queues, buckets, tables, variables, domains and settings (and, for process apps,
+schedules) on top of `arco.php` or `arco.json`, or replaces them when there is none. It never overrides `arco.php`: a different value is an error. The format, the merge
 rules and `adopt` are in [Config layer](config-layer.md).
 
 ## Settings
@@ -145,8 +148,10 @@ one of yours. Values may be references (`arco-ssm:...`, `arco-secret:...`).
 | `ARCO_BUILD` | the preset's build commands (`php artisan event:cache`) on your machine | `1` | stable: test it in code that runs during the build |
 | `ARCO_QUEUES`, `ARCO_STORAGE` | web, console and worker functions, with queues / storage | JSON maps, see [Queues](#several-queues-and-onqueue) and [Laravel disks](#laravel-disks) | stable for `multiapi/arco-laravel`; their JSON shape may gain keys |
 | `ARCO_CACHE_TABLE`, `ARCO_FAILED_JOBS_TABLE` | web, console and worker functions, with the tables | the table name, see [Cache and failed-jobs tables](#cache-and-failed-jobs-tables) | stable for `multiapi/arco-laravel` |
+| `ARCO_QUEUE_<NAME>_URL` | web, console and worker functions of a [process app](#process-runtime-go), one per queue | the queue's URL | stable: read it in your app |
+| `PORT`, `HOST` | the process of a [process app](#the-port-contract) | `8000`, `127.0.0.1` | stable: listen on them |
 | `ARCO_TABLES` | web, console and worker functions, with `table()` | JSON map `{"<name>": "<table>"}`, see [Tables](#tables) | stable: read it in your app; its JSON shape may gain keys |
-| `ARCO_WORKER_QUEUE`, `ARCO_QUEUE_TRIES`, `ARCO_QUEUE_MAX_RECEIVES`, `ARCO_BINARY_BUCKET`, `ARCO_BINARY_KEY`, `ARCO_BINARY_SHA256`, `ARCO_PHP_BINARY`, `ARCO_TMP`, `ARCO_S3_ENDPOINT` | the runtime of the console and worker functions | | internal: may change in any release, do not read them |
+| `ARCO_WORKER_QUEUE`, `ARCO_QUEUE_ROUTE`, `ARCO_QUEUE_FIFO`, `ARCO_SCHEDULES`, `ARCO_QUEUE_TRIES`, `ARCO_QUEUE_MAX_RECEIVES`, `ARCO_BINARY_BUCKET`, `ARCO_BINARY_KEY`, `ARCO_BINARY_SHA256`, `ARCO_PHP_BINARY`, `ARCO_TMP`, `ARCO_S3_ENDPOINT` | the runtime of the console and worker functions | | internal: may change in any release, do not read them |
 | `ARCO_REQUEST_ID` | each command the console function runs (with `_X_AMZN_TRACE_ID`, the invocation's trace header) | the Lambda invocation id | internal: `multiapi/arco-laravel` shares it in the log context ([Log context](#log-context)); read `context.requestId` instead |
 | `ARCO_VARIABLES` | web, console and worker functions, with `bundleVariables()` | `s3://<code bucket>/variables/<app>/<env>/<sha256>.json` | internal: may change in any release, do not read it |
 
@@ -1643,3 +1648,245 @@ Detected when `artisan` exists and `composer.json` requires `laravel/framework`.
 - Health check used by `deploy`: `/up`.
 
 Without a framework preset, the plain PHP preset serves `public/` with FrankenPHP and checks `/`.
+
+## Process runtime (Go)
+
+Besides PHP, Arco deploys a **process app**: a program of your own that serves HTTP on the port in `PORT`. Arco runs
+it inside the same Node runtime it ships for PHP, behind a small proxy, and reaches the same program for queue and
+schedule work over local HTTP. Go is the only language in this release. Your code needs no Arco or Lambda library:
+the binary reads `PORT` and its environment variables, nothing else, and runs the same way on your laptop.
+
+### Detection
+
+What the project root holds decides the runtime:
+
+| Files at the project root | Runtime and configuration |
+|---|---|
+| `arco.php` (with or without `go.mod`) | PHP, as always |
+| `arco.php` and `arco.json` | error `config.both_files`: keep one |
+| `arco.json` | process, with its `runtime`; without `runtime`, a `go.mod` makes it Go, else `config.json_runtime_missing` |
+| no config file, a [config layer](config-layer.md) and a `go.mod` | process (Go), configured by the layer alone, unless `composer.json` requires both `multiapi/arco` and `multiapi/arco-laravel` (in `require` or `require-dev`): then it is a PHP app configured by the layer, as before |
+| no config file, a layer, no `go.mod` | PHP, configured by the layer, as before |
+| nothing | `config.not_found`, as always |
+
+A Go repository that also has a Laravel app's `composer.json` and no config file stays PHP: add an `arco.json` to
+deploy the Go app. Arco never runs your code to detect it.
+
+### `arco.json`
+
+`arco.json` is the JSON stand-in for `arco.php` in process apps. It is read with `json_decode` (no PHP runs) and takes
+the same settings as `arco.php`, flat at the top level, with optional per-environment overrides:
+
+```json
+{
+  "name": "orders",
+  "region": "us-east-1",
+  "runtime": { "kind": "process", "language": "go", "main": "./cmd/api", "healthPath": "/healthz" },
+  "include": ["templates/**"],
+  "settings": { "timeout": 30, "accessLog": true },
+  "variables": { "LOG_LEVEL": "info" },
+  "queues": { "emails": { "route": "/_arco/queues/emails", "tries": 3, "timeout": 30 } },
+  "schedules": { "cleanup": { "every": "1h", "route": "/_arco/schedule/cleanup", "timeout": 60 } },
+  "storage": { "uploads": {} },
+  "tables": { "state": { "ttl": "expires_at" } },
+  "environments": {
+    "production": { "settings": { "maxInstances": 50 }, "domains": ["orders.example.com"] }
+  }
+}
+```
+
+| Key | Type | Notes |
+|---|---|---|
+| `schema` | integer | Optional; `1` when present |
+| `name`, `region` | string | As `App::make()` and `region()`. Required unless the config layer sets them (`config.json_missing`, `{key}`) |
+| `runtime` | object | App level only; see below |
+| `include`, `exclude` | list of strings | Packaging globs; see [Build and package](#build-and-package) |
+| `settings` | object | The [config layer's `settings`](config-layer.md#settings), except the PHP-only ones ([below](#what-process-apps-cannot-use)) |
+| `variables`, `permissions`, `domains` | as in the config layer | `variables` values may be `arco-ssm:` / `arco-secret:` references |
+| `queues`, `storage`, `tables` | object of name to options | The config layer's options (without `adopt`, which only a layer uses), plus `queues.<name>.route` |
+| `schedules` | object of name to options | See [Schedules](#schedules) |
+| `environments` | object of environment name to entry | Each entry takes `settings`, `variables`, `permissions`, `domains`, `queues`, `storage`, `tables` and `schedules`; a named entry set to `false` drops the top level's entry of that name in that environment |
+
+Values resolve as for `arco.php`: Arco default < top level < environment entry, and the
+[config layer](config-layer.md) merges over the result with the same conflict rules. Unknown keys, wrong types and
+JSON that does not parse fail with `config.json_invalid` (`{pointer, reason}`), where `pointer` is a JSON pointer such
+as `/queues/emails/tries` (`""` for the document); the reason never repeats a value.
+
+Without `environments`, any `--env` names an environment (as a layer-added one does), and a command with neither
+`--env` nor a layer fails with `config.env_required`.
+
+**`runtime`**:
+
+| Key | Default | What it does |
+|---|---|---|
+| `kind` | `process` | Only `process`: `"php"` is `config.json_php_runtime` (PHP apps use `arco.php`) |
+| `language` | `go` with a `go.mod` | Only `go` in this release (`validation.process_language`) |
+| `main` | detected | The Go package to build, such as `./cmd/api`. Not empty (`validation.process_main`) and not starting with `-` (`validation.process_main_flag`) |
+| `command` | `["bin/app"]` | What the runtime starts, relative to `app/` in the package: a list of non-empty strings (`validation.process_command`), or a string split on whitespace (no quoting: use the list for arguments with spaces) |
+| `healthPath` | `/` | The path `deploy` requests to verify a new revision; a [route path](#route-paths) (`validation.route`), not under `/_arco/` (`validation.health_path_internal`) |
+
+### Build and package
+
+`arco deploy` and `arco package` build one static `linux/arm64` binary with the `go` on `PATH`. Arco does not install
+Go: with `GOTOOLCHAIN=auto` (Go's default) `go` fetches the toolchain `go.mod` asks for.
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o <staging>/app/bin/app <main>
+```
+
+- It runs in the project directory, so the module and its `replace` paths work. `composer install` never runs, and
+  Arco needs no `composer.json` or `vendor/` in the project (install it with `composer global require`).
+- `<main>` is `runtime.main`; else `.` when a non-test `*.go` file at the root declares `package main`; else the only
+  `cmd/<dir>` that declares `package main`; else the build fails with `runtime.main_required`. Files marked
+  `//go:build ignore` do not count.
+- No `go` on `PATH` is `build.go_missing`; a failing build is `build.command_failed` with the compiler's output.
+- The code must build without cgo.
+
+The package holds only the binary and what `include` names: `include` patterns are copied from the project into
+`app/` (a wildcard such as `**/*.html` finds files at any depth), then `exclude` removes some of them. `.env` files
+are never packaged, and unlike for PHP apps an `include` cannot bring back the always-excluded folders (`.git`,
+`vendor`, `node_modules`, `.github`, editor and AI-assistant folders, ...; see [Packaging globs](#packaging-globs)).
+
+The zip has the Node runtime (`index.js`, `lib/`, `worker.js`), `app/bin/app`, the included files,
+`arco-runtime.json` (`{"kind": "process", "command": [...], "healthPath": "/"}`, plus `"accessLog": true` with
+`accessLog`) and the manifest, whose `preset` is `go` and `runtime_build` `null`. There is no FrankenPHP and no PHP
+in it. The unzipped package may be 512 MB. With queues or schedules it may be 250 MB, because their functions are
+classic Lambda functions running the same zip: above that the deploy stops before any AWS change with
+`deploy.process_package_too_large` (`{size, max}`).
+
+### The `PORT` contract
+
+The web function starts `app/<command>` with the working directory `app/` and these variables added to yours:
+`PORT=8000`, `HOST=127.0.0.1`, `ARCO=1` and `HOME=/tmp/arco`. Listen on `127.0.0.1:$PORT`:
+
+```go
+addr := "127.0.0.1:" + os.Getenv("PORT")
+log.Fatal(http.ListenAndServe(addr, mux))
+```
+
+- Arco waits up to 10 seconds for the port to open, then sends every request through its proxy. If the process
+  exits, the function instance ends and Lambda starts a new one.
+- The proxy passes a request id on: the first of `X-Request-ID`, `X-Amzn-RequestId`, `X-Amz-Request-Id` and
+  `X-Amzn-Trace-Id`, else a new UUID it adds as `X-Request-ID`.
+- With [`accessLog`](#access-log) the proxy writes the same `{"arco":"request",...}` line per request as for PHP.
+- `deploy` verifies a new revision with a `GET` of `runtime.healthPath` (default `/`), which must answer `2xx`.
+- Everything the process writes to standard output and standard error reaches CloudWatch (`arco logs`).
+- `/tmp` is the only writable disk, and it belongs to one instance: keep files in [storage](#storage).
+
+**`/_arco/` is private.** The proxy answers `404 Not Found` to any path that is `/_arco` or starts with `/_arco/`
+(also percent-encoded, even more than once, with `//` or `..`, or in absolute form; a path that does not decode, or
+is still changing after five decodes, counts as one) and never forwards it. Queue and schedule deliveries
+reach the process directly on `127.0.0.1`, so keep their routes under `/_arco/`: a route elsewhere is public as well.
+A `healthPath` under `/_arco/` (in any of those spellings) is refused with `validation.health_path_internal`. The
+`X-Arco-*` headers identify a delivery but are not authentication.
+
+#### Route paths
+
+A queue or schedule `route` and `runtime.healthPath` are plain paths: they start with `/` and hold only letters,
+digits, `-._~!$&'()*+,;=:@/` and `%XX` escapes (RFC 3986 path characters). Spaces, control characters, non-ASCII
+characters (escape them as `%XX`), `?` and `#` are refused with `validation.route` (`{kind, name}`).
+
+### Queues for process apps
+
+Each `queues.<name>` gets an SQS queue (and dead-letter queue) as for PHP, and a worker function
+`<app>-<env>-queue-<name>` on `nodejs24.x` that runs `worker.js` from the same zip. The worker starts the process once
+per instance (with the same variables as the web function) and `POST`s each message, one at a time and in order, to
+the queue's `route` (default `/_arco/queues/<name>`, a [route path](#route-paths)), with the raw message body and these headers:
+
+| Header | Value |
+|---|---|
+| `Content-Type` | The message's `contentType` string attribute, else `application/octet-stream` |
+| `X-Arco-Queue` | The queue's name |
+| `X-Arco-Message-Id` | The SQS message id |
+| `X-Arco-Receive-Count` | SQS's `ApproximateReceiveCount`, starting at 1 |
+
+- A `2xx` response deletes the message. Any other status, a connection error or running out of time leaves it on the
+  queue (a batch item failure) for another receive. After `tries` receives SQS moves it to the dead-letter queue: for
+  process apps the redrive `maxReceiveCount` is exactly `tries` (PHP apps keep a few extra receives).
+- `timeout` is the worker function's timeout for the whole batch (`batchSize` messages, delivered one after the other).
+  Each `POST` may use the time left in the invocation minus 2 seconds; a message with less than half a second left is
+  not sent and comes back later.
+- A FIFO queue stops at the first failure: the rest of the batch is returned unsent, so the order holds.
+- Delivery is at least once: make handlers idempotent.
+
+Send messages with the AWS SDK. Each queue's URL is in `ARCO_QUEUE_<NAME>_URL` (the name in upper case, every
+character that is not a letter or digit turned into `_`: `welcome-mail` is `ARCO_QUEUE_WELCOME_MAIL_URL`), and
+`ARCO_QUEUES` is the JSON map `{"<name>": "<url>"}`. Two queue names that map to the same variable are
+`validation.queue_variable_collision`. Give a message the attribute `contentType` to choose the `Content-Type` its
+route receives. `route` is refused for PHP apps (`validation.queue_route_php`).
+
+### Schedules
+
+`schedules.<name>` calls a route of the app on a timetable:
+
+| Option | Default | What it does |
+|---|---|---|
+| `every` | required | `<n>m` (1 to 59), `<n>h` (1 to 23), `1d`, or a standard 5-field cron expression (`minute hour day-of-month month day-of-week`, in UTC; day-of-month and day-of-week cannot both be set; `0` and `7` are Sunday) |
+| `route` | `/_arco/schedule/<name>` | The path that receives the call; a [route path](#route-paths) |
+| `timeout` | 60 | Seconds the call may take, 1 to 900 |
+
+- Names are lowercase letters, digits and hyphens, starting with a letter or digit, at most 40 characters
+  (`validation.schedule_name`). A bad `every` is `validation.schedule_every`, a bad `timeout`
+  `validation.schedule_timeout`. `schedules` are refused for PHP apps (`validation.schedules_php`), which use
+  [`scheduler()`](#scheduler).
+- An `n` that divides the hour (or the day) is aligned to the UTC clock: `15m` runs at :00, :15, :30 and :45, `6h` at
+  00:00, 06:00, ... Any other `n` (`7m`, `5h`) is an EventBridge `rate(...)`, counted from when the rule was created.
+  `1d` runs at 00:00 UTC. Cron expressions are translated to EventBridge's 6-field form; `arco info` shows the result.
+- With at least one schedule the environment gets a console function `<app>-<env>-console` on `nodejs24.x`, running
+  `worker.js` from the same zip. Its timeout is the longest schedule `timeout` plus 12 seconds (at most 900), the
+  margin for starting the process. When the last schedule goes, the next deploy deletes it.
+- Each schedule is one EventBridge rule `arco-<app>-<env>-<name>-<hash>-scheduler`, where `<hash>` is the first 8 hex
+  digits of `sha256("<app>/<env>/<name>")` (a long name is cut; the hash and `-scheduler` always stay). It is tagged
+  `arco:app`, `arco:environment` and `arco:schedule=<name>`, and invokes the console's `live` alias with
+  `{"arco":"schedule","name":"<name>"}`. Rules change only after the new revision is verified and the console alias
+  moved. A rule whose schedule left the configuration is deleted; the Laravel scheduler's rule is never touched.
+- On each run the console `POST`s to the route with an empty body and the header `X-Arco-Schedule: <name>`. A
+  non-`2xx` response or a timeout logs `{"arco":"schedule_failed",...}` and fails the invocation; there is no retry.
+- `arco scheduler:pause --env=<env>` disables every schedule rule of the environment at once and
+  `arco scheduler:resume` enables them again (both accept `--config-layer`). They find the rules by tag, print one line
+  per schedule (`scheduler.schedule_paused_now`, `scheduler.schedule_resumed_now`, `scheduler.schedule_already_paused`,
+  `scheduler.schedule_already_active`) and fail with `scheduler.no_schedule_rules` when AWS has none.
+  A schedule rule of the same name that another app or environment owns, or that has no tags, stops the deploy
+  before anything changes (`deploy.not_owned`, `deploy.untagged_resource`). `deploy --force` takes it over, like any
+  other resource (`deploy.ownership_forced`). A deploy keeps each rule's state, and a schedule added while the
+  environment is paused starts paused.
+- A deploy prints `deploy.schedule_created`, `deploy.schedule_updated` and `deploy.schedule_deleted`
+  (`{schedule, rule}`) per rule, and `deploy.schedule_paused` (`{schedule}`) for a new rule that starts paused.
+- `arco info` lists each schedule with its every, EventBridge expression, route, timeout and state (`paused` or
+  `active`), and hides the PHP-only rows (`runtime.build`, `runtime.binary`, `runtime.workers`, `runtime.maxThreads`,
+  `runtime.threads`, `runtime.mode`, `scheduler`, `consoleTimeout`, `deployCommands`). `--json` keeps every key and
+  appends `runtime`, `schedules` (`paused` is `true` or `false` from the rule, `null` when it is not deployed or cannot
+  be read) and `queues[].route`.
+
+### Variables of process apps
+
+The web, console and worker functions get your variables plus `ARCO`, `ARCO_APP`, `ARCO_ENV`, and, with the features
+that need them, `ARCO_QUEUE_<NAME>_URL`, `ARCO_QUEUES`, `ARCO_STORAGE` (the JSON map
+`{"<name>": {"bucket": "...", "url": "..."}}`) and `ARCO_TABLES` (`{"<name>": "<table>"}`). Arco sets no Laravel
+variable (`QUEUE_CONNECTION`, `SQS_*`, `FILESYSTEM_DISK`, `AWS_BUCKET`, `AWS_URL`, `CACHE_STORE`, the cache and
+failed-jobs variables) and no preset defaults. Secrets (`arco-ssm:`, `arco-secret:`) and
+[`bundleVariables`](#bundled-variables) work as for PHP: the process only ever sees values. `ARCO_WORKER_QUEUE`,
+`ARCO_QUEUE_ROUTE`, `ARCO_QUEUE_FIFO` and `ARCO_SCHEDULES` are internal to the runtime: do not read them. Names
+starting with `ARCO` stay reserved.
+
+### What process apps cannot use
+
+- Settings: `console`, `scheduler`, `consoleTimeout`, `consoleMemory`, `cache`, `failedJobsTable` and
+  `deployCommands`, and the PHP `runtime` options. From any source (the config layer too) they fail with
+  `validation.process_unsupported` (`{key}`).
+- Commands: these 30 refuse with `config.process_unsupported_command` (`{command}`): `cache:add`, `cache:remove`, `certificate:remove`, `certificate:set`, `command`, `console:add`, `console:remove`, `domain:add`, `domain:remove`, `failed-jobs:add`, `failed-jobs:remove`, `logs:retention`, `queue:add`, `queue:failed-table`, `queue:remove`, `queue:set`, `scheduler:remove`, `scheduler:set`, `set`, `storage:add`, `storage:cors`, `storage:expire`, `storage:public`, `storage:remove`, `table:add`, `table:remove`, `tinker`, `unset`, `vpc:remove` and `vpc:set`. Edit `arco.json`
+  by hand. With both `arco.php` and `arco.json` they fail with `config.both_files` instead (the editors would
+  otherwise change `arco.php` next to an `arco.json`). The refusal is text only: these commands have no `--json`. `deploy`,
+  `package`, `info`, `logs`, `remove`, `resources`, `scheduler:pause`, `scheduler:resume`, `queue:list`, `queue:dlq`
+  and `storage:list` work; `resources` prints the plain listing and never opens its picker, whose commands write
+  `arco.php`. `arco init` writes `arco.php`, for PHP apps.
+- An environment deployed as a PHP app cannot be redeployed as a process app, or the other way round: the deploy
+  stops before any change with `deploy.runtime_kind_changed` (`{function, runtime}`) when the existing console or a
+  worker runs the other kind's runtime. Run `arco remove --env=<env>` first (queues, buckets and tables stay).
+- X-Ray, WebSockets, Laravel's failed-jobs table (queues have dead-letter queues instead) and cgo.
+
+`arco remove` also deletes the schedule rules (found by tag), with the console and the workers; queues, buckets and
+tables stay, as for PHP. If the rules cannot be looked up, `remove` warns `remove.schedule_scan_failed` (`{error}`) and
+carries on: any rule left keeps firing at the removed console function until you run `arco remove` again (with
+`tag:GetResources` and `events:DescribeRule`) or delete it in the EventBridge console. The deploy profile needs no permission beyond the lists in
+[Minimal IAM permissions](getting-started.md#minimal-iam-permissions).

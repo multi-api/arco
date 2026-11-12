@@ -3,6 +3,72 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.20.0
+
+- **Added:** the process runtime, for Go apps ([Process runtime (Go)](docs/configuration.md#process-runtime-go)).
+  Arco builds one static `linux/arm64` binary (`CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath`) with the
+  `go` on `PATH`, packages it with the Node runtime and no FrankenPHP, and starts it on the Web Function with
+  `PORT=8000` and `HOST=127.0.0.1` behind the proxy, which passes or generates `X-Request-ID`, writes the access log
+  with `accessLog` and answers `404` to every `/_arco/` path (however often it is percent-encoded). Arco runs as a global install
+  (`composer global require multiapi/arco`): a Go project needs no `composer.json`, `vendor/` or `arco.php`
+  ([Go apps](docs/getting-started.md#go-apps)).
+- **Added:** `arco.json`, the JSON stand-in for `arco.php` in process apps, with the keys `schema`, `name`, `region`,
+  `runtime` (`kind`, `language`, `main`, `command`, `healthPath`), `include`, `exclude`, `settings`, `variables`,
+  `permissions`, `domains`, `queues`, `storage`, `tables`, `schedules` and `environments`. Detection: `arco.php` is
+  PHP; `arco.json` is a process app; with neither, a config layer and a `go.mod` make a Go app unless `composer.json`
+  requires both `multiapi/arco` and `multiapi/arco-laravel`. New errors `config.both_files`, `config.json_invalid`
+  (`{pointer, reason}`), `config.json_missing` (`{key}`), `config.json_runtime_missing`, `config.json_php_runtime`
+  and `config.env_required`. `arco profile` (the list and `--json`) needs neither `name` nor `region`.
+- **Added:** `queues.<name>.route` (default `/_arco/queues/<name>`) in `arco.json` and the config layer: a process
+  app's queue worker (`nodejs24.x`, handler `worker.handler`, same zip) `POST`s each message to it with
+  `Content-Type`, `X-Arco-Queue`, `X-Arco-Message-Id` and `X-Arco-Receive-Count`; `2xx` deletes it, anything else is a
+  batch item failure. The redrive `maxReceiveCount` of a process app's queue is exactly `tries`. Variables
+  `ARCO_QUEUE_<NAME>_URL` per queue ([Queues for process apps](docs/configuration.md#queues-for-process-apps)).
+- **Added:** `schedules.<name>` (`every`, `route` default `/_arco/schedule/<name>`, `timeout` default 60) in
+  `arco.json` (app or environment level) and the config layer: one EventBridge rule
+  `arco-<app>-<env>-<name>-<hash>-scheduler` per schedule, tagged `arco:schedule`, invoking the console function
+  (`nodejs24.x`, same zip, timeout = the longest schedule `timeout` + 12 s, at most 900), which `POST`s to the route
+  with `X-Arco-Schedule`. `every` takes `<n>m`, `<n>h`, `1d` or a 5-field cron in UTC. `scheduler:pause` and
+  `scheduler:resume` pause and resume every schedule of the environment; `arco remove` deletes the rules. New deploy
+  steps `deploy.schedule_created`, `deploy.schedule_updated`, `deploy.schedule_deleted` (`{schedule, rule}`) and
+  `deploy.schedule_paused` (`{schedule}`), and a warning `deploy.schedules_failed` (`{error}`: the deploy is live and
+  verified, the rules were not updated; deploy again). A same-named rule of another app or environment, or an untagged
+  one, is refused (`deploy.not_owned`, `deploy.untagged_resource`) before the deploy changes anything; `deploy --force`
+  takes it over ([Schedules](docs/configuration.md#schedules)).
+- **Added:** `arco remove` of a process environment deletes its schedule rules (step `remove.step_schedule`,
+  `{schedule, rule}`). When the tag scan fails it warns `remove.schedule_scan_failed` (`{error}`) and carries on:
+  rules that remain keep firing at the removed console function until they are deleted.
+- **Added:** `scheduler:pause` and `scheduler:resume` accept `--config-layer=<path>` (and `ARCO_CONFIG_LAYER`), so a
+  project whose `arco.json` leaves `name` or `region` to a layer can resolve the app. In a process app they act on
+  every schedule rule of the environment and print one line per schedule: `scheduler.schedule_paused_now`,
+  `scheduler.schedule_resumed_now`, `scheduler.schedule_already_paused` and `scheduler.schedule_already_active`
+  (`{schedule, rule}`), then `scheduler.schedules_paused_now` or `scheduler.schedules_resumed_now`
+  (`{environment}`); without schedule rules in AWS they fail with `scheduler.no_schedule_rules` (`{environment}`).
+- **Added:** `arco info --json` keys `runtime` (`{"kind": "php"}` or `{"kind": "process", "language", "command",
+  "healthPath"}`), `schedules` (`[{name, every, expression, route, timeout, rule, paused}]`, `[]` for PHP apps) and
+  `queues[].route` (`null` for PHP apps); `arco info --resources --json` `config` items of kind `schedule`
+  (`{every, route, timeout}`) and `route` in queue options. `config.layer_conflict` gains the kind `schedule`
+  ([Config layer](docs/config-layer.md#inventory)).
+- **Added:** validation and errors for process apps: `validation.process_unsupported` (`{key}`, a PHP-only setting
+  such as `console`, `scheduler`, `consoleTimeout`, `consoleMemory`, `cache`, `failedJobsTable`, `deployCommands` or a
+  PHP `runtime` option), `validation.process_language` (`{language}`), `validation.process_main`,
+  `validation.process_main_flag` (`{main}`), `validation.process_command`, `validation.route` (`{kind, name}`: a
+  queue or schedule `route` or the `healthPath` that is not an origin-form path of RFC 3986 path characters),
+  `validation.health_path_internal` (`{path}`, a `healthPath` under `/_arco/`),
+  `validation.schedule_name` (`{name}`), `validation.schedule_every` (`{schedule, every}`),
+  `validation.schedule_timeout` (`{schedule, value}`), `validation.queue_variable_collision` (`{queues, variable}`),
+  `validation.queue_route_php` (`{queue}`) and `validation.schedules_php` (`{schedules}`); build keys `build.go`
+  (`{main}`), `build.go_missing` and `runtime.main_required`; deploy errors `deploy.process_package_too_large`
+  (`{size, max}`, a process zip over 250 MB with queues or schedules) and `deploy.runtime_kind_changed`
+  (`{function, runtime}`, an environment deployed as the other kind of app); and `config.process_unsupported_command`
+  (`{command}`) for the 30 commands that only work for Laravel apps: `cache:add`, `cache:remove`, `certificate:remove`, `certificate:set`, `command`, `console:add`, `console:remove`, `domain:add`, `domain:remove`, `failed-jobs:add`, `failed-jobs:remove`, `logs:retention`, `queue:add`, `queue:failed-table`, `queue:remove`, `queue:set`, `scheduler:remove`, `scheduler:set`, `set`, `storage:add`, `storage:cors`, `storage:expire`, `storage:public`, `storage:remove`, `table:add`, `table:remove`, `tinker`, `unset`, `vpc:remove` and `vpc:set`. They fail before reading
+  their input and have no `--json` document: the refusal is text (exit 1); with both `arco.php` and `arco.json` it is
+  `config.both_files`. In a process project `arco resources` prints the plain listing and never opens its picker.
+- **Changed:** a project with both `arco.php` and `arco.json` fails with `config.both_files`, and a layer-only
+  project with a `go.mod` whose `composer.json` does not require both `multiapi/arco` and `multiapi/arco-laravel`
+  deploys as a Go app ([Upgrading](docs/upgrading.md#upgrading-to-020)). PHP apps are otherwise unchanged: the runtime's PHP
+  path is proven byte for byte the same by a test.
+
 ## 0.19.2
 
 - **Security:** the default runtime build is now `php8.5.12-fp1.13.5-r1` (FrankenPHP 1.13.5, PHP 8.5.12). FrankenPHP

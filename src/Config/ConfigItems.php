@@ -13,7 +13,7 @@ final class ConfigItems
 {
     /**
      * Every item the config declares, deployed or not: queues, buckets, tables, cache, failed-jobs table, console,
-     * scheduler, domains (one each) and the VPC, in that order; singletons are named after their kind.
+     * scheduler, domains (one each), the VPC and the schedules, in that order; singletons are named after their kind.
      *
      * @return list<array{kind: string, name: string, source: string, options: array<string, mixed>}>
      */
@@ -21,7 +21,7 @@ final class ConfigItems
     {
         $items = [];
         foreach ($config->queues as $queue) {
-            $items[] = self::item('queue', $queue->name, self::source($config, "queue:{$queue->name}"), self::queueOptions($queue));
+            $items[] = self::item('queue', $queue->name, self::source($config, "queue:{$queue->name}"), self::queueOptions($config, $queue));
         }
         foreach ($config->storage as $storage) {
             $items[] = self::item('storage', $storage->name, self::source($config, "storage:{$storage->name}"), self::storageOptions($storage));
@@ -51,6 +51,9 @@ final class ConfigItems
         if ($config->vpc !== null) {
             $items[] = self::item('vpc', 'vpc', self::source($config, 'vpc'), self::vpcOptions($config->vpc));
         }
+        foreach ($config->schedules as $schedule) {
+            $items[] = self::item('schedule', $schedule->name, self::source($config, "schedule:{$schedule->name}"), self::scheduleOptions($schedule));
+        }
         return $items;
     }
 
@@ -68,7 +71,8 @@ final class ConfigItems
 
     /**
      * The source and options of the item a listed resource belongs to: by its `arco:resource` tag when it has one
-     * (`queue:<name>`, `queue:<name>:dlq`, `storage:<name>`, `table:<name>`, `cache`, `failed-jobs`), by the names
+     * (`queue:<name>`, `queue:<name>:dlq`, `storage:<name>`, `table:<name>`, `cache`, `failed-jobs`) or a schedule rule's
+     * `arco:schedule` tag, by the names
      * Arco gives otherwise. What Arco always makes (web function, execution role, log groups, stacks, Resource
      * Group) is `default` without options; a resource whose item is no longer in the config is `null`/`null`.
      * The scheduler rule and CloudFront function names are the deployer's, so the caller passes them.
@@ -86,6 +90,11 @@ final class ConfigItems
             if ($tagged !== false) {
                 return $tagged ?? self::none();
             }
+        }
+        // A process app's schedule rule (ProcessSchedules) carries the schedule's name; null once it is no longer declared.
+        $schedule = $tags['arco:schedule'] ?? null;
+        if ($type === 'events:rule' && $schedule !== null && $schedule !== '') {
+            return self::schedule($config, $schedule) ?? self::none();
         }
         return match ($type) {
             'lambda:function' => self::function($config, $name),
@@ -138,7 +147,7 @@ final class ConfigItems
         }
         foreach ($config->queues as $queue) {
             if ($config->workerFunctionName($queue->name) === $name) {
-                return self::found(self::source($config, "queue:{$queue->name}"), self::queueOptions($queue));
+                return self::found(self::source($config, "queue:{$queue->name}"), self::queueOptions($config, $queue));
             }
         }
         return self::none();
@@ -149,7 +158,7 @@ final class ConfigItems
     {
         foreach ($config->queues as $queue) {
             if ($queue->physicalName($config) === $name || $queue->dlqName($config) === $name) {
-                return self::found(self::source($config, "queue:{$queue->name}"), self::queueOptions($queue));
+                return self::found(self::source($config, "queue:{$queue->name}"), self::queueOptions($config, $queue));
             }
         }
         return self::none();
@@ -188,10 +197,27 @@ final class ConfigItems
     {
         foreach ($config->queues as $queue) {
             if ($queue->name === $name) {
-                return self::found(self::source($config, "queue:$name"), self::queueOptions($queue));
+                return self::found(self::source($config, "queue:$name"), self::queueOptions($config, $queue));
             }
         }
         return null;
+    }
+
+    /** @return array{source: ?string, options: ?array<string, mixed>}|null */
+    private static function schedule(AppConfig $config, string $name): ?array
+    {
+        foreach ($config->schedules as $schedule) {
+            if ($schedule->name === $name) {
+                return self::found(self::source($config, "schedule:$name"), self::scheduleOptions($schedule));
+            }
+        }
+        return null;
+    }
+
+    /** @return array<string, mixed> */
+    private static function scheduleOptions(ScheduleConfig $schedule): array
+    {
+        return ['every' => $schedule->every, 'route' => $schedule->route(), 'timeout' => $schedule->timeout];
     }
 
     /** @return array{source: ?string, options: ?array<string, mixed>}|null */
@@ -265,7 +291,7 @@ final class ConfigItems
     }
 
     /** @return array<string, mixed> */
-    private static function queueOptions(QueueConfig $queue): array
+    private static function queueOptions(AppConfig $config, QueueConfig $queue): array
     {
         return [
             'timeout' => $queue->timeout,
@@ -277,6 +303,7 @@ final class ConfigItems
             'fifo' => $queue->fifo,
             'existing' => $queue->existing,
             'default' => $queue->default,
+            'route' => $config->isProcess() ? $queue->route() : null,
         ];
     }
 

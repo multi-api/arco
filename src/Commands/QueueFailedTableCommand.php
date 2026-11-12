@@ -3,6 +3,7 @@
 namespace Multiapi\Arco\Commands;
 
 use Multiapi\Arco\Cli\ArcoCommand;
+use Multiapi\Arco\Cli\LaravelOnly;
 use Multiapi\Arco\Cli\UserError;
 use Multiapi\Arco\Commands\Concerns\EditsTables;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
@@ -15,7 +16,7 @@ use Throwable;
 
 /** @deprecated use failed-jobs:add and failed-jobs:remove; removed in 1.0 */
 #[AsCommand(name: 'queue:failed-table', description: 'Deprecated: use failed-jobs:add and failed-jobs:remove', hidden: true)]
-final class QueueFailedTableCommand extends ArcoCommand
+final class QueueFailedTableCommand extends ArcoCommand implements LaravelOnly
 {
     use ResolvesTarget;
     use EditsTables;

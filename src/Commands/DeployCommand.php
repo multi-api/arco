@@ -145,7 +145,7 @@ final class DeployCommand extends ArcoCommand
         try {
             $config = $this->loadTarget($input, $io, $stream === null ? null : $stream->warning(...));
             $this->jsonTarget($stream, $config);
-            $preset = $this->presets->detect($this->projectDir());
+            $preset = $this->presets->forConfig($config, $this->projectDir());
 
             $migrate = (bool) $input->getOption('migrate');
             $skipCommands = (bool) $input->getOption('no-deploy-commands');

@@ -1,0 +1,260 @@
+{
+  "worker": {
+    "spawn": [
+      {
+        "command": "<runtime>/bin/frankenphp",
+        "args": [
+          "run",
+          "--config",
+          "/tmp/arco/Caddyfile",
+          "--adapter",
+          "caddyfile"
+        ],
+        "cwd": "<runtime>/app",
+        "stdio": [
+          "inherit",
+          "pipe",
+          "inherit"
+        ],
+        "env": {
+          "APP_ENV": "production",
+          "ARCO": "1",
+          "AWS_LAMBDA_HTTP_ENDPOINT": "127.0.0.1:9000",
+          "AWS_REGION": "us-east-1",
+          "HOME": "/tmp/arco",
+          "PATH": "/usr/bin",
+          "XDG_CONFIG_HOME": "/tmp/arco/caddy/config",
+          "XDG_DATA_HOME": "/tmp/arco/caddy/data"
+        }
+      }
+    ],
+    "connect": [
+      {
+        "host": "127.0.0.1",
+        "port": 9000
+      }
+    ],
+    "mkdir": [
+      {
+        "dir": "/tmp/arco/storage/app/public",
+        "options": {
+          "recursive": true
+        }
+      },
+      {
+        "dir": "/tmp/arco/storage/framework/cache/data",
+        "options": {
+          "recursive": true
+        }
+      },
+      {
+        "dir": "/tmp/arco/storage/framework/sessions",
+        "options": {
+          "recursive": true
+        }
+      },
+      {
+        "dir": "/tmp/arco/storage/framework/views",
+        "options": {
+          "recursive": true
+        }
+      },
+      {
+        "dir": "/tmp/arco/storage/logs",
+        "options": {
+          "recursive": true
+        }
+      },
+      {
+        "dir": "/tmp/arco/caddy/config",
+        "options": {
+          "recursive": true
+        }
+      },
+      {
+        "dir": "/tmp/arco/caddy/data",
+        "options": {
+          "recursive": true
+        }
+      }
+    ],
+    "writes": [
+      {
+        "file": "/tmp/arco/Caddyfile",
+        "content": "{\n\tadmin off\n\tauto_https off\n\tfrankenphp {\n\t\tnum_threads 8\n\t\tmax_threads 64\n\t\tphp_ini session.upload_progress.enabled \"0\"\n\t\tphp_ini fatal_error_backtraces \"0\"\n\t\tphp_ini memory_limit \"512M\"\n\t\tworker {\n\t\t\tfile <runtime>/app/public/frankenphp-worker.php\n\t\t\tnum 4\n\t\t}\n\t}\n}\n\nhttp://:9000 {\n\tbind 127.0.0.1\n\troot * <runtime>/app/public\n\tencode zstd br gzip\n\t@noRequestId {\n\t\theader !X-Request-ID\n\t\theader !X-Amzn-RequestId\n\t\theader !X-Amz-Request-Id\n\t\theader !X-Amzn-Trace-Id\n\t}\n\trequest_header @noRequestId X-Request-ID {http.request.uuid}\n\tlog {\n\t\toutput stdout\n\t\tformat json\n\t}\n\tlog_append arco_request_id {http.request.uuid}\n\tphp_server {\n\t\tindex frankenphp-worker.php\n\t\ttry_files {path} frankenphp-worker.php\n\t}\n}\n"
+      }
+    ],
+    "accessChecks": [
+      {
+        "file": "<runtime>/bin/frankenphp",
+        "mode": 1
+      }
+    ],
+    "logs": [
+      {
+        "phase": "boot",
+        "data": {
+          "mode": "direct",
+          "endpoint": "127.0.0.1:9000"
+        }
+      },
+      {
+        "phase": "secrets",
+        "data": {
+          "resolved": 0
+        }
+      },
+      {
+        "phase": "frankenphp_ready",
+        "data": {}
+      },
+      {
+        "phase": "frankenphp_exit",
+        "data": {
+          "code": 3,
+          "signal": null
+        }
+      }
+    ],
+    "listen": [],
+    "exits": [
+      3
+    ],
+    "signals": {
+      "SIGTERM": 1,
+      "SIGINT": 1
+    }
+  },
+  "proxy": {
+    "spawn": [
+      {
+        "command": "<runtime>/bin/frankenphp",
+        "args": [
+          "run",
+          "--config",
+          "/tmp/arco/Caddyfile",
+          "--adapter",
+          "caddyfile"
+        ],
+        "cwd": "<runtime>/app",
+        "stdio": "inherit",
+        "env": {
+          "APP_ENV": "production",
+          "ARCO": "1",
+          "AWS_LAMBDA_HTTP_ENDPOINT": "127.0.0.1:9000",
+          "AWS_REGION": "us-east-1",
+          "HOME": "/tmp/arco",
+          "PATH": "/usr/bin",
+          "XDG_CONFIG_HOME": "/tmp/arco/caddy/config",
+          "XDG_DATA_HOME": "/tmp/arco/caddy/data"
+        }
+      }
+    ],
+    "connect": [
+      {
+        "host": "127.0.0.1",
+        "port": 8000
+      }
+    ],
+    "mkdir": [
+      {
+        "dir": "/tmp/arco/storage/app/public",
+        "options": {
+          "recursive": true
+        }
+      },
+      {
+        "dir": "/tmp/arco/storage/framework/cache/data",
+        "options": {
+          "recursive": true
+        }
+      },
+      {
+        "dir": "/tmp/arco/storage/framework/sessions",
+        "options": {
+          "recursive": true
+        }
+      },
+      {
+        "dir": "/tmp/arco/storage/framework/views",
+        "options": {
+          "recursive": true
+        }
+      },
+      {
+        "dir": "/tmp/arco/storage/logs",
+        "options": {
+          "recursive": true
+        }
+      },
+      {
+        "dir": "/tmp/arco/caddy/config",
+        "options": {
+          "recursive": true
+        }
+      },
+      {
+        "dir": "/tmp/arco/caddy/data",
+        "options": {
+          "recursive": true
+        }
+      }
+    ],
+    "writes": [
+      {
+        "file": "/tmp/arco/Caddyfile",
+        "content": "{\n\tadmin off\n\tauto_https off\n\tfrankenphp {\n\t\tnum_threads 4\n\t\tmax_threads 8\n\t\tphp_ini session.upload_progress.enabled \"0\"\n\t\tphp_ini fatal_error_backtraces \"0\"\n\t}\n}\n\nhttp://:8000 {\n\tbind 127.0.0.1\n\troot * <runtime>/app/public\n\tencode zstd br gzip\n\t@noRequestId {\n\t\theader !X-Request-ID\n\t\theader !X-Amzn-RequestId\n\t\theader !X-Amz-Request-Id\n\t\theader !X-Amzn-Trace-Id\n\t}\n\trequest_header @noRequestId X-Request-ID {http.request.uuid}\n\tphp_server\n}\n"
+      }
+    ],
+    "accessChecks": [
+      {
+        "file": "<runtime>/bin/frankenphp",
+        "mode": 1
+      }
+    ],
+    "logs": [
+      {
+        "phase": "boot",
+        "data": {
+          "mode": "proxy",
+          "endpoint": "127.0.0.1:9000"
+        }
+      },
+      {
+        "phase": "secrets",
+        "data": {
+          "resolved": 0
+        }
+      },
+      {
+        "phase": "frankenphp_ready",
+        "data": {}
+      },
+      {
+        "phase": "proxy_ready",
+        "data": {}
+      },
+      {
+        "phase": "frankenphp_exit",
+        "data": {
+          "code": 3,
+          "signal": null
+        }
+      }
+    ],
+    "listen": [
+      {
+        "host": "127.0.0.1",
+        "port": 9000,
+        "keepAliveTimeout": 65000
+      }
+    ],
+    "exits": [
+      3
+    ],
+    "signals": {
+      "SIGTERM": 1,
+      "SIGINT": 1
+    }
+  }
+}

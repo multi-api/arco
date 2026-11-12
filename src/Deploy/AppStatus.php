@@ -36,6 +36,13 @@ final readonly class AppStatus
          * @var list<array{service: string, id: ?string, arco: bool, environments: ?int, route_tables: list<string>, missing_route_tables: list<string>}>|null
          */
         public ?array $endpoints = null,
+        /**
+         * A process app's schedule rules found by tag: schedule name => whether the rule is disabled
+         * (arco scheduler:pause); [] for a PHP app, without rules, or without read access.
+         *
+         * @var array<string, bool>
+         */
+        public array $schedules = [],
     ) {
     }
 }

@@ -3,6 +3,7 @@
 namespace Multiapi\Arco\Commands;
 
 use Multiapi\Arco\Cli\ArcoCommand;
+use Multiapi\Arco\Cli\LaravelOnly;
 use Multiapi\Arco\Commands\Concerns\EditsStorage;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
 use Symfony\Component\Console\Attribute\AsCommand;
@@ -14,7 +15,7 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 use Throwable;
 
 #[AsCommand(name: 'storage:cors', description: 'Allow origins to call a storage from the browser (CORS)')]
-final class StorageCorsCommand extends ArcoCommand
+final class StorageCorsCommand extends ArcoCommand implements LaravelOnly
 {
     use ResolvesTarget;
     use EditsStorage;
