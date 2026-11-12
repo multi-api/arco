@@ -38,6 +38,7 @@ final class StepPrinter
         'deploy.log_retention_one_day' => ['groups' => 'deploy.log_groups.'],
         'deploy.log_retention_never' => ['groups' => 'deploy.log_groups.'],
         'deploy.log_retention_default' => ['groups' => 'deploy.log_groups.'],
+        'deploy.log_retention_default_json' => ['groups' => 'deploy.log_groups.'],
         'deploy.storage_kept' => ['objects' => 'deploy.storage_objects.'],
         'remove.storage_kept' => ['objects' => 'deploy.storage_objects.'],
         'deploy.table_created' => ['kind' => 'deploy.table_kind.'],

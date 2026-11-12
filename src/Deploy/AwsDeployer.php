@@ -1462,7 +1462,8 @@ final class AwsDeployer implements Deployer
         if ($config->logRetention === null) {
             // The default is announced when it changes a group (new, or kept forever until now), not on every deploy.
             if ($changed !== []) {
-                $onStep('deploy.log_retention_default', ['groups' => $scope]);
+                // A process app is configured by arco.json, so the hint names its syntax, not arco.php's.
+                $onStep($config->isProcess() ? 'deploy.log_retention_default_json' : 'deploy.log_retention_default', ['groups' => $scope]);
             }
             return;
         }

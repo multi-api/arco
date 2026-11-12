@@ -329,6 +329,7 @@ return [
     'deploy.log_retention' => 'Retención de logs: {days} días en los grupos de logs de {groups}',
     'deploy.log_retention_one_day' => 'Retención de logs: 1 día en los grupos de logs de {groups}',
     'deploy.log_retention_default' => 'Retención de logs: 30 días por defecto en los grupos de logs de {groups} (logRetention(false) los conserva para siempre)',
+    'deploy.log_retention_default_json' => 'Retención de logs: 30 días por defecto en los grupos de logs de {groups} ("logRetention": false en los settings de arco.json los conserva para siempre)',
     'deploy.log_retention_never' => 'Retención de logs: no expiran, en los grupos de logs de {groups}',
     'deploy.log_groups.web' => 'web',
     'deploy.log_groups.all' => 'web y consola',

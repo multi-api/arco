@@ -3,6 +3,12 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.20.1
+
+- **Fixed:** for a Go (process) app the default log retention line named `logRetention(false)`, which is `arco.php`
+  syntax. It is now the step `deploy.log_retention_default_json` (same `{groups}` param), which names
+  `"logRetention": false` in the `arco.json` settings. PHP apps still get `deploy.log_retention_default`.
+
 ## 0.20.0
 
 - **Added:** the process runtime, for Go apps ([Process runtime (Go)](docs/configuration.md#process-runtime-go)).

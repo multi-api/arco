@@ -526,7 +526,8 @@ alias's invoke permission. `--apply` needs `--env` (the app level spans every en
 group and, when the console is on, the console's, and each queue worker's; creating the groups first when they do not exist yet.
 `->logRetention(false)` (`arco logs:retention never`) makes them never expire. With no setting the groups
 keep 30 days (before 0.9 Arco left them alone, so logs never expired: set `->logRetention(false)` to keep that);
-`arco logs:retention --remove` goes back to the default. Allowed days are the ones CloudWatch
+`arco logs:retention --remove` goes back to the default. A Go app sets it with `"settings": {"logRetention": 30}` (or `false`) in `arco.json`; the deploy hint
+names that form (`deploy.log_retention_default_json`). Allowed days are the ones CloudWatch
 accepts (1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922,
 3288, 3653).
 
