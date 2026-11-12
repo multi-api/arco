@@ -3,6 +3,15 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.20.3
+
+- **Added:** `arco info --resources --json` has `schedules`, appended after `config` (before `error`): the same list as
+  `arco info --json`, `[{name, every, expression, route, timeout, rule, paused}]`, `[]` for a PHP app. `paused` comes
+  from the schedule rules alone (`tag:GetResources` and `events:DescribeRule`, not the rest of the status) and is
+  `null` when they cannot be read. Arco Cloud reads this to show whether a Go app's schedules are paused.
+- **Changed:** `config.layer_conflict` gains the param `file` (`arco.php`, or `arco.json` for a process app), and its
+  message names that file instead of always saying `arco.php`.
+
 ## 0.20.2
 
 - **Fixed:** a Go (process) app's web function no longer ends with `Runtime.ExitError` in `platform.spinDownReport`

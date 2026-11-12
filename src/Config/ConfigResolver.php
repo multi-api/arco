@@ -258,7 +258,12 @@ final class ConfigResolver
             $sources['permissions'] = 'cloud';
         }
 
-        $errors = array_merge(...array_values($conflicts));
+        // The params name the file the layer conflicts with: arco.json for a process app, arco.php otherwise.
+        $file = isset($raw['process']) ? 'arco.json' : 'arco.php';
+        $errors = array_map(
+            static fn (array $error): array => ['key' => $error['key'], 'params' => $error['params'] + ['file' => $file]],
+            array_merge(...array_values($conflicts)),
+        );
         if ($errors !== []) {
             throw new LayerConflicts($errors);
         }

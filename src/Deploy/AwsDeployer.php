@@ -1243,6 +1243,18 @@ final class AwsDeployer implements Deployer
         return (new TaggedResources($this->aws->taggingApi(), new OwnershipGuard($this->aws)))->list($config);
     }
 
+    public function schedulePauses(AppConfig $config): array
+    {
+        if (! $config->isProcess()) {
+            return [];
+        }
+        $paused = [];
+        foreach ($this->processSchedules()->rules($config) as $name => $rule) {
+            $paused[$name] = $rule['state'] === ProcessSchedules::DISABLED;
+        }
+        return $paused;
+    }
+
     /**
      * The queues whose workers remove deletes: the queues in arco.php and any left from queues removed
      * earlier (found by tag; when that lookup fails, only the queues in arco.php, with a warning when

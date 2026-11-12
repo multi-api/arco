@@ -162,7 +162,7 @@ buckets, tables, variables, domains and settings and never overrides `arco.php`:
 `config.layer_conflict` before any AWS call. Every other command ignores the flag and the variable, so do not expect
 `queue:list` or the editing commands to see layer entries. A layer queue, storage or table with `adopt: true` imports
 a retained resource of this app and environment. `--json` errors carry `error.params` when the key has params
-(`config.layer_conflict`: `{kind, name}`). Format, merge rules and adoption: [Config layer](config-layer.md).
+(`config.layer_conflict`: `{kind, name, file}`). Format, merge rules and adoption: [Config layer](config-layer.md).
 
 ### Go apps (`arco.json`)
 

@@ -187,4 +187,13 @@ interface Deployer
      * @throws \Aws\Exception\AwsException a refused or failed lookup
      */
     public function resources(AppConfig $config): array;
+
+    /**
+     * Whether each deployed schedule rule of a process app is paused, by schedule name: what `info --resources`
+     * reports without reading the rest of the status. Empty for a PHP app or an app without schedule rules.
+     *
+     * @return array<string, bool>
+     * @throws \Aws\Exception\AwsException a refused or failed lookup
+     */
+    public function schedulePauses(AppConfig $config): array;
 }

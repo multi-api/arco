@@ -24,7 +24,7 @@ return [
     'config.json_runtime_missing' => 'arco.json has no "runtime" and there is no go.mod to infer one from. Add "runtime": {"language": "go"}.',
     'config.json_php_runtime' => 'arco.json is for process apps: "runtime.kind" cannot be "php" yet. Use arco.php for PHP apps.',
     'config.layer_environment' => 'The config layer is for environment "{layer}", not "{environment}".',
-    'config.layer_conflict' => 'The config layer and arco.php both set {kind} "{name}" differently. Remove it from one of them.',
+    'config.layer_conflict' => 'The config layer and {file} both set {kind} "{name}" differently. Remove it from one of them.',
     'config.layer_adopt_waiting' => '{kind} "{name}" is still declared in arco.php, so the config layer\'s entry waits: remove it from arco.php to hand it over.',
     'config.env_required' => 'This project declares no environments. Pass the one to use with --env.',
     'config.choose_environment' => 'This project has several environments. Pass one with --env: {available}.',

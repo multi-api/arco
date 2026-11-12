@@ -132,7 +132,7 @@ final class InfoCommand extends ArcoCommand
                 // Additive (process runtime), last: {"kind":"php"} or the process runtime; the schedules of a
                 // process app ([] for PHP apps), paused from the rule (null when unknown or not deployed).
                 'runtime' => self::jsonRuntime($config),
-                'schedules' => self::jsonSchedules($config, $status),
+                'schedules' => self::jsonSchedules($config, $status?->schedules),
             ] + ($remoteError !== null ? ['error' => $remoteError] : []), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
             return $remoteError === null ? self::SUCCESS : self::FAILURE;
         }
@@ -192,7 +192,7 @@ final class InfoCommand extends ArcoCommand
                         false => $this->t('info.schedule_active'),
                         null => '-',
                     },
-                ], self::jsonSchedules($config, $status)),
+                ], self::jsonSchedules($config, $status?->schedules)),
             );
         }
 
@@ -229,7 +229,7 @@ final class InfoCommand extends ArcoCommand
     private function showResources(AppConfig $config, ?string $profile, bool $json, OutputInterface $output, SymfonyStyle $io): int
     {
         $group = EnvironmentGroup::name($config);
-        [$resources, $error] = $this->taggedResources($config, $profile);
+        [$resources, $error, $paused] = $this->taggedResources($config, $profile);
         if ($json) {
             $output->writeln((string) json_encode([
                 'schema' => 1,
@@ -240,6 +240,9 @@ final class InfoCommand extends ArcoCommand
                 // Names and sources only: a variable's value is never printed here.
                 'variables' => ConfigItems::variables($config),
                 'config' => ConfigItems::list($config),
+                // Additive (0.20.3), last: the same `schedules` as `info --json` ([] for PHP apps), so a caller of
+                // --resources (Arco Cloud) gets the paused state. paused is null when the rules are unreadable.
+                'schedules' => self::jsonSchedules($config, $paused),
             ] + ($error !== null ? ['error' => $error] : []), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
             return $error === null ? self::SUCCESS : self::FAILURE;
         }
@@ -264,7 +267,9 @@ final class InfoCommand extends ArcoCommand
      * The tagged resources, or the error to show: no profile resolves without prompting, the
      * credentials are missing or expired, or AWS refused the lookup (tag:GetResources).
      *
-     * @return array{0: list<array{type: string, name: string, arn: string, retained: bool, relations: list<array{type: string, target: string}>, source: ?string, options: ?array<string, mixed>}>, 1: ?string}
+     * With them, the paused state of a process app's schedule rules (see pauses()).
+     *
+     * @return array{0: list<array{type: string, name: string, arn: string, retained: bool, relations: list<array{type: string, target: string}>, source: ?string, options: ?array<string, mixed>}>, 1: ?string, 2: array<string, bool>|null}
      */
     private function taggedResources(AppConfig $config, ?string $profileFlag): array
     {
@@ -272,16 +277,35 @@ final class InfoCommand extends ArcoCommand
         $env = getenv();
         $choice = ProfileResolver::resolve($profileFlag, $env, $config, new LocalState($this->projectDir()));
         if ($choice === null) {
-            return [[], $this->t('info.resources_no_profile', ['environment' => $config->environment])];
+            return [[], $this->t('info.resources_no_profile', ['environment' => $config->environment]), null];
         }
         try {
-            return [($this->deployerFactory)($this->guardedClients($config, $choice->profile))->resources($config), null];
+            $deployer = ($this->deployerFactory)($this->guardedClients($config, $choice->profile));
+            return [$deployer->resources($config), null, self::pauses($deployer, $config)];
         } catch (UserError $e) {
-            return [[], $e->getMessage()];
+            return [[], $e->getMessage(), null];
         } catch (Throwable $e) {
             $message = $e instanceof AwsException ? $e->getAwsErrorMessage() : null;
             return [[], $this->credentialProblem($e, $choice->profile)
-                ?? $this->t('info.resources_failed', ['error' => is_string($message) && $message !== '' ? $message : $e->getMessage()])];
+                ?? $this->t('info.resources_failed', ['error' => is_string($message) && $message !== '' ? $message : $e->getMessage()]), null];
+        }
+    }
+
+    /**
+     * The paused state of a process app's schedule rules, by schedule name; null when there are none to read or they
+     * are unreadable (the resources list still shows, with paused null, as `info --json` does without access).
+     *
+     * @return array<string, bool>|null
+     */
+    private static function pauses(Deployer $deployer, AppConfig $config): ?array
+    {
+        if (! $config->isProcess() || $config->schedules === []) {
+            return null;
+        }
+        try {
+            return $deployer->schedulePauses($config);
+        } catch (Throwable) {
+            return null;
         }
     }
 
@@ -332,9 +356,10 @@ final class InfoCommand extends ArcoCommand
      * A process app's schedules with the EventBridge expression, the rule's name and whether the rule is
      * disabled (null when it was not read: not deployed, no profile or no read access).
      *
+     * @param array<string, bool>|null $paused by schedule name; null when unknown
      * @return list<array{name: string, every: string, expression: ?string, route: string, timeout: int, rule: string, paused: ?bool}>
      */
-    private static function jsonSchedules(AppConfig $config, ?AppStatus $status): array
+    private static function jsonSchedules(AppConfig $config, ?array $paused): array
     {
         return array_map(static fn (ScheduleConfig $schedule): array => [
             'name' => $schedule->name,
@@ -343,7 +368,7 @@ final class InfoCommand extends ArcoCommand
             'route' => $schedule->route(),
             'timeout' => $schedule->timeout,
             'rule' => ProcessSchedules::ruleName($config, $schedule->name),
-            'paused' => $status?->schedules[$schedule->name] ?? null,
+            'paused' => $paused[$schedule->name] ?? null,
         ], $config->schedules);
     }
 

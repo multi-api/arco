@@ -24,7 +24,7 @@ return [
     'config.json_runtime_missing' => 'arco.json no tiene "runtime" y no hay go.mod para deducirlo. Añade "runtime": {"language": "go"}.',
     'config.json_php_runtime' => 'arco.json es para apps de proceso: "runtime.kind" no puede ser "php" todavía. Usa arco.php para apps PHP.',
     'config.layer_environment' => 'La capa de configuración es del entorno "{layer}", no de "{environment}".',
-    'config.layer_conflict' => 'La capa de configuración y arco.php definen {kind} "{name}" de forma distinta. Quítalo de uno de los dos.',
+    'config.layer_conflict' => 'La capa de configuración y {file} definen {kind} "{name}" de forma distinta. Quítalo de uno de los dos.',
     'config.layer_adopt_waiting' => '{kind} "{name}" sigue declarado en arco.php, así que la entrada de la capa de configuración espera: quítalo de arco.php para cederlo.',
     'config.env_required' => 'Este proyecto no declara entornos. Indica el que quieres usar con --env.',
     'config.choose_environment' => 'Este proyecto tiene varios entornos. Indica uno con --env: {available}.',

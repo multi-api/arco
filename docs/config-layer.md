@@ -144,9 +144,9 @@ count). The layer never overrides: a different value is a conflict and the comma
 asks, so `arco.php`'s first queue stays the default.
 
 Every conflict is listed, one per line, in this order of kinds. Each is `config.layer_conflict` with params
-`{kind, name}`, where `kind` is `name`, `region`, `setting`, `variable`, `queue`, `storage`, `table` or `schedule` and
+`{kind, name, file}`, where `kind` is `name`, `region`, `setting`, `variable`, `queue`, `storage`, `table` or `schedule` and
 `name` is the layer's name or region, the setting's key, the variable's name (never its value) or the queue, storage,
-table or schedule name. In `--json`, the error carries the first conflict's key and params.
+table or schedule name, and `file` is the project's file (`arco.php`, or `arco.json` for a process app). In `--json`, the error carries the first conflict's key and params.
 
 ### Over `arco.json`
 
@@ -229,6 +229,8 @@ tables](getting-started.md#permissions-for-storage-and-tables).
   singletons; a domain's options are `{domain, dns, certificate}`, a schedule's `{every, route, timeout}`). A queue's
   options have `route`: its route in a process app, `null` in a PHP app. Schedule rules (`events:rule`) are listed as
   resources with their schedule's options.
+- `schedules` (0.20.3, after `config`): the same list as `arco info --json` below, `[]` for a PHP app. `paused` is read
+  from the schedule rules only, and is `null` when they cannot be read; the rest of the document still shows.
 
 `arco info --json` has `runtime` (`{"kind": "php"}`, or `{"kind": "process", "language": "go", "command": [...],
 "healthPath": "/"}`) and `schedules`, the resolved schedules: `[{name, every, expression, route, timeout, rule,
@@ -282,7 +284,7 @@ $types = $inventory->collect($config, $aws, null, ResourceType::cases(), functio
 | `config.layer_invalid` | `path`, `reason` | Parse error, unknown key, wrong type |
 | `config.layer_missing` | `key` | No `arco.php` and no `name` or `region` in the layer |
 | `config.layer_environment` | `layer`, `environment` | `--env` is not the layer's environment |
-| `config.layer_conflict` | `kind`, `name` | The layer sets differently what `arco.php` sets (one error per conflict) |
+| `config.layer_conflict` | `kind`, `name`, `file` | The layer sets differently what `arco.php` or `arco.json` (`file`) sets (one error per conflict) |
 | `config.layer_adopt_waiting` | `kind`, `name` | Note: an `adopt` entry waits for `arco.php` to let go of the name |
 | `config.both_files` | | The project has both `arco.php` and `arco.json` |
 | `config.json_invalid` | `pointer`, `reason` | `arco.json`: parse error, unknown key, wrong type |

@@ -818,7 +818,8 @@ A deploy role (like the one of Arco's own end-to-end run, in a dedicated test ac
   `resource-groups:GetGroupQuery`, `resource-groups:CreateGroup`, `resource-groups:Tag`,
   `resource-groups:GetGroup`, `resource-groups:GetTags`, `resource-groups:UpdateGroupQuery` and, for
   `arco remove`, `resource-groups:DeleteGroup`. Optional: without them the deploy and the remove print a note
-- for `arco info --resources` and the list `arco remove` prints before it asks: `tag:GetResources`
+- for `arco info --resources` and the list `arco remove` prints before it asks: `tag:GetResources` (and, for a
+  process app's schedules, `events:DescribeRule`: without it `paused` is `null`)
 - for the runtime clean-up: `s3:ListBucket` on the code bucket and `s3:GetObject`, `s3:PutObject`,
   `s3:DeleteObject` on `runtime/*`
 - for queues (only when `arco.php` has `queue()`; see [Permissions for queues](#permissions-for-queues))
