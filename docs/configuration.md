@@ -1767,6 +1767,8 @@ log.Fatal(http.ListenAndServe(addr, mux))
 
 - Arco waits up to 10 seconds for the port to open, then sends every request through its proxy. If the process
   exits, the function instance ends and Lambda starts a new one.
+- When Lambda spins an instance down, the process gets `SIGTERM` and one second to exit (then `SIGKILL`); handle the
+  signal to close connections (`http.Server.Shutdown`). Either way the instance ends cleanly.
 - The proxy passes a request id on: the first of `X-Request-ID`, `X-Amzn-RequestId`, `X-Amz-Request-Id` and
   `X-Amzn-Trace-Id`, else a new UUID it adds as `X-Request-ID`.
 - With [`accessLog`](#access-log) the proxy writes the same `{"arco":"request",...}` line per request as for PHP.

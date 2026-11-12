@@ -3,6 +3,16 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.20.2
+
+- **Fixed:** a Go (process) app's web function no longer ends with `Runtime.ExitError` in `platform.spinDownReport`
+  each time Lambda spins an instance down. On `SIGTERM` the runtime forwards the signal, gives the process one second
+  (then `SIGKILL`) and exits `0` whatever the process's own exit; its `process_exit` line gains `"shutdown": true`. A
+  process that exits on its own still ends the runtime with its code. PHP apps were not affected.
+- **Fixed:** `arco logs` printed every web function line twice. Lambda Web Functions write each line to
+  `/aws/lambda/web/<app>-<env>` and again to `/aws/lambda/web/<app>-<env>.local`; both groups are still read, and the
+  second copy of a line (same stream, timestamp and message) is dropped, with and without `--follow`.
+
 ## 0.20.1
 
 - **Fixed:** for a Go (process) app the default log retention line named `logRetention(false)`, which is `arco.php`

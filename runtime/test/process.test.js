@@ -12,14 +12,15 @@ const RUNTIME = path.join(__dirname, '..');
 const INDEX = path.join(RUNTIME, 'index.js');
 const MODULES = [INDEX, path.join(RUNTIME, 'lib', 'supervisor.js'), path.join(RUNTIME, 'lib', 'process.js')];
 
-async function run({ config, executable = true }) {
+async function run({ config, executable = true, end = (out) => out.die(7) }) {
   const out = { spawn: [], connect: [], mkdir: [], writes: [], copies: [], chmods: [], logs: [], exits: [], proxy: [] };
   const children = [];
   const patches = [];
   const patch = (target, key, value) => { patches.push([target, key, target[key]]); target[key] = value; };
   patch(childProcess, 'spawn', (command, args, options) => {
     const child = new EventEmitter();
-    child.kill = () => {};
+    child.kills = [];
+    child.kill = (signal) => { child.kills.push(signal); };
     children.push(child);
     out.spawn.push({ command, args, cwd: options.cwd, env: options.env, stdio: options.stdio });
     return child;
@@ -54,7 +55,7 @@ async function run({ config, executable = true }) {
     await main({ fs: fakeFs, log: (phase, data = {}) => out.logs.push({ phase, data }) });
     out.children = children;
     out.die = (code, signal = null) => children[0].emit('exit', code, signal);
-    out.die(7);
+    await end(out);
   } finally {
     delete globalThis.__ARCO_NO_AUTOSTART__;
     for (const [signal, keep] of Object.entries(signalListeners)) {
@@ -113,6 +114,46 @@ test('the process exiting ends the runtime with its exit code', async () => {
   const out = await run({ config: CONFIG });
   assert.deepEqual(out.exits, [7]);
   assert.deepEqual(out.logs.find((l) => l.phase === 'process_exit').data, { code: 7, signal: null });
+});
+
+test('SIGTERM from Lambda is forwarded and the runtime exits 0 when the process ends by the signal', async () => {
+  const out = await run({
+    config: CONFIG,
+    end: (o) => {
+      process.emit('SIGTERM', 'SIGTERM');
+      // A Go binary without a signal handler dies by the signal: no code.
+      o.die(null, 'SIGTERM');
+    },
+  });
+  assert.deepEqual(out.children[0].kills, ['SIGTERM']);
+  assert.deepEqual(out.exits, [0], 'a non-zero exit is reported by Lambda as Runtime.ExitError at spin-down');
+  assert.deepEqual(out.logs.find((l) => l.phase === 'process_exit').data, { code: null, signal: 'SIGTERM', shutdown: true });
+});
+
+test('a process that handles SIGTERM and exits non-zero still ends a shutdown with 0', async () => {
+  const out = await run({ config: CONFIG, end: (o) => { process.emit('SIGTERM', 'SIGTERM'); o.die(2); } });
+  assert.deepEqual(out.exits, [0]);
+});
+
+test('a process that ignores SIGTERM is killed after the grace period and the runtime exits 0', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const out = await run({
+    config: CONFIG,
+    end: (o) => {
+      process.emit('SIGTERM', 'SIGTERM');
+      t.mock.timers.tick(999);
+      assert.deepEqual(o.children[0].kills, ['SIGTERM']);
+      t.mock.timers.tick(1);
+      assert.deepEqual(o.children[0].kills, ['SIGTERM', 'SIGKILL']);
+      o.die(null, 'SIGKILL');
+    },
+  });
+  assert.deepEqual(out.exits, [0]);
+});
+
+test('a process that dies on its own, with no signal sent to the runtime, still ends it with code 1', async () => {
+  const out = await run({ config: CONFIG, end: (o) => o.die(null, 'SIGKILL') });
+  assert.deepEqual(out.exits, [1]);
 });
 
 test('isInternalPath is re-exported from lib/process.js', () => {

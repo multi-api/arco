@@ -14,7 +14,8 @@ final class LogGroups
      */
     public static function for(AppConfig $config, string $source, ?string $queue = null): array
     {
-        // Web Functions write to /aws/lambda/web/<function> and, for some events, "<group>.local".
+        // Web Functions write every line to the in-Region "<group>.local" first, then centralize it into the group
+        // (the .local copy stays). Both are read for the earlier .local copy; WebLogCopies drops the repeat.
         $web = '/aws/lambda/web/' . $config->functionName();
         $console = '/aws/lambda/' . $config->consoleFunctionName();
         $workers = array_map(fn ($q) => '/aws/lambda/' . $config->workerFunctionName($q->name), $config->queues);

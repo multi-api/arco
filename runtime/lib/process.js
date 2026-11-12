@@ -8,6 +8,8 @@ const PORT = 8000;
 const HOST = '127.0.0.1';
 const TMP = '/tmp/arco';
 const START_TIMEOUT_MS = 10_000;
+// How long a process gets to end after SIGTERM before it is killed. Lambda spins down idle instances only.
+const STOP_GRACE_MS = 1000;
 
 // command is [executable, ...arguments], the executable relative to app/. A zip that lost the executable bit gets a
 // copy in /tmp/arco/bin, as resolveBinary does for FrankenPHP.
@@ -28,15 +30,31 @@ function resolveExecutable(root, command) {
 
 async function startProcess(root, config, env, log) {
   const executable = resolveExecutable(root, config.command);
+  let stopping = false;
   const child = supervisor.spawnProcess(executable, config.command.slice(1), {
     cwd: path.join(root, 'app'),
     env: { ...env, PORT: String(PORT), HOST, ARCO: '1', HOME: TMP },
     stdio: 'inherit',
     onExit: (code, signal) => {
+      if (stopping) {
+        // Lambda asked for the shutdown: any end of the process is a clean one. A non-zero exit would be reported
+        // as Runtime.ExitError in platform.spinDownReport. A Go binary without a signal handler dies by SIGTERM.
+        log('process_exit', { code, signal, shutdown: true });
+        process.exit(0);
+        return;
+      }
       log('process_exit', { code, signal });
       process.exit(code ?? 1);
     },
   });
+  // supervisor.spawnProcess forwards the signal to the process; a process that ignores it is killed after the grace.
+  for (const name of ['SIGTERM', 'SIGINT']) {
+    process.on(name, () => {
+      if (stopping) return;
+      stopping = true;
+      setTimeout(() => child.kill('SIGKILL'), STOP_GRACE_MS).unref();
+    });
+  }
   await supervisor.waitForPort(HOST, PORT, START_TIMEOUT_MS, 'process');
   log('process_ready');
   return child;

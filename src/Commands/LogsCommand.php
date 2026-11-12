@@ -24,6 +24,7 @@ use Multiapi\Arco\Logs\LogReader;
 use Multiapi\Arco\Logs\LogRenderer;
 use Multiapi\Arco\Logs\PollingFollower;
 use Multiapi\Arco\Logs\TimeExpression;
+use Multiapi\Arco\Logs\WebLogCopies;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
@@ -111,7 +112,11 @@ final class LogsCommand extends ArcoCommand
             $pattern = LogFilter::pattern(self::stringOption($input->getOption('filter')), $request);
             $renderer = new LogRenderer($this->t(...), $output->isVerbose(), (bool) $input->getOption('platform'));
             $json = (bool) $input->getOption('json');
-            $print = static function (LogEvent $event) use ($output, $filter, $renderer, $json): void {
+            $copies = new WebLogCopies();
+            $print = static function (LogEvent $event) use ($output, $filter, $renderer, $json, $copies): void {
+                if (! $copies->first($event)) {
+                    return;
+                }
                 $line = LogLine::parse($event->message);
                 if (! $filter->accepts($line)) {
                     return;

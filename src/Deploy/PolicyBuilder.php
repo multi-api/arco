@@ -27,7 +27,8 @@ final class PolicyBuilder
      */
     public static function document(string $region, string $account, string $function, array $references, array $permissions = [], ?string $codeBucket = null, array $queueArns = [], array $workerFunctions = [], array $bucketArns = [], array $tableArns = [], array $genericTableArns = [], bool $vpcAccess = false, ?string $variablesPrefix = null, ?string $kmsKey = null): array
     {
-        // Web Functions log to /aws/lambda/web/<function> and also to a "<group>.local" group; the
+        // Web Functions log to the in-Region "<group>.local" group, then Lambda centralizes into
+        // /aws/lambda/web/<function>: without both, a Region's logs are not delivered. The
         // console function to the classic /aws/lambda/<function>-console group.
         $group = "arn:aws:logs:$region:$account:log-group:/aws/lambda/web/$function";
         $console = "arn:aws:logs:$region:$account:log-group:/aws/lambda/$function-console";

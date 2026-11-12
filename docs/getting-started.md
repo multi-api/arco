@@ -589,7 +589,8 @@ Laravel log lines show as `HH:MM:SS LEVEL message [requestId=...]`; `-v` adds th
 traces, `--platform` shows Lambda's own events, `--json` prints raw events, `--source=all|web|console|queues`
 (default `all`) picks the functions (`queues`: every queue worker; `--queue=<name>` one worker, `--console`
 the console), `--filter="text"` searches on CloudWatch's side and `--level` sets a
-minimum level.
+minimum level. Lambda writes each web function line to two log groups (`/aws/lambda/web/<app>-<env>` and its
+`.local` copy); `arco logs` reads both and prints each line once.
 
 `--since` and `--until` take `30s`, `10m`, `2h`, `1d` or a date (`"2026-10-15 14:00"`); bare numbers are
 rejected. `--since` defaults to `10m`. `--until` cannot be combined with `--follow`. When more than
