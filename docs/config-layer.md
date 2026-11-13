@@ -244,6 +244,11 @@ without it. `adopt` is not an option of the resolved schedule: `info --resources
   resources with their schedule's options.
 - `schedules` (0.20.3, after `config`): the same list as `arco info --json` below, `[]` for a PHP app. `paused` is read
   from the schedule rules only, and is `null` when they cannot be read; the rest of the document still shows.
+- `scheduler` (0.20.5, after `schedules`): the Laravel scheduler, `{"every": 5, "paused": false}`, or `null` without
+  `scheduler()` (and for a process app, which has `schedules` instead). `paused` is `true` when the rule is disabled
+  (`arco scheduler:pause`), `false` when enabled and `null` when the rule does not exist or cannot be read (no profile,
+  no `events:DescribeRule`); it never fails the command. Only the scheduler rule is read (one `DescribeRule`). It
+  carries the same value as `settings.schedulerPaused` in `arco info --json`.
 
 `arco info --json` has `runtime` (`{"kind": "php"}`, or `{"kind": "process", "language": "go", "command": [...],
 "healthPath": "/"}`) and `schedules`, the resolved schedules: `[{name, every, expression, route, timeout, rule,

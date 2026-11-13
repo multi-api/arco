@@ -11,15 +11,17 @@ composer require multiapi/arco-laravel:^0.12
 vendor/bin/arco info --env=staging     # validation runs here: errors and deprecations name the fix
 ```
 
-## Upgrading to 0.20.4
+## Upgrading to 0.20.5
 
 Nothing is required: `arco.php`, `arco.json` and every `--json` key keep working. A Go app installs Arco globally, so
-it upgrades with `composer global require multiapi/arco:^0.20.4`. What changed since 0.20.0:
+it upgrades with `composer global require multiapi/arco:^0.20.5`. What changed since 0.20.0:
 
 - **Redeploy Go apps** (0.20.2): the web function no longer ends with `Runtime.ExitError` when Lambda spins an
   instance down. An environment keeps its old runtime until you run `arco deploy`. PHP apps were not affected.
 - `arco logs` no longer prints each web function line twice (0.20.2).
 - `arco info --resources --json` gains `schedules`, with `paused` for each one (0.20.3). Keys are only added.
+- `arco info --resources --json` gains `scheduler`, `{"every", "paused"}` for the Laravel scheduler or `null`
+  (0.20.5), after `schedules`. Keys are only added.
 - `config.layer_conflict` and `config.layer_adopt_waiting` gain the param `file` (`arco.php`, or `arco.json` for a
   process app), and their messages name it (0.20.3, 0.20.4). If you match the message text, match the key instead.
 - A config layer schedule accepts `adopt` (0.20.4). To move a schedule from `arco.json` to a layer (Arco Cloud does

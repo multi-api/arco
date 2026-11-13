@@ -1255,6 +1255,15 @@ final class AwsDeployer implements Deployer
         return $paused;
     }
 
+    public function schedulerPaused(AppConfig $config): ?bool
+    {
+        if ($config->scheduler === null) {
+            return null;
+        }
+        $state = $this->schedulerRule()->state($config);
+        return $state === null ? null : $state === SchedulerRule::DISABLED;
+    }
+
     /**
      * The queues whose workers remove deletes: the queues in arco.php and any left from queues removed
      * earlier (found by tag; when that lookup fails, only the queues in arco.php, with a warning when
@@ -1536,8 +1545,7 @@ final class AwsDeployer implements Deployer
         $schedulerPaused = null;
         if ($config->scheduler !== null) {
             try {
-                $state = $this->schedulerRule()->state($config);
-                $schedulerPaused = $state === null ? null : $state === SchedulerRule::DISABLED;
+                $schedulerPaused = $this->schedulerPaused($config);
             } catch (AwsException) {
                 // Unknown without EventBridge read access; the rest of the status still shows.
             }

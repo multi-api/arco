@@ -158,4 +158,9 @@ final class ChangeTrackingDeployer implements Deployer
     {
         return $this->inner->schedulePauses($config);
     }
+
+    public function schedulerPaused(AppConfig $config): ?bool
+    {
+        return $this->inner->schedulerPaused($config);
+    }
 }

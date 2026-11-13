@@ -3,6 +3,15 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.20.5
+
+- **Added:** `arco info --resources --json` has `scheduler`, appended after `schedules` (before `error`):
+  `{"every": <minutes>, "paused": true|false|null}` for an app with `scheduler()`, `null` without one (and for process
+  apps, which use `schedules`). `paused` is `true` when the Laravel scheduler rule is disabled
+  (`arco scheduler:pause`), `false` when enabled, and `null` when the rule does not exist or cannot be read (no
+  profile, no `events:DescribeRule`); the command does not fail for it. It is read with one `events:DescribeRule`,
+  not the rest of the status. Arco Cloud reads this to keep a Laravel app's paused scheduler across deploys.
+
 ## 0.20.4
 
 - **Added:** a config layer schedule accepts `adopt` (boolean), like queues, storage and tables. While `arco.json`

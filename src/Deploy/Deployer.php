@@ -196,4 +196,12 @@ interface Deployer
      * @throws \Aws\Exception\AwsException a refused or failed lookup
      */
     public function schedulePauses(AppConfig $config): array;
+
+    /**
+     * Whether the Laravel scheduler rule (scheduler()) is paused: true when disabled, false when enabled, null without
+     * a scheduler or when the rule does not exist. One DescribeRule at most, for `info --resources`.
+     *
+     * @throws \Aws\Exception\AwsException a refused or failed lookup
+     */
+    public function schedulerPaused(AppConfig $config): ?bool;
 }

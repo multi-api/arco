@@ -510,7 +510,8 @@ enables it again. They do not edit `arco.php`, and a deploy keeps a paused rule 
 new rules start enabled. Without a rule in AWS they fail and change nothing; a rule already paused (or
 active) is "nothing to change". `arco info` shows a paused scheduler as `every 5 min (paused)`, and `--json`
 adds `settings.schedulerPaused`: `true`, `false`, or `null` without a scheduler, a rule or EventBridge read
-access.
+access. `arco info --resources --json` carries the same state as `scheduler`: `{"every": 5, "paused": true}`, or
+`null` without a scheduler (0.20.5).
 
 `scheduler:set` and `scheduler:remove` can also apply the change without a deploy: after editing `arco.php`
 they ask "Apply now in AWS without a deploy?" (default no), `--apply` applies without asking, and a
