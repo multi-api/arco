@@ -72,6 +72,26 @@ function waitForPort(host, port, timeoutMs = 9000, name = 'FrankenPHP') {
   });
 }
 
+// Polls each of ports in turn until one accepts a connection; resolves the first port that does.
+function waitForAnyPort(host, ports, timeoutMs = 9000, name = 'process') {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolve, reject) => {
+    let index = 0;
+    const attempt = () => {
+      const port = ports[index];
+      const socket = net.connect(port, host);
+      socket.once('connect', () => { socket.destroy(); resolve(port); });
+      socket.once('error', () => {
+        socket.destroy();
+        index = (index + 1) % ports.length;
+        if (Date.now() > deadline) reject(new Error(`${name} did not listen on ${host}:${ports.join(' or ')} within ${timeoutMs} ms`));
+        else setTimeout(attempt, index === 0 ? 25 : 0);
+      });
+    };
+    attempt();
+  });
+}
+
 // The path of a request target, without query or fragment: origin-form (`/a?b`) as is, absolute-form
 // (`http://host/a?b`, which Go's net/http routes by its path) by its pathname. Anything else (`*`, authority-form,
 // garbage) has no path: null.
@@ -130,7 +150,8 @@ const HOP_BY_HOP = new Set(['connection', 'keep-alive', 'proxy-connection', 'tra
 // options is for the process kind (PHP passes none): blockInternal answers 404 for /_arco/ paths, requestIds adds an
 // X-Request-ID when the request carries no id, accessLog writes one {"arco":"request",...} line per response to `output`.
 // onResponse (telemetry, PHP proxy mode too) is called once per response that finished.
-function startProxy(host, port, upstreamHost, upstreamPort, options = {}) {
+// upstream is a port number or an object { port } read per request (a front that dies switches it to the app).
+function startProxy(host, port, upstreamHost, upstream, options = {}) {
   const { blockInternal = false, requestIds = false, accessLog = false, output = process.stdout, onResponse = null } = options;
   const agent = new http.Agent({ keepAlive: true, maxSockets: 256 });
   const server = http.createServer((req, res) => {
@@ -180,21 +201,22 @@ function startProxy(host, port, upstreamHost, upstreamPort, options = {}) {
     headers['x-forwarded-proto'] ??= 'https';
     headers['x-forwarded-host'] ??= req.headers.host;
 
-    const upstream = http.request({ host: upstreamHost, port: upstreamPort, method: req.method, path: req.url, headers, agent }, (up) => {
+    const upstreamPort = typeof upstream === 'object' && upstream !== null ? upstream.port : upstream;
+    const upstreamRequest = http.request({ host: upstreamHost, port: upstreamPort, method: req.method, path: req.url, headers, agent }, (up) => {
       const out = {};
       for (const [name, value] of Object.entries(up.headers)) if (!HOP_BY_HOP.has(name)) out[name] = value;
       res.writeHead(up.statusCode, up.statusMessage, out);
       up.pipe(res);
     });
-    upstream.on('error', () => {
+    upstreamRequest.on('error', () => {
       if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain' });
       res.end('Bad Gateway');
     });
-    req.on('aborted', () => upstream.destroy());
-    req.pipe(upstream);
+    req.on('aborted', () => upstreamRequest.destroy());
+    req.pipe(upstreamRequest);
   });
   server.keepAliveTimeout = 65_000;
   return new Promise((resolve) => server.listen(port, host, () => resolve(server)));
 }
 
-module.exports = { prepareTmp, resolveBinary, spawnProcess, spawnFrankenphp, waitForPort, startProxy, isInternalPath };
+module.exports = { prepareTmp, resolveBinary, spawnProcess, spawnFrankenphp, waitForPort, waitForAnyPort, startProxy, isInternalPath };

@@ -150,7 +150,7 @@ one of yours. The one exception is `ARCO_TELEMETRY_DISABLE`, a switch you may se
 | `ARCO_QUEUES`, `ARCO_STORAGE` | web, console and worker functions, with queues / storage | JSON maps, see [Queues](#several-queues-and-onqueue) and [Laravel disks](#laravel-disks) | stable for `multiapi/arco-laravel`; their JSON shape may gain keys |
 | `ARCO_CACHE_TABLE`, `ARCO_FAILED_JOBS_TABLE` | web, console and worker functions, with the tables | the table name, see [Cache and failed-jobs tables](#cache-and-failed-jobs-tables) | stable for `multiapi/arco-laravel` |
 | `ARCO_QUEUE_<NAME>_URL` | web, console and worker functions of a [process app](#process-runtime-go), one per queue | the queue's URL | stable: read it in your app |
-| `PORT`, `HOST` | the process of a [process app](#the-port-contract) | `8000`, `127.0.0.1` | stable: listen on them |
+| `PORT`, `HOST` | the process of a [process app](#the-port-contract) | `8000` (`8001` when an [Arco Cloud front extension](cloud-extensions.md) is present), `127.0.0.1` | stable: always listen on `$PORT`, never a hard-coded port |
 | `ARCO_TABLES` | web, console and worker functions, with `table()` | JSON map `{"<name>": "<table>"}`, see [Tables](#tables) | stable: read it in your app; its JSON shape may gain keys |
 | `ARCO_WORKER_QUEUE`, `ARCO_QUEUE_ROUTE`, `ARCO_QUEUE_FIFO`, `ARCO_SCHEDULES`, `ARCO_QUEUE_TRIES`, `ARCO_QUEUE_MAX_RECEIVES`, `ARCO_BINARY_BUCKET`, `ARCO_BINARY_KEY`, `ARCO_BINARY_SHA256`, `ARCO_PHP_BINARY`, `ARCO_TMP`, `ARCO_S3_ENDPOINT`, `ARCO_BOOT_STARTED_AT` | the runtime of the console and worker functions | | internal: may change in any release, do not read them |
 | `ARCO_TIMEOUT` | the web function | `timeout()` in seconds; the runtime sets PHP's `max_execution_time` from it | internal: may change in any release, do not read it |
@@ -1263,13 +1263,19 @@ later.
   than `timeout()`, raise it, or have the client reconnect (`EventSource` does, and sends `Last-Event-ID`).
 - **PHP's `max_execution_time` follows `timeout()`.** PHP limits web requests on its own (30 s by default, on the
   wall clock under FrankenPHP); Arco sets it to `timeout()` so the two agree. `phpIni(['max_execution_time' => ...])`
-  overrides it. A request that reaches it ends with "Maximum execution time exceeded" and its worker restarts.
+  overrides it. A request that reaches it ends with "Maximum execution time exceeded" and its worker restarts. An
+  [Arco Cloud extension](cloud-extensions.md#timeout-reserve) can ask for a few seconds less, so its shutdown work
+  finishes before the function stops: with `timeout(30)` and a reserve of 2, PHP stops at 28 s.
 - **Work after the response shares that limit.** Lambda's timeout no longer applies once the response has ended, but
   `max_execution_time` counts from the start of the request, deferred work included, and the work holds one of the
   function's request slots until it finishes. Use a queue for anything longer.
 - **CloudFront waits at most 60 s between bytes.** With `domain()`, the origin read timeout is `timeout() + 2`
   seconds, at most 60: a stream that stays silent longer is cut. Send a comment line (`: ping`) or an event more
   often than that.
+- **Browsers buffer `text/plain` they display.** A browser tab holds back the start of a `text/plain` (or untyped)
+  body to sniff its type, so a stream opened directly in the tab shows up in batches although it arrives chunk by
+  chunk. Send `X-Content-Type-Options: nosniff` with it. `fetch()` readers, `EventSource`, curl and other clients are
+  not affected.
 
 ## Custom domains
 
@@ -1811,7 +1817,9 @@ classic Lambda functions running the same zip: above that the deploy stops befor
 ### The `PORT` contract
 
 The web function starts `app/<command>` with the working directory `app/` and these variables added to yours:
-`PORT=8000`, `HOST=127.0.0.1`, `ARCO=1` and `HOME=/tmp/arco`. Listen on `127.0.0.1:$PORT`:
+`PORT=8000`, `HOST=127.0.0.1`, `ARCO=1` and `HOME=/tmp/arco`. Listen on `127.0.0.1:$PORT`, always: with an
+[Arco Cloud front extension](cloud-extensions.md) `PORT` is `8001`. (An app that hard-codes `8000` still works, but
+the front is then not started.)
 
 ```go
 addr := "127.0.0.1:" + os.Getenv("PORT")
@@ -1828,11 +1836,13 @@ log.Fatal(http.ListenAndServe(addr, mux))
 - `deploy` verifies a new revision with a `GET` of `runtime.healthPath` (default `/`), which must answer `2xx`.
 - Everything the process writes to standard output and standard error reaches CloudWatch (`arco logs`).
 - `/tmp` is the only writable disk, and it belongs to one instance: keep files in [storage](#storage).
+- Arco Cloud can ship a front process next to yours (`.arco-cloud/`): see [Arco Cloud extensions](cloud-extensions.md).
 
 **`/_arco/` is private.** The proxy answers `404 Not Found` to any path that is `/_arco` or starts with `/_arco/`
 (also percent-encoded, even more than once, with `//` or `..`, or in absolute form; a path that does not decode, or
 is still changing after five decodes, counts as one) and never forwards it. Queue and schedule deliveries
-reach the process directly on `127.0.0.1`, so keep their routes under `/_arco/`: a route elsewhere is public as well.
+reach the process on `127.0.0.1` without the proxy (through the [front](cloud-extensions.md) while it is up), so keep
+their routes under `/_arco/`: a route elsewhere is public as well.
 A `healthPath` under `/_arco/` (in any of those spellings) is refused with `validation.health_path_internal`. The
 `X-Arco-*` headers identify a delivery but are not authentication.
 

@@ -28,7 +28,7 @@ async function collector(t) {
 }
 
 // Runs main() with `config`; `variables` is what the stubbed loadEnvironment() adds to process.env, as a bundle would.
-async function run(t, { config, variables = {}, counterFails = false }) {
+async function run(t, { config, variables = {}, counterFails = false, extensions = null }) {
   const out = { writes: [], counters: [], proxy: [], logs: [], loaded: false };
   const { host, packets } = await collector(t);
   out.packets = packets;
@@ -65,9 +65,15 @@ async function run(t, { config, variables = {}, counterFails = false }) {
     const supervisor = require(LIB('supervisor'));
     patch(supervisor, 'startProxy', async (...args) => { out.proxy.push(args); });
     const { main } = require(INDEX);
+    // `extensions`: { name: manifest } under app/.arco-cloud; null leaves readdirSync out, as for an app without any.
+    const extensionDir = path.join(RUNTIME, 'app', '.arco-cloud');
     const fakeFs = {
-      readFileSync: () => JSON.stringify(config),
+      readFileSync: (file) => {
+        if (extensions && file.startsWith(extensionDir + path.sep)) return JSON.stringify(extensions[path.basename(path.dirname(file))]);
+        return JSON.stringify(config);
+      },
       writeFileSync: (file, content) => { out.writes.push({ file, content }); },
+      ...(extensions ? { readdirSync: (dir) => { assert.equal(dir, extensionDir); return Object.keys(extensions); } } : {}),
     };
     await main({ fs: fakeFs, log: (phase, data = {}) => out.logs.push({ phase, data }) });
     out.sigterm = process.listeners('SIGTERM').filter((l) => !signalListeners.SIGTERM.includes(l));
@@ -100,6 +106,14 @@ test('"telemetry": false in arco-runtime.json turns it off', async (t) => {
   assert.doesNotMatch(out.writes[0].content, /arco_count/);
   assert.deepEqual(out.counters, []);
   assert.deepEqual(out.proxy, []);
+});
+
+test('an extension timeoutReserve under app/.arco-cloud lowers max_execution_time below ARCO_TIMEOUT', async (t) => {
+  const plain = await run(t, { config: LARAVEL, variables: { ARCO_TIMEOUT: '30' } });
+  assert.match(plain.writes[0].content, /php_ini max_execution_time "30"/);
+  const reserved = await run(t, { config: LARAVEL, variables: { ARCO_TIMEOUT: '30' }, extensions: { xray: { timeoutReserve: 2 } } });
+  assert.match(reserved.writes[0].content, /php_ini max_execution_time "28"/);
+  assert.deepEqual(reserved.logs.find((entry) => entry.phase === 'timeout_reserve').data, { seconds: 2 });
 });
 
 test('direct mode: Caddy lines are counted as web invocations and the first one sends a cold packet', async (t) => {

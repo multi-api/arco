@@ -87,6 +87,20 @@ test('max_execution_time follows the function timeout (ARCO_TIMEOUT) unless phpI
   assert.doesNotMatch(overridden, /max_execution_time "120"/);
 });
 
+test('an extension timeoutReserve stops PHP earlier, never by more than half the timeout; phpIni() still wins', () => {
+  const base = { mode: 'direct', publicDir: 'app/public', workerScript: null, threads: 8, workers: { min: 1, max: 8 }, phpIni: {} };
+  const ctx = { host: '0.0.0.0', port: 3000, root: '/var/task' };
+  const limit = (timeout, timeoutReserve, config = base) => (buildCaddyfile(config, { ...ctx, timeout, timeoutReserve }).match(/php_ini max_execution_time "(\d+)"/) || [])[1];
+  assert.equal(limit(30, 2), '28');
+  assert.equal(limit(30, 0), '30');
+  assert.equal(limit(5, 2), '3');
+  assert.equal(limit(3, 2), '2');
+  assert.equal(limit(2, 2), '1');
+  assert.equal(limit(1, 2), '1');
+  assert.equal(limit(Number(undefined), 2), undefined);
+  assert.equal(limit(30, 2, { ...base, phpIni: { max_execution_time: 25 } }), '25');
+});
+
 test('accessLog() sends Caddy access log entries to stdout as JSON', () => {
   const base = { mode: 'direct', publicDir: 'app/public', workerScript: null, threads: 8, workers: { min: 4, max: 64 }, phpIni: {} };
   const target = { host: '0.0.0.0', port: 3000, root: '/var/task' };

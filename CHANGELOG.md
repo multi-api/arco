@@ -3,6 +3,26 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.21.0
+
+- **Added: `timeoutReserve` for Arco Cloud extensions on PHP web functions.** An extension's
+  `.arco-cloud/<name>/extension.json` can carry `{"timeoutReserve": <seconds>}` (0 to 10). The runtime sets PHP's
+  `max_execution_time` to `timeout()` minus the largest reserve, never more than half of `timeout()`, so the
+  extension's shutdown work finishes before the function stops. `phpIni(['max_execution_time' => ...])` still wins.
+  Apps without extensions are unchanged. See [Timeout reserve](docs/cloud-extensions.md#timeout-reserve).
+- **Added: front extensions for process apps.** A process app can now ship `.arco-cloud/<name>/extension.json`
+  (`{"front": {"command": [...]}}`). The runtime starts that program in front of your app: it listens on port 8000
+  and your app moves to 8001 (`PORT=8001`). The front gets `ARCO_FRONT_LISTEN`, `ARCO_FRONT_UPSTREAM` and
+  `ARCO_STARTED_AT`. The app starts first; the front starts once the app listens. If the front fails to start,
+  exits or is not listening within 2 seconds, the runtime stops it, logs `extension_failed` once and serves the app
+  directly. An app that ignores `PORT` and listens on 8000 keeps working: the front is not started
+  (`extension_failed` with reason `app_port`). Apps without extensions are unchanged. See
+  [Arco Cloud extensions](docs/cloud-extensions.md).
+- **Changed: `.arco-cloud/` is packaged for process apps** under `app/.arco-cloud/`, whatever `include` and
+  `exclude` say.
+- **Added: `X-Arco-Deadline` on queue and schedule deliveries to process apps**: the Unix time in milliseconds at
+  which Arco stops waiting for that request. Queue and schedule deliveries follow the front's fallback to the app.
+
 ## 0.20.7
 
 - **Fixed: `timeout()` over 30 seconds now applies to PHP too.** PHP stops web requests on its own at

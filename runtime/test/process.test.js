@@ -10,9 +10,9 @@ const path = require('node:path');
 
 const RUNTIME = path.join(__dirname, '..');
 const INDEX = path.join(RUNTIME, 'index.js');
-const MODULES = [INDEX, path.join(RUNTIME, 'lib', 'supervisor.js'), path.join(RUNTIME, 'lib', 'process.js')];
+const MODULES = [INDEX, path.join(RUNTIME, 'lib', 'supervisor.js'), path.join(RUNTIME, 'lib', 'process.js'), path.join(RUNTIME, 'lib', 'extensions.js')];
 
-async function run({ config, executable = true, end = (out) => out.die(7) }) {
+async function run({ config, executable = true, front = null, waitFor = null, refused = [], end = (out) => out.die(7) }) {
   const out = { spawn: [], connect: [], mkdir: [], writes: [], copies: [], chmods: [], logs: [], exits: [], proxy: [] };
   const children = [];
   const patches = [];
@@ -22,14 +22,14 @@ async function run({ config, executable = true, end = (out) => out.die(7) }) {
     child.kills = [];
     child.kill = (signal) => { child.kills.push(signal); };
     children.push(child);
-    out.spawn.push({ command, args, cwd: options.cwd, env: options.env, stdio: options.stdio });
+    out.spawn.push({ command, args, cwd: options.cwd, env: options.env, stdio: options.stdio, connectedBefore: out.connect.map((c) => c.port) });
     return child;
   });
   patch(net, 'connect', (port, host) => {
     out.connect.push({ host, port });
     const socket = new EventEmitter();
     socket.destroy = () => {};
-    setImmediate(() => socket.emit('connect'));
+    setImmediate(() => socket.emit(refused.includes(port) ? 'error' : 'connect', new Error('ECONNREFUSED')));
     return socket;
   });
   patch(fs, 'mkdirSync', (dir, options) => { out.mkdir.push({ dir, options }); });
@@ -46,6 +46,8 @@ async function run({ config, executable = true, end = (out) => out.die(7) }) {
   globalThis.__ARCO_NO_AUTOSTART__ = true;
   try {
     const supervisor = require(MODULES[1]);
+    patch(require(MODULES[3]), 'findFront', () => front);
+    if (waitFor) patch(supervisor, 'waitForPort', waitFor);
     patch(supervisor, 'startProxy', async (...args) => { out.proxy.push(args); });
     const { main } = require(INDEX);
     const fakeFs = {
@@ -86,7 +88,7 @@ test('the process kind spawns app/<command> on 127.0.0.1:8000 and proxies with t
   assert.deepEqual(out.writes, [], 'no Caddyfile');
   assert.deepEqual(out.mkdir.map((m) => m.dir), ['/tmp/arco/bin']);
   assert.equal(out.proxy.length, 1);
-  assert.deepEqual(out.proxy[0], ['127.0.0.1', 9000, '127.0.0.1', 8000, { blockInternal: true, requestIds: true, accessLog: true }]);
+  assert.deepEqual(out.proxy[0], ['127.0.0.1', 9000, '127.0.0.1', { port: 8000 }, { blockInternal: true, requestIds: true, accessLog: true }]);
   assert.ok(out.logs.some((l) => l.phase === 'process_ready'));
   assert.ok(out.logs.some((l) => l.phase === 'proxy_ready'));
 });
@@ -161,4 +163,132 @@ test('isInternalPath is re-exported from lib/process.js', () => {
   assert.equal(PORT, 8000);
   assert.equal(isInternalPath('/%5Farco/x'), true);
   assert.equal(isInternalPath('/_arcox'), false);
+});
+
+const FRONT = { name: 'a-ext', dir: path.join(RUNTIME, 'app/.arco-cloud/a-ext'), command: ['bin/front', '--x'] };
+
+test('starts app on 8001 and front on 8000 with ARCO_FRONT_LISTEN, ARCO_FRONT_UPSTREAM and ARCO_STARTED_AT', async () => {
+  const out = await run({ config: CONFIG, front: FRONT, end: () => {} });
+  assert.equal(out.spawn.length, 2);
+  const [app, front] = out.spawn;
+  assert.equal(app.env.PORT, '8001');
+  assert.equal(app.cwd, path.join(RUNTIME, 'app'));
+  assert.equal(front.command, path.join(FRONT.dir, 'bin/front'));
+  assert.deepEqual(front.args, ['--x']);
+  assert.equal(front.cwd, FRONT.dir);
+  assert.equal(front.stdio, 'inherit');
+  assert.equal(front.env.ARCO_FRONT_LISTEN, '127.0.0.1:8000');
+  assert.equal(front.env.ARCO_FRONT_UPSTREAM, '127.0.0.1:8001');
+  assert.match(front.env.ARCO_STARTED_AT, /^\d{13}$/);
+  assert.equal(front.env.APP_ENV, 'production', 'the app environment is inherited');
+  assert.equal(front.env.PORT, '8001');
+  assert.deepEqual(out.connect.map((c) => c.port), [8001, 8000]);
+  assert.deepEqual(out.proxy[0][3], { port: 8000 });
+});
+
+test('with a front, the front is spawned only after the app listens on 8001', async () => {
+  const out = await run({ config: CONFIG, front: FRONT, end: () => {} });
+  assert.deepEqual(out.spawn[0].connectedBefore, [], 'the app is spawned first');
+  assert.deepEqual(out.spawn[1].connectedBefore, [8001], 'the front comes once the app answered on 8001');
+  assert.equal(out.logs.filter((l) => l.phase === 'extension_failed').length, 0);
+});
+
+test('an app that binds 8000 despite PORT=8001 is served on 8000 and the front is not started', async () => {
+  const out = await run({ config: CONFIG, front: FRONT, refused: [8001], end: () => {} });
+  assert.equal(out.spawn.length, 1, 'no front spawned');
+  assert.equal(out.spawn[0].env.PORT, '8001');
+  assert.deepEqual(out.proxy[0][3], { port: 8000 });
+  const failed = out.logs.filter((l) => l.phase === 'extension_failed');
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0].data.reason, 'app_port');
+  assert.equal(failed[0].data.extension, 'a-ext');
+  assert.ok(out.logs.some((l) => l.phase === 'process_ready'));
+  assert.deepEqual(out.exits, []);
+});
+
+test('without a front the app keeps PORT=8000', async () => {
+  const out = await run({ config: CONFIG, end: () => {} });
+  assert.equal(out.spawn.length, 1);
+  assert.equal(out.spawn[0].env.PORT, '8000');
+  assert.equal(out.spawn[0].env.ARCO_FRONT_LISTEN, undefined);
+  assert.deepEqual(out.proxy[0][3], { port: 8000 });
+});
+
+test('falls back to 8001 when the front never listens within 2 s', async () => {
+  const waited = [];
+  const out = await run({
+    config: CONFIG,
+    front: FRONT,
+    waitFor: async (host, port, timeout) => {
+      waited.push({ port, timeout });
+      if (port === 8000) throw new Error('did not listen');
+    },
+    end: () => {},
+  });
+  assert.deepEqual(waited, [{ port: 8000, timeout: 2000 }]);
+  assert.equal(out.logs.filter((l) => l.phase === 'extension_failed').length, 1);
+  assert.equal(out.proxy[0][3].port, 8001);
+  assert.deepEqual(out.children[1].kills, ['SIGTERM'], 'the front that missed its wait is stopped');
+  assert.deepEqual(out.children[0].kills, [], 'the app keeps running');
+  assert.ok(out.logs.some((l) => l.phase === 'process_ready'));
+});
+
+test('switches to direct after the front exits, without ending the runtime', async () => {
+  const out = await run({
+    config: CONFIG,
+    front: FRONT,
+    end: (o) => {
+      assert.equal(o.proxy[0][3].port, 8000);
+      o.children[1].emit('exit', 1, null);
+    },
+  });
+  assert.equal(out.proxy[0][3].port, 8001);
+  assert.deepEqual(out.exits, []);
+  assert.equal(out.logs.filter((l) => l.phase === 'extension_failed').length, 1);
+});
+
+test('a front that cannot be spawned leaves the app served directly', async () => {
+  const out = await run({
+    config: CONFIG,
+    front: FRONT,
+    end: (o) => { o.children[1].emit('error', new Error('ENOENT')); },
+  });
+  assert.equal(out.proxy[0][3].port, 8001);
+  assert.deepEqual(out.exits, []);
+  assert.equal(out.logs.filter((l) => l.phase === 'extension_failed').length, 1);
+});
+
+test('a front that missed the 2 s wait and later exits logs extension_failed once', async () => {
+  const out = await run({
+    config: CONFIG,
+    front: FRONT,
+    waitFor: async (host, port) => { if (port === 8000) throw new Error('did not listen'); },
+    end: (o) => { o.children[1].emit('error', new Error('x')); o.children[1].emit('exit', 1, null); },
+  });
+  assert.equal(out.logs.filter((l) => l.phase === 'extension_failed').length, 1);
+  assert.equal(out.logs.find((l) => l.phase === 'extension_failed').data.reason, 'not_listening');
+  assert.equal(out.proxy[0][3].port, 8001);
+  assert.deepEqual(out.exits, []);
+});
+
+test('SIGTERM reaches the front as well and the front ending is not a failure', async () => {
+  const out = await run({
+    config: CONFIG,
+    front: FRONT,
+    end: (o) => {
+      process.emit('SIGTERM', 'SIGTERM');
+      o.children[1].emit('exit', null, 'SIGTERM');
+      o.die(null, 'SIGTERM');
+    },
+  });
+  assert.deepEqual(out.exits, [0]);
+  assert.equal(out.logs.filter((l) => l.phase === 'extension_failed').length, 0);
+});
+
+test('front command lacking the executable bit runs from a /tmp/arco/bin copy', async () => {
+  const out = await run({ config: CONFIG, front: FRONT, executable: false, end: () => {} });
+  assert.deepEqual(out.copies.map((c) => c.to), ['/tmp/arco/bin/app', '/tmp/arco/bin/a-ext-front']);
+  assert.equal(out.copies[1].from, path.join(FRONT.dir, 'bin/front'));
+  assert.equal(out.spawn[1].command, '/tmp/arco/bin/a-ext-front');
+  assert.equal(out.spawn[1].cwd, FRONT.dir);
 });

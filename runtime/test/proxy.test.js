@@ -181,3 +181,36 @@ test('an onResponse that throws does not break the proxy', async (t) => {
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal((await request('/b')).status, 200);
 });
+
+test('follows upstream.port changes between requests', async (t) => {
+  const make = async (name) => {
+    const server = http.createServer((req, res) => { res.end(name); });
+    const port = await listen(server);
+    t.after(() => { server.closeAllConnections(); server.close(); });
+    return port;
+  };
+  const first = await make('first');
+  const second = await make('second');
+  const upstream = { port: first };
+  const probe = http.createServer();
+  const proxyPort = await listen(probe);
+  await new Promise((resolve) => probe.close(resolve));
+  const proxy = await startProxy('127.0.0.1', proxyPort, '127.0.0.1', upstream, {});
+  t.after(() => { proxy.closeAllConnections(); proxy.close(); });
+  const get = () => new Promise((resolve, reject) => {
+    http.get({ host: '127.0.0.1', port: proxyPort, path: '/', agent: false }, (res) => {
+      let body = '';
+      res.on('data', (c) => { body += c; });
+      res.on('end', () => resolve(body));
+    }).on('error', reject);
+  });
+  assert.equal(await get(), 'first');
+  upstream.port = second;
+  assert.equal(await get(), 'second');
+});
+
+test('/_arco/otel/flush from outside still answers 404', async (t) => {
+  const { seen, request } = await setup(t, { blockInternal: true });
+  assert.equal((await request('/_arco/otel/flush', { method: 'POST' })).status, 404);
+  assert.equal(seen.length, 0);
+});

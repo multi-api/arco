@@ -45,6 +45,7 @@ final class ProcessBuilder
             $result = new BuildResult($staging, $appDir, $skipped);
             self::applyExclude($appDir, $config->exclude);
             self::removeEmptyDirectories($appDir);
+            self::copyCloudExtensions($projectDir, $appDir);
 
             $step('build.go', ['main' => $main]);
             try {
@@ -124,6 +125,43 @@ final class ProcessBuilder
             }
         }
         return preg_match('/\Gpackage\s+([A-Za-z_][A-Za-z0-9_]*)/', $source, $m, 0, $offset) === 1 ? $m[1] : null;
+    }
+
+    /**
+     * Ships `<project>/.arco-cloud` as `app/.arco-cloud`, bypassing `include`, `exclude` and the dotfile rules, keeping
+     * file modes. Symlinks are skipped.
+     */
+    private static function copyCloudExtensions(string $projectDir, string $appDir): void
+    {
+        $source = "$projectDir/.arco-cloud";
+        if (is_link($source) || ! is_dir($source)) {
+            return;
+        }
+        self::copyTree($source, "$appDir/.arco-cloud");
+    }
+
+    private static function copyTree(string $from, string $to): void
+    {
+        if (! is_dir($to) && ! mkdir($to, 0777, true) && ! is_dir($to)) {
+            throw BuildException::make('build.read_failed', ['path' => $to]);
+        }
+        $entries = scandir($from);
+        if ($entries === false) {
+            throw BuildException::make('build.read_failed', ['path' => $from]);
+        }
+        foreach ($entries as $entry) {
+            if ($entry === '.' || $entry === '..' || is_link("$from/$entry")) {
+                continue;
+            }
+            if (is_dir("$from/$entry")) {
+                self::copyTree("$from/$entry", "$to/$entry");
+            } elseif (is_file("$from/$entry")) {
+                if (! copy("$from/$entry", "$to/$entry")) {
+                    throw BuildException::make('build.read_failed', ['path' => "$from/$entry"]);
+                }
+                chmod("$to/$entry", fileperms("$from/$entry") & 0777);
+            }
+        }
     }
 
     /** The copy walks every directory so wildcard includes work; the ones that matched nothing are dropped. */

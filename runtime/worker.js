@@ -47,13 +47,17 @@ function remainingOf(context) {
 // handle; telemetry(bootMs) makes the invocation counter (lib/telemetry.js) once the environment is up.
 function createHandler(deps = {}) {
   const { fs = nodeFs, log = defaultLog, host = processKind.HOST, port = processKind.PORT } = deps;
+  // Where requests go; startProcess swaps its port to the app's when a front fails, so it is read per request.
+  let upstream = deps.upstream || { port };
   let config = null;
   const readConfig = () => (config ??= JSON.parse(fs.readFileSync(path.join(ROOT, 'arco-runtime.json'), 'utf8')));
   const start = deps.start || (async () => {
     const runtimeConfig = readConfig();
     await loadEnvironment(log);
     supervisor.prepareTmp(TMP, ['bin']);
-    return processKind.startProcess(ROOT, runtimeConfig, process.env, log);
+    const started = await processKind.startProcess(ROOT, runtimeConfig, process.env, log);
+    upstream = started.upstream;
+    return started.child;
   });
   // Made after start(), so after loadEnvironment(): ARCO_TELEMETRY_DISABLE may come from the bundle or a secret.
   const makeTelemetry = deps.telemetry || ((bootMs) => createTelemetry({
@@ -126,9 +130,10 @@ function createHandler(deps = {}) {
       'x-arco-queue': process.env.ARCO_WORKER_QUEUE || '',
       'x-arco-message-id': record.messageId,
       'x-arco-receive-count': String((record.attributes && record.attributes.ApproximateReceiveCount) || '1'),
+      'x-arco-deadline': String(Date.now() + timeout),
     };
     try {
-      const { status, body } = await post(host, port, process.env.ARCO_QUEUE_ROUTE, headers, record.body ?? '', timeout);
+      const { status, body } = await post(host, upstream.port, process.env.ARCO_QUEUE_ROUTE, headers, record.body ?? '', timeout);
       if (status >= 200 && status < 300) return true;
       log('record_failed', { messageId: record.messageId, status, body });
     } catch (error) {
@@ -171,7 +176,7 @@ function createHandler(deps = {}) {
     const budget = Math.min(timeout, left);
     let result;
     try {
-      result = await post(host, port, route, { 'x-arco-schedule': event.name }, '', budget);
+      result = await post(host, upstream.port, route, { 'x-arco-schedule': event.name, 'x-arco-deadline': String(Date.now() + budget) }, '', budget);
     } catch (error) {
       log('schedule_failed', { name: event.name, error: error.message });
       throw new Error(`schedule ${event.name} failed: ${error.message}`);

@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const net = require('node:net');
 const { once } = require('node:events');
-const { spawnProcess, waitForPort } = require('../lib/supervisor');
+const { spawnProcess, waitForPort, waitForAnyPort } = require('../lib/supervisor');
 
 test('spawnProcess calls onExit with the code and signal of the child', async () => {
   const exited = new Promise((resolve) => {
@@ -48,4 +48,32 @@ test('waitForPort keeps FrankenPHP as the default name', async () => {
   server.close();
   await once(server, 'close');
   await assert.rejects(waitForPort('127.0.0.1', port, 50), { message: `FrankenPHP did not listen on 127.0.0.1:${port} within 50 ms` });
+});
+
+async function freePort() {
+  const server = net.createServer().listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const { port } = server.address();
+  server.close();
+  await once(server, 'close');
+  return port;
+}
+
+test('waitForAnyPort resolves the port that listens, whichever of the list it is', async (t) => {
+  const closed = await freePort();
+  const server = net.createServer().listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => server.close());
+  const { port } = server.address();
+  assert.equal(await waitForAnyPort('127.0.0.1', [closed, port], 1000, 'process'), port);
+  assert.equal(await waitForAnyPort('127.0.0.1', [port, closed], 1000, 'process'), port);
+});
+
+test('waitForAnyPort rejects naming every port after the timeout', async () => {
+  const a = await freePort();
+  const b = await freePort();
+  await assert.rejects(
+    waitForAnyPort('127.0.0.1', [a, b], 100, 'process'),
+    { message: `process did not listen on 127.0.0.1:${a} or ${b} within 100 ms` },
+  );
 });
