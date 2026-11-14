@@ -11,6 +11,28 @@ composer require multiapi/arco-laravel:^0.12
 vendor/bin/arco info --env=staging     # validation runs here: errors and deprecations name the fix
 ```
 
+## Upgrading to 0.20.6
+
+Nothing is required, but the runtime now sends **anonymous invocation counts**, on by default: one small UDP packet
+per Lambda environment at most once a minute, with only the runtime, kind, Arco version, region, a count and, on the
+first packet, a cold-start flag and a boot-time bucket. Nothing identifies you or your app; everything that is sent
+is in [Telemetry](telemetry.md).
+
+- **To opt out**, use any one of these, then deploy: `->telemetry(false)` in `arco.php` (`"telemetry": false` in
+  `arco.json` or a config layer); `ARCO_TELEMETRY_DISABLE=1` in the shell that runs `arco deploy` (CI);
+  `'ARCO_TELEMETRY_DISABLE' => '1'` in `variables()` (the one `ARCO*` name it accepts, also as a reference or
+  bundled). `arco info` shows the setting.
+- **Upgrade `multiapi/arco-laravel` together with `multiapi/arco`**: Laravel queue workers are counted by its
+  `arco:work` loop, so an older one sends nothing for queues (everything else is still counted).
+- Every package hash changes once on the first deploy with this version, because `arco-runtime.json` gains
+  `arcoVersion` (and `telemetry: false` when off): that deploy publishes a new version of each function even when
+  nothing else changed.
+- The first successful `arco deploy` on a machine prints a one-line notice about telemetry, once (remembered in
+  `~/.arco/config.php`; with `--json` it goes to stderr).
+- **Redeploy environments with `domain()`** to get the fixed viewer-request function: until then a URL with `+` in its
+  query string (for example an OAuth provider's error callback) answers 403 before reaching the app. See
+  [`+` in query strings](configuration.md#-in-query-strings).
+
 ## Upgrading to 0.20.5
 
 Nothing is required: `arco.php`, `arco.json` and every `--json` key keep working. A Go app installs Arco globally, so

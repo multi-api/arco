@@ -8,6 +8,7 @@ use Multiapi\Arco\Aws\AwsClients;
 use Multiapi\Arco\Aws\Endpoint;
 use Multiapi\Arco\Build\PresetRegistry;
 use Multiapi\Arco\Cli\ArcoCommand;
+use Multiapi\Arco\Cli\GlobalConfig;
 use Multiapi\Arco\Cli\JsonStream;
 use Multiapi\Arco\Cli\StepPrinter;
 use Multiapi\Arco\Commands\Concerns\ResolvesTarget;
@@ -290,6 +291,7 @@ final class DeployCommand extends ArcoCommand
             $io->success($success);
             $stream?->result('deployed', $config->app, $config->environment, $outcome->result->revisionId, $outcome->result->url(),
                 $outcome->result->domains, false, $outcome->verification->initDurationMs);
+            $this->telemetryNotice($config, $output);
 
             // Behind an endpoint override the account is the emulator's (Floci: 000000000000), not one to lock;
             // without arco.php (a config layer alone) there is no file to lock it in.
@@ -353,6 +355,20 @@ final class DeployCommand extends ArcoCommand
             }
             return $message === null ? throw $e : self::FAILURE;
         }
+    }
+
+    /**
+     * The one-line telemetry notice, the first time this machine deploys with telemetry on. $output is stdout, or stderr
+     * with --json (whose stdout stays the NDJSON stream). It is recorded only after it was printed, and a home that cannot
+     * be written never fails the deploy: the notice then shows again next time.
+     */
+    private function telemetryNotice(AppConfig $config, OutputInterface $output): void
+    {
+        if (! $config->telemetry || GlobalConfig::telemetryNoticeShown()) {
+            return;
+        }
+        $output->writeln(['', OutputFormatter::escape($this->t('deploy.telemetry_notice'))]);
+        GlobalConfig::markTelemetryNoticeShown();
     }
 
     /**

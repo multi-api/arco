@@ -28,6 +28,7 @@ final class ConfigResolver
         'protected' => null,
         'bundleVariables' => false,
         'accessLog' => false,
+        'telemetry' => true,
         'console' => null,
         'scheduler' => null,
         'logRetention' => null,
@@ -252,6 +253,14 @@ final class ConfigResolver
         $vpc = self::vpc($setting('vpc'));
         $bundleVariables = $setting('bundleVariables') === true;
         $accessLog = $setting('accessLog') === true;
+        // On unless the setting is false or the shell running the CLI says otherwise (ARCO_TELEMETRY_DISABLE=1).
+        $telemetry = $setting('telemetry') !== false && getenv('ARCO_TELEMETRY_DISABLE') !== '1';
+        // ARCO_TELEMETRY_DISABLE => '1' in variables() too, so info, the package and the notice agree with the function.
+        // A reference (arco-ssm:, arco-secret:) is resolved only in the function, whose runtime then decides.
+        if ($telemetry && ($variables['ARCO_TELEMETRY_DISABLE'] ?? null) === '1') {
+            $telemetry = false;
+            $sources['telemetry'] = $sources['variable:ARCO_TELEMETRY_DISABLE'] ?? 'environment';
+        }
 
         if ([...$appPermissions, ...($env['permissions'] ?? [])] === [] && ($cloud['permissions'] ?? []) !== []) {
             // Only when the layer alone has statements: info shows arco.php's as app/environment.
@@ -315,6 +324,7 @@ final class ConfigResolver
             notes: $notes,
             bundleVariables: $bundleVariables,
             accessLog: $accessLog,
+            telemetry: $telemetry,
             process: $process,
             schedules: $schedules,
         );

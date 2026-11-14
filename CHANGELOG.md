@@ -3,6 +3,33 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.20.6
+
+- **Fixed: a `+` in the query string no longer answers 403 with `domain()`.** CloudFront's origin access control and
+  the Web Function endpoint sign a literal `+` differently, so any URL like `/search?q=a+b`, or GitHub's OAuth callback
+  when the user cancels (`?error_description=The+user+has+denied...`), got the endpoint's plain "You are not
+  authorized to access this endpoint" page without reaching the app. The viewer-request function (`ForwardHost`,
+  `arco-<app>-<env>-host`) now sends `+` in the query string as `%20`, which means the same (a space) to PHP and
+  every form decoder; `%2B` (a literal plus) and query strings without `+` are passed unchanged. The function code
+  moved to `resources/cloudfront/viewer-request.js`. Redeploy environments with `domain()` to update it.
+- **Added: anonymous invocation telemetry, on by default.** The runtime now counts invocations of the web, console,
+  scheduler and queue functions and sends the count to Arco's collector: one small UDP packet per execution
+  environment at most once a minute, with only the runtime, kind, Arco version, AWS region, the count, and on the
+  first packet a cold-start flag and a boot-time bucket. Nothing identifies you, your account or your app; the
+  collector does not store IP addresses. Counting costs about 0.1 µs per invocation; Laravel web requests in the
+  Lambda simulation took up to 0.1 ms longer end to end. Nothing waits for the network. **To turn it off:**
+  `->telemetry(false)` in `arco.php` (`"telemetry": false` in `arco.json` or a config layer) or
+  `ARCO_TELEMETRY_DISABLE=1` in the shell that runs `arco deploy`, then deploy; or `ARCO_TELEMETRY_DISABLE=1` in the
+  function's environment, which `variables()` now accepts (the one `ARCO*` name it does), bundled or not; a literal
+  `'1'` there counts as `->telemetry(false)` for the CLI too (a reference is resolved only in the function). `arco info`
+  shows the setting (`settings.telemetry` in `--json`). Everything that is sent: [docs/telemetry.md](docs/telemetry.md).
+  Laravel queue counts need `multiapi/arco-laravel` at this version; an older one sends nothing for queues.
+- **Added:** the first successful `arco deploy` on a machine (also `deploy --package`) prints a one-line notice about
+  telemetry and how to turn it off, once, when it is on; it is remembered in `~/.arco/config.php`
+  (`telemetry_notice_shown`, other keys kept; a file that does not load as an array is left untouched). With `--json` it goes to stderr, so stdout and its shapes are unchanged.
+- **Changed:** `arco-runtime.json` gains `arcoVersion` (always) and `telemetry: false` (only when off), so every
+  package hash changes once on the first deploy with this version.
+
 ## 0.20.5
 
 - **Added:** `arco info --resources --json` has `scheduler`, appended after `schedules` (before `error`):

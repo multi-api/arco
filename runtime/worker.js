@@ -7,6 +7,7 @@ const path = require('node:path');
 const { loadEnvironment } = require('./lib/boot');
 const supervisor = require('./lib/supervisor');
 const processKind = require('./lib/process');
+const { createTelemetry } = require('./lib/telemetry');
 
 const ROOT = __dirname;
 const TMP = '/tmp/arco';
@@ -42,17 +43,57 @@ function remainingOf(context) {
   return () => (context && typeof context.getRemainingTimeInMillis === 'function' ? context.getRemainingTimeInMillis() : DEFAULT_REMAINING_MS);
 }
 
-// deps: { fs, log, host, port, start } are injectable; start() launches the process and resolves its child handle.
+// deps: { fs, log, host, port, start, telemetry } are injectable; start() launches the process and resolves its child
+// handle; telemetry(bootMs) makes the invocation counter (lib/telemetry.js) once the environment is up.
 function createHandler(deps = {}) {
   const { fs = nodeFs, log = defaultLog, host = processKind.HOST, port = processKind.PORT } = deps;
+  let config = null;
+  const readConfig = () => (config ??= JSON.parse(fs.readFileSync(path.join(ROOT, 'arco-runtime.json'), 'utf8')));
   const start = deps.start || (async () => {
-    const config = JSON.parse(fs.readFileSync(path.join(ROOT, 'arco-runtime.json'), 'utf8'));
+    const runtimeConfig = readConfig();
     await loadEnvironment(log);
     supervisor.prepareTmp(TMP, ['bin']);
-    return processKind.startProcess(ROOT, config, process.env, log);
+    return processKind.startProcess(ROOT, runtimeConfig, process.env, log);
   });
+  // Made after start(), so after loadEnvironment(): ARCO_TELEMETRY_DISABLE may come from the bundle or a secret.
+  const makeTelemetry = deps.telemetry || ((bootMs) => createTelemetry({
+    env: process.env, config: readConfig(), runtime: 'process', kind: process.env.ARCO_WORKER_QUEUE ? 'queue' : 'schedule', bootMs,
+  }));
+  let telemetry; // undefined: not made yet; null: off or failed
   let init = null;
   let dead = false;
+
+  // Lambda freezes a classic handler as soon as it returns: the collector is resolved now, before the first count.
+  function startTelemetry() {
+    if (telemetry !== undefined) return;
+    telemetry = null;
+    try {
+      const made = makeTelemetry(Date.now() - started);
+      if (!made || !made.enabled) return;
+      made.prepare();
+      process.on('SIGTERM', () => {
+        try {
+          made.flush();
+        } catch {
+          // Telemetry never fails a shutdown.
+        }
+      });
+      telemetry = made;
+    } catch {
+      telemetry = null;
+    }
+  }
+
+  // One invocation of `kind`, sent (at most once a minute) before the handler returns. Never throws.
+  function countInvocation(kind) {
+    if (!telemetry) return;
+    try {
+      telemetry.count(kind);
+      telemetry.tick();
+    } catch {
+      // Telemetry never changes a handler's result.
+    }
+  }
 
   async function ready() {
     if (!init) {
@@ -66,6 +107,7 @@ function createHandler(deps = {}) {
       init = null;
       throw error;
     }
+    startTelemetry();
     if (child && !child.__arcoWatched) {
       child.__arcoWatched = true;
       if (typeof child.once === 'function') child.once('exit', () => { dead = true; });
@@ -144,9 +186,20 @@ function createHandler(deps = {}) {
   return async function handler(event, context) {
     await ready();
     if (event && Array.isArray(event.Records) && event.Records.every((r) => r.eventSource === 'aws:sqs')) {
-      return handleQueue(event, context);
+      // An SQS batch is one invocation, however many records it holds.
+      try {
+        return await handleQueue(event, context);
+      } finally {
+        countInvocation('queue');
+      }
     }
-    if (event && event.arco === 'schedule') return handleSchedule(event, context);
+    if (event && event.arco === 'schedule') {
+      try {
+        return await handleSchedule(event, context);
+      } finally {
+        countInvocation('schedule');
+      }
+    }
     throw new Error('unsupported event');
   };
 }

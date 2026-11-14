@@ -391,7 +391,7 @@ an environment).
 | `rateLimit(int)` | unset | 100 to 1000 in steps of 100, or 2000 to 10000 in steps of 1000 requests/s |
 | `auth('public'\|'iam')` | `public` | With `domain()` the endpoint is always `IamAuth` (only CloudFront may call it) |
 | `logLevel(string)` | `info` | trace, debug, info, warn, error, fatal |
-| `variables(array)` | preset defaults | Names starting with `ARCO` and Lambda's reserved names are refused. Values may be `arco-ssm:`/`arco-secret:` references |
+| `variables(array)` | preset defaults | Names starting with `ARCO` (except `ARCO_TELEMETRY_DISABLE`) and Lambda's reserved names are refused. Values may be `arco-ssm:`/`arco-secret:` references |
 | `permissions(array)` | `[]` | Extra IAM statements (`Effect`, `Action`/`NotAction`, `Resource`/`NotResource`, optional `Sid` not starting with `Arco`, `Condition`) for the managed execution role; ignored with `role()` |
 | `role(string $arn)` | managed role | Your own execution role; then you add every permission Arco would have added |
 | `permissionsBoundary(string\|false $arn)` | unset | Boundary on the managed role; overridden by `--permissions-boundary` > `ARCO_PERMISSIONS_BOUNDARY`; not with `role()` |
@@ -404,6 +404,7 @@ an environment).
 | `protected(bool = true)` | on for `production` | Confirmation before `command`, `tinker`, `remove`, `queue:dlq --redrive` (`--yes` answers) |
 | `bundleVariables(bool = true)` | off | Variables in one S3 object instead of the Lambda environment (4 KB cap); the fix for a deploy failing with `InvalidParameterValueException` on the environment's size. See [Bundled variables](configuration.md#bundled-variables) |
 | `accessLog(bool = true)` | off | One `{"arco":"request","status","method","path","ms","requestId"}` line per HTTP request in the web log, written by the runtime (requests that never reach Laravel included); costs CloudWatch ingest and Logs Insights scanning. See [Access log](configuration.md#access-log) |
+| `telemetry(bool = true)` | on | Anonymous invocation counts (kind, Arco version, region, count; nothing identifying). `telemetry(false)`, `ARCO_TELEMETRY_DISABLE=1` in the shell running `arco deploy` (CI), or `'ARCO_TELEMETRY_DISABLE' => '1'` in `variables()` turns them off. See [Telemetry](telemetry.md) |
 | `queue(string $name, ...)` | none | Named options `timeout` (60; 10 to 900), `memory` (1024), `maxInstances`, `batchSize` (1), `tries` (3), `dlq` (true), `fifo` (false), `existing` (name, URL or ARN), `default`. `queue('x', false)` drops it |
 | `storage(string $name, ...)` | none | Named options `public` (prefixes ending in `/`), `expire` (`['tmp/' => 1]`), `cors` (origins), `existing` (bucket name), `default`. Names `s3`, `public`, `local` are refused |
 | `table(string $name, ...)` | none | DynamoDB `PK`/`SK` strings, on demand; named options `ttl` (attribute), `existing`. Read the names from `ARCO_TABLES` |
@@ -683,7 +684,7 @@ not. The most common ones:
 | `config.layer_adopt_waiting` (note) | A layer `adopt: true` entry waits because `arco.php` or `arco.json` (`file`) still declares the name | Remove the name from that file |
 | `config.removed_*`, `config.changed_*` | API removed or renamed in 0.9 | Apply the replacement the message gives ([Upgrading](upgrading.md)) |
 | `validation.*` | A value out of range or a bad name (`validation.region`, `validation.timeout`, `validation.queue_name`, `validation.bucket_name_length`, `validation.vpc_id`, ...) | The message names the rule; fix the value in `arco.php`. Name length errors need a shorter app, environment or resource name |
-| `validation.reserved_arco_variable` | A variable named `ARCO*` | Rename it |
+| `validation.reserved_arco_variable` | A variable named `ARCO*` (other than `ARCO_TELEMETRY_DISABLE`) | Rename it |
 | `validation.plaintext_secret` (warning) | A secret-looking variable holds plain text | Move it to `arco secret:set` and an `arco-ssm:` reference |
 | `validation.scheduler_needs_console` | `scheduler()` with `console(false)` | Remove one of them |
 | `validation.boundary_with_custom_role` | `permissionsBoundary()` (or the flag/variable) with `role()` | Drop one; put the boundary on the custom role in IAM |

@@ -176,6 +176,7 @@ Messages are in English or Spanish (`--lang=es` or `ARCO_LANG=es`).
 - [Config layer](docs/config-layer.md)
 - [Upgrading](docs/upgrading.md): every breaking change per version, and what 1.x keeps stable
 - [Try it locally with Floci](docs/local-floci.md)
+- [Telemetry](docs/telemetry.md): what the anonymous invocation count sends, and how to turn it off
 - [Arco for coding agents](docs/agents.md): for Claude Code, Codex and other agents working in your app (also
   [`llms.txt`](llms.txt) and a [Claude Code skill](skills/arco/SKILL.md))
 
@@ -203,6 +204,11 @@ The packages are published from one monorepo. Please open issues in
 
 Questions, ideas and show-and-tell go to
 [GitHub Discussions](https://github.com/multi-api/arco/discussions).
+
+## Telemetry
+
+The runtime sends an anonymous count of invocations (kind, Arco version, region; nothing that identifies you or your
+app); turn it off with `->telemetry(false)` or `ARCO_TELEMETRY_DISABLE=1`. See [Telemetry](docs/telemetry.md).
 
 ## License
 

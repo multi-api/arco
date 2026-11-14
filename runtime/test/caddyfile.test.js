@@ -81,3 +81,71 @@ test('accessLog() sends Caddy access log entries to stdout as JSON', () => {
   assert.doesNotMatch(buildCaddyfile(base, target), /\blog\b/);
   assert.match(buildCaddyfile({ ...base, accessLog: true }, target), /\trequest_header @noRequestId X-Request-ID {http.request.uuid}\n\tlog {\n\t\toutput stdout\n\t\tformat json\n\t}\n\tlog_append arco_request_id {http.request.uuid}\n\tphp_server\n}/);
 });
+
+// Telemetry: Caddy writes one JSON line per access log entry to lib/caddycount.js on 127.0.0.1:<countPort>, which counts
+// the lines. Caddy keeps one default logger per site without a host name, so the counter is a global logger that
+// includes every access logger rather than a second `log` in the site block (that one would replace accessLog()'s).
+// The entries carry no request data (URI, query, headers, IP, ids): Caddy prints them to stderr if the counter's
+// connection is lost.
+const COUNT_LOGGER = [
+  '\tlog arco_count {',
+  '\t\toutput net 127.0.0.1:40123 {',
+  '\t\t\tsoft_start',
+  '\t\t}',
+  '\t\tformat filter {',
+  '\t\t\twrap json',
+  '\t\t\tfields {',
+  '\t\t\t\trequest delete',
+  '\t\t\t\tresp_headers delete',
+  '\t\t\t\tuser_id delete',
+  '\t\t\t\tbytes_read delete',
+  '\t\t\t\tuuid delete',
+  '\t\t\t\tarco_request_id delete',
+  '\t\t\t}',
+  '\t\t}',
+  '\t\tinclude http.log.access',
+  '\t}',
+  '',
+].join('\n');
+
+test('telemetry adds the arco_count logger and enables access logs to a discarded output', () => {
+  const base = { mode: 'direct', publicDir: 'app/public', workerScript: null, threads: 8, workers: { min: 4, max: 64 }, phpIni: {} };
+  const caddyfile = buildCaddyfile(base, { host: '0.0.0.0', port: 3000, root: '/var/task', countPort: 40123 });
+  assert.ok(caddyfile.includes(`\t}\n${COUNT_LOGGER}}\n`), caddyfile);
+  assert.match(caddyfile, /\trequest_header @noRequestId X-Request-ID {http.request.uuid}\n\tlog {\n\t\toutput discard\n\t}\n\tphp_server\n}/);
+  assert.doesNotMatch(caddyfile, /output stdout|log_append/);
+});
+
+test('telemetry keeps the accessLog() logger as it is', () => {
+  const base = { mode: 'direct', publicDir: 'app/public', workerScript: null, threads: 8, workers: { min: 4, max: 64 }, phpIni: {}, accessLog: true };
+  const target = { host: '0.0.0.0', port: 3000, root: '/var/task' };
+  const without = buildCaddyfile(base, target);
+  const withTelemetry = buildCaddyfile(base, { ...target, countPort: 40123 });
+  assert.equal(withTelemetry, without.replace('\t}\n}\n', `\t}\n${COUNT_LOGGER}}\n`));
+  assert.doesNotMatch(withTelemetry, /output discard/);
+});
+
+test('without a counter port there is no arco_count logger and no site log', () => {
+  const base = { mode: 'direct', publicDir: 'app/public', workerScript: null, threads: 8, workers: { min: 4, max: 64 }, phpIni: {} };
+  for (const countPort of [undefined, null, 0, 'x']) {
+    const caddyfile = buildCaddyfile(base, { host: '0.0.0.0', port: 3000, root: '/var/task', countPort });
+    assert.doesNotMatch(caddyfile, /arco_count|\blog\b/);
+  }
+});
+
+test('every field log_append adds is deleted from arco_count entries', () => {
+  const base = { mode: 'direct', publicDir: 'app/public', threads: 8, workers: { min: 4, max: 64 }, phpIni: {} };
+  const target = { host: '0.0.0.0', port: 3000, root: '/var/task', countPort: 40123 };
+  let appended = 0;
+  for (const accessLog of [true, false]) {
+    for (const workerScript of [null, 'app/public/frankenphp-worker.php']) {
+      const caddyfile = buildCaddyfile({ ...base, accessLog, workerScript }, target);
+      const counter = caddyfile.slice(caddyfile.indexOf('\tlog arco_count {'), caddyfile.indexOf('\t\tinclude http.log.access'));
+      for (const [, field] of caddyfile.matchAll(/\blog_append\s+(\S+)/g)) {
+        appended++;
+        assert.ok(counter.includes(`\t\t\t\t${field} delete\n`), `${field} reaches arco_count entries:\n${caddyfile}`);
+      }
+    }
+  }
+  assert.ok(appended > 0, 'the check sees log_append');
+});

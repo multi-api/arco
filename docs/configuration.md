@@ -109,7 +109,7 @@ rules and `adopt` are in [Config layer](config-layer.md).
 | `kmsKey(arn)` | unset | Revision `kmsKeyArn` |
 | `profile(string)` | unset | AWS profile for the environment. Without it, the first deploy asks and remembers the answer in `.arco/local.php`, not in `arco.php` (see [Choosing the AWS profile](getting-started.md#choosing-the-aws-profile)) |
 | `account(string)` | written on first deploy | 12-digit account lock; environment level only |
-| `variables(array)` | preset defaults | Revision environment variables. Names starting with `ARCO` are reserved for Arco and refused; Lambda's own (`AWS_REGION`, `AWS_LAMBDA_*`, ...) too |
+| `variables(array)` | preset defaults | Revision environment variables. Names starting with `ARCO` are reserved for Arco and refused (except `ARCO_TELEMETRY_DISABLE`, see [Telemetry](telemetry.md)); Lambda's own (`AWS_REGION`, `AWS_LAMBDA_*`, ...) too |
 | `bundleVariables(bool = true)` | off | Keep the variables in one S3 object instead of the Lambda environment, which AWS caps at 4 KB per function (see [Bundled variables](#bundled-variables)); `bundleVariables(false)` at environment level clears an app-level one |
 | `permissions(array)` | `[]` | Extra IAM statements for the managed execution role (below) |
 | `exclude(array)` / `include(array)` | preset rules | Packaging globs (below) |
@@ -119,6 +119,7 @@ rules and `adopt` are in [Config layer](config-layer.md).
 | `console(bool = true, ?int timeout, ?int memory)` | off | Deploy the console function (`arco command`, `arco tinker`, `deployCommands()`); `console(false)` deletes an existing one on the next deploy; a scheduler implies it. `timeout:` is in seconds (3 to 900, default 900), `memory:` in MB (128 to 10240, default 2048); giving either also turns the console on |
 | `scheduler(int\|false)` | off | Run Laravel's `schedule:run` every N minutes (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30 or 60), aligned to the UTC clock; needs the console, which it turns on |
 | `accessLog(bool = true)` | off | One JSON line per HTTP request in the web function's log, written by the runtime for every request, static files and requests Laravel never sees included (see [Access log](#access-log)); `accessLog(false)` at environment level clears an app-level one |
+| `telemetry(bool = true)` | on | Anonymous invocation counts sent by the runtime: kind, Arco version, region and a count, nothing that identifies you or the app (see [Telemetry](telemetry.md)); `telemetry(false)` turns them off, as do `ARCO_TELEMETRY_DISABLE=1` in the shell that runs `arco deploy` and `'ARCO_TELEMETRY_DISABLE' => '1'` in `variables()` |
 | `logRetention(int\|false)` | 30 | Days CloudWatch keeps the web, console and queue worker logs (1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288 or 3653); `false` = never expire; not set = 30 days |
 | `protected(bool = true)` | on for `production` | Ask for confirmation before `arco tinker`, `arco command`, `arco remove` and `arco queue:dlq --redrive`; `--yes` answers it, and without a terminal it is required (CI: `arco command "migrate --force" --env=production --no-interaction --yes`). Deploy commands (`deployCommands()`, `arco deploy --migrate`) are not asked. `protected(false)` turns it off |
 | `certificate(arn)` | looked up or requested | ACM certificate ARN in `us-east-1` to use for the domains |
@@ -136,7 +137,7 @@ that an **instance**, so `maxInstances()` caps how many instances one Arco envir
 Variable names must be letters, digits and underscores (not starting with a digit); names
 reserved by Lambda are rejected: `_HANDLER`, `_X_AMZN_TRACE_ID`, `AWS_REGION`, `AWS_DEFAULT_REGION`, `AWS_EXECUTION_ENV`, `AWS_ACCESS_KEY`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SECRET_KEY`, `AWS_SESSION_TOKEN`, `LAMBDA_TASK_ROOT`, `LAMBDA_RUNTIME_DIR` and anything starting with `AWS_LAMBDA_` or `AWS_XRAY_`. Every name
 starting with `ARCO` is reserved for Arco and rejected too, so a variable Arco adds later never collides with
-one of yours. Values may be references (`arco-ssm:...`, `arco-secret:...`).
+one of yours. The one exception is `ARCO_TELEMETRY_DISABLE`, a switch you may set (see [Telemetry](telemetry.md)). Values may be references (`arco-ssm:...`, `arco-secret:...`).
 
 ### Variables Arco sets
 
@@ -151,7 +152,7 @@ one of yours. Values may be references (`arco-ssm:...`, `arco-secret:...`).
 | `ARCO_QUEUE_<NAME>_URL` | web, console and worker functions of a [process app](#process-runtime-go), one per queue | the queue's URL | stable: read it in your app |
 | `PORT`, `HOST` | the process of a [process app](#the-port-contract) | `8000`, `127.0.0.1` | stable: listen on them |
 | `ARCO_TABLES` | web, console and worker functions, with `table()` | JSON map `{"<name>": "<table>"}`, see [Tables](#tables) | stable: read it in your app; its JSON shape may gain keys |
-| `ARCO_WORKER_QUEUE`, `ARCO_QUEUE_ROUTE`, `ARCO_QUEUE_FIFO`, `ARCO_SCHEDULES`, `ARCO_QUEUE_TRIES`, `ARCO_QUEUE_MAX_RECEIVES`, `ARCO_BINARY_BUCKET`, `ARCO_BINARY_KEY`, `ARCO_BINARY_SHA256`, `ARCO_PHP_BINARY`, `ARCO_TMP`, `ARCO_S3_ENDPOINT` | the runtime of the console and worker functions | | internal: may change in any release, do not read them |
+| `ARCO_WORKER_QUEUE`, `ARCO_QUEUE_ROUTE`, `ARCO_QUEUE_FIFO`, `ARCO_SCHEDULES`, `ARCO_QUEUE_TRIES`, `ARCO_QUEUE_MAX_RECEIVES`, `ARCO_BINARY_BUCKET`, `ARCO_BINARY_KEY`, `ARCO_BINARY_SHA256`, `ARCO_PHP_BINARY`, `ARCO_TMP`, `ARCO_S3_ENDPOINT`, `ARCO_BOOT_STARTED_AT` | the runtime of the console and worker functions | | internal: may change in any release, do not read them |
 | `ARCO_REQUEST_ID` | each command the console function runs (with `_X_AMZN_TRACE_ID`, the invocation's trace header) | the Lambda invocation id | internal: `multiapi/arco-laravel` shares it in the log context ([Log context](#log-context)); read `context.requestId` instead |
 | `ARCO_VARIABLES` | web, console and worker functions, with `bundleVariables()` | `s3://<code bucket>/variables/<app>/<env>/<sha256>.json` | internal: may change in any release, do not read it |
 
@@ -1260,7 +1261,8 @@ After the function is deployed and verified, `deploy`:
 2. **CloudFront** through the CloudFormation stack `arco-<app>-<env>` (in the app region): a
    distribution with your domains, HTTPS only, no caching except the preset's asset paths
    (`/build/*` for Laravel), and a viewer-request function that passes the original host to the
-   app as `X-Forwarded-Host`. The first creation takes several minutes; later deploys only
+   app as `X-Forwarded-Host` and sends a `+` in the query string as `%20` (see
+   [`+` in query strings](#-in-query-strings)). The first creation takes several minutes; later deploys only
    update the stack when something changed.
 3. **DNS**: `A` and `AAAA` alias records to the distribution in Route 53, or a `CNAME` to it in Cloudflare.
 
@@ -1356,6 +1358,16 @@ On an existing environment the deploy adds the access control, then the policy, 
 first and, with `auth('public')`, makes the endpoint public again. `arco info` shows the effective endpoint auth, and
 `arco info --json` has the key `endpoint_auth`. The deploy needs extra permissions (see
 [Permissions for custom domains](getting-started.md#permissions-for-custom-domains)).
+
+### `+` in query strings
+
+CloudFront's origin access control and the Web Function endpoint sign a literal `+` in the query string differently,
+so without this a request like `/search?q=a+b` answered 403 ("You are not authorized to access this endpoint") without
+reaching the app, while `/search?q=a%20b` worked. The `ForwardHost` function now rewrites every `+` in the query string
+to `%20` before the request is signed. In a query string `+` means a space (`application/x-www-form-urlencoded`), so
+`$request->query()`, `$_GET` and every form decoder see the same value; only the raw `QUERY_STRING` differs. A literal
+plus is sent as `%2B` and passes unchanged, as does any query string without `+`. The path is not touched: a `+` there
+is a plus and is signed alike on both sides.
 
 Because an unsigned request gets 403, the post-deploy check probes `/up` with a request signed with the deploy
 credentials (SigV4, service `lambda`), so the deploy profile needs `lambda:InvokeWebFunctionEndpoint` on the endpoint.
@@ -1630,7 +1642,8 @@ otherwise Arco lists the largest directories.
 git-ignored and never packaged). An `--output` path inside the project is always left out of the
 next package, so a previous zip never ends up inside a new one.
 
-The zip also contains `arco-runtime.json` (the runtime options above) and `arco-package.json`, a
+The zip also contains `arco-runtime.json` (the runtime options above, the `arcoVersion` that built it and, only
+when [telemetry](telemetry.md) is off, `"telemetry": false`) and `arco-package.json`, a
 manifest that identifies the package (app, environment, preset, runtime build, content hash, Arco
 version, creation time) so `arco deploy --package=<zip>` can check it. Variables are not
 packaged; `deploy --package` takes them from the current `arco.php`.
@@ -1750,9 +1763,9 @@ are never packaged, and unlike for PHP apps an `include` cannot bring back the a
 `vendor`, `node_modules`, `.github`, editor and AI-assistant folders, ...; see [Packaging globs](#packaging-globs)).
 
 The zip has the Node runtime (`index.js`, `lib/`, `worker.js`), `app/bin/app`, the included files,
-`arco-runtime.json` (`{"kind": "process", "command": [...], "healthPath": "/"}`, plus `"accessLog": true` with
-`accessLog`) and the manifest, whose `preset` is `go` and `runtime_build` `null`. There is no FrankenPHP and no PHP
-in it. The unzipped package may be 512 MB. With queues or schedules it may be 250 MB, because their functions are
+`arco-runtime.json` (`{"kind": "process", "command": [...], "healthPath": "/", "arcoVersion": "..."}`,
+plus `"accessLog": true` with `accessLog` and `"telemetry": false` with `telemetry(false)`) and the manifest,
+whose `preset` is `go` and `runtime_build` `null`. There is no FrankenPHP and no PHP in it. The unzipped package may be 512 MB. With queues or schedules it may be 250 MB, because their functions are
 classic Lambda functions running the same zip: above that the deploy stops before any AWS change with
 `deploy.process_package_too_large` (`{size, max}`).
 

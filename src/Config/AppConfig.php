@@ -83,6 +83,8 @@ final readonly class AppConfig
         public bool $bundleVariables = false,
         /** true: the web runtime writes one `{"arco":"request",...}` line per HTTP request */
         public bool $accessLog = false,
+        /** false: the runtime sends no anonymous invocation counts (telemetry(false) or ARCO_TELEMETRY_DISABLE=1 at deploy) */
+        public bool $telemetry = true,
         /** null: the PHP runtime */
         public ?ProcessRuntime $process = null,
         /** process apps: declaration order, app level first */
@@ -164,6 +166,7 @@ final readonly class AppConfig
             hasArcoPhp: $hasArcoPhp ?? $this->hasArcoPhp,
             bundleVariables: $this->bundleVariables,
             accessLog: $this->accessLog,
+            telemetry: $this->telemetry,
             process: $this->process,
             schedules: $this->schedules,
         );

@@ -129,12 +129,23 @@ const HOP_BY_HOP = new Set(['connection', 'keep-alive', 'proxy-connection', 'tra
 
 // options is for the process kind (PHP passes none): blockInternal answers 404 for /_arco/ paths, requestIds adds an
 // X-Request-ID when the request carries no id, accessLog writes one {"arco":"request",...} line per response to `output`.
+// onResponse (telemetry, PHP proxy mode too) is called once per response that finished.
 function startProxy(host, port, upstreamHost, upstreamPort, options = {}) {
-  const { blockInternal = false, requestIds = false, accessLog = false, output = process.stdout } = options;
+  const { blockInternal = false, requestIds = false, accessLog = false, output = process.stdout, onResponse = null } = options;
   const agent = new http.Agent({ keepAlive: true, maxSockets: 256 });
   const server = http.createServer((req, res) => {
     const startedAt = process.hrtime.bigint();
     const state = { requestId: null };
+    if (typeof onResponse === 'function') {
+      res.once('close', () => {
+        if (!res.writableFinished) return;
+        try {
+          onResponse();
+        } catch {
+          // Telemetry never fails a request.
+        }
+      });
+    }
     if (accessLog) {
       res.once('close', () => {
         // A client that went away before the answer finished is not a response: nothing to log.

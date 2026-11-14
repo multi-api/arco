@@ -152,3 +152,32 @@ test('accessLog writes nothing for a request the client abandoned before the ans
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.deepEqual(lines, []);
 });
+
+test('onResponse is called once per completed response, the blocked 404 included', async (t) => {
+  let calls = 0;
+  const { request } = await setup(t, { blockInternal: true, onResponse: () => { calls += 1; } });
+  await request('/a');
+  await request('/b', { method: 'POST' });
+  await request('/_arco/x');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls, 3);
+});
+
+test('onResponse is not called for a request the client abandoned', async (t) => {
+  let calls = 0;
+  const { seen, proxyPort } = await setup(t, { onResponse: () => { calls += 1; } });
+  const req = http.request({ host: '127.0.0.1', port: proxyPort, path: '/hang', agent: false });
+  req.on('error', () => {});
+  req.end();
+  while (seen.length === 0) await new Promise((resolve) => setTimeout(resolve, 5));
+  req.destroy();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(calls, 0);
+});
+
+test('an onResponse that throws does not break the proxy', async (t) => {
+  const { request } = await setup(t, { onResponse: () => { throw new Error('boom'); } });
+  assert.equal((await request('/a')).status, 200);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal((await request('/b')).status, 200);
+});

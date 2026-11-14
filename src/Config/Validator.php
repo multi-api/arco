@@ -38,6 +38,8 @@ final class Validator
     private const RESERVED_PREFIXES = ['AWS_LAMBDA_', 'AWS_XRAY_'];
     /** Every variable starting with this belongs to Arco (the ones it sets, and the ones later versions may add). */
     private const ARCO_PREFIX = 'ARCO';
+    /** ARCO* names a user may set: switches the runtime reads after the bundle and secrets (docs/telemetry.md). */
+    private const USER_ARCO_VARIABLES = ['ARCO_TELEMETRY_DISABLE'];
     private const HOSTNAME = '/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/';
     private const CERTIFICATE = '/^arn:aws[a-z-]*:acm:us-east-1:\d{12}:certificate\/[A-Za-z0-9-]+$/';
     public const MAX_DOMAINS = 10;
@@ -259,7 +261,7 @@ final class Validator
         }
 
         foreach ($config->variables as $name => $value) {
-            if (str_starts_with($name, self::ARCO_PREFIX)) {
+            if (str_starts_with($name, self::ARCO_PREFIX) && ! in_array($name, self::USER_ARCO_VARIABLES, true)) {
                 $result->error('validation.reserved_arco_variable', ['variable' => $name]);
                 continue;
             }

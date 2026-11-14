@@ -11,6 +11,7 @@ use Multiapi\Arco\ConsoleRuntime\Response;
 use Multiapi\Arco\ConsoleRuntime\RuntimeApi;
 use Multiapi\Arco\ConsoleRuntime\Secrets;
 use Multiapi\Arco\ConsoleRuntime\Storage;
+use Multiapi\Arco\ConsoleRuntime\Telemetry;
 use Multiapi\Arco\ConsoleRuntime\Variables;
 
 foreach (glob(__DIR__ . '/console/*.php') ?: [] as $file) {
@@ -28,6 +29,7 @@ $log = static function (array $data) use ($started, $stdout): void {
 $env = getenv();
 $root = $env['LAMBDA_TASK_ROOT'] ?? dirname(__DIR__);
 $api = new RuntimeApi($env['AWS_LAMBDA_RUNTIME_API'] ?? '127.0.0.1:9001');
+$telemetry = null;
 
 try {
     $config = json_decode((string) file_get_contents("$root/arco-runtime.json"), true);
@@ -59,6 +61,15 @@ try {
         $childEnv,
         $log,
     );
+    // The anonymous invocation count (console/Telemetry.php), read after the bundle and secrets so
+    // ARCO_TELEMETRY_DISABLE works from any of them. Boot: from the process start to this point.
+    try {
+        $bootMs = (microtime(true) - (float) ($_SERVER['REQUEST_TIME_FLOAT'] ?? $started)) * 1000;
+        // Only Laravel packages ship this runtime (process apps run worker.js).
+        $telemetry = Telemetry::fromRuntime($childEnv, is_array($config) ? $config : [], 'laravel', $bootMs);
+    } catch (\Throwable) {
+        // Telemetry never fails a boot.
+    }
     $log(['arco' => 'console_ready', 'secrets' => count($resolved), 'variables' => count($bundled)]);
 } catch (\Throwable $e) {
     $log(['arco' => 'fatal', 'error' => $e->getMessage()]);
@@ -83,5 +94,12 @@ while (true) {
     } catch (\Throwable $e) {
         $log(['arco' => 'invocation_error', 'error' => $e->getMessage()]);
         $api->invocationError($invocation['requestId'], 'Arco.RuntimeError', $e->getMessage());
+    }
+    // Every invocation that got an answer counts once, after the answer (outside its latency). The scheduler
+    // rule's input (SchedulerRule::INPUT) is `schedule`; every other command, tinker and a broken event, `console`.
+    if ($telemetry?->enabled()) {
+        $event = json_decode($invocation['body'], true);
+        $telemetry->count(is_array($event) && ($event['command'] ?? null) === 'schedule:run' ? 'schedule' : 'console');
+        $telemetry->tick();
     }
 }

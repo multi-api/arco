@@ -244,3 +244,76 @@ test('an invocation that finds the process dead fails', async () => {
     await assert.rejects(handler({ arco: 'schedule', name: 'cleanup' }, context()), /exited/);
   });
 });
+
+// A telemetry stand-in: records count(kind), tick() and prepare() in order.
+function fakeTelemetry({ throws = false } = {}) {
+  const calls = [];
+  const made = [];
+  const record = (name) => (...args) => { calls.push([name, ...args]); if (throws) throw new Error('telemetry boom'); };
+  const factory = (bootMs) => {
+    made.push(bootMs);
+    return { enabled: true, count: record('count'), tick: record('tick'), prepare: record('prepare'), flush: record('flush') };
+  };
+  return { factory, calls, made };
+}
+
+test('telemetry: an SQS batch is one queue invocation, counted and ticked before the handler returns', async () => {
+  const a = await app((req, res) => { res.statusCode = 204; res.end(); });
+  const t = fakeTelemetry();
+  const handler = createHandler({ port: a.port, start: async () => ({}), log: () => {}, telemetry: t.factory });
+  await withEnv(queueEnv, async () => {
+    await handler({ Records: [record('m1', 'a'), record('m2', 'b'), record('m3', 'c')] }, context());
+    assert.deepEqual(t.calls, [['prepare'], ['count', 'queue'], ['tick']]);
+    await handler({ Records: [record('m4', 'd')] }, context());
+  });
+  a.close();
+  assert.deepEqual(t.calls, [['prepare'], ['count', 'queue'], ['tick'], ['count', 'queue'], ['tick']]);
+  assert.equal(t.made.length, 1, 'one telemetry per environment');
+  assert.ok(Number.isInteger(t.made[0]) && t.made[0] >= 0, 'made with the boot duration');
+});
+
+test('telemetry: a schedule event counts as schedule, a failed one too', async () => {
+  const statuses = [200, 500];
+  const a = await app((req, res, n) => { res.statusCode = statuses[n - 1]; res.end(); });
+  const t = fakeTelemetry();
+  const handler = createHandler({ port: a.port, start: async () => ({}), log: () => {}, telemetry: t.factory });
+  await withEnv(schedulesEnv(), async () => {
+    await handler({ arco: 'schedule', name: 'cleanup' }, context());
+    await assert.rejects(handler({ arco: 'schedule', name: 'cleanup' }, context()), /status 500/);
+  });
+  a.close();
+  assert.deepEqual(t.calls, [['prepare'], ['count', 'schedule'], ['tick'], ['count', 'schedule'], ['tick']]);
+});
+
+test('telemetry: a telemetry that throws changes neither the result nor the error', async () => {
+  const a = await app((req, res, n) => { res.statusCode = n === 1 ? 500 : 204; res.end(); });
+  const t = fakeTelemetry({ throws: true });
+  const handler = createHandler({ port: a.port, start: async () => ({}), log: () => {}, telemetry: t.factory });
+  await withEnv({ ...queueEnv, ...schedules }, async () => {
+    assert.deepEqual(await handler({ Records: [record('m1', 'a')] }, context()), { batchItemFailures: [{ itemIdentifier: 'm1' }] });
+    assert.deepEqual(await handler({ arco: 'schedule', name: 'cleanup' }, context()), { status: 204 });
+    await assert.rejects(handler({ arco: 'unknown' }, context()), /unsupported event/);
+  });
+  a.close();
+});
+
+test('telemetry: a factory that throws leaves the handler working', async () => {
+  const a = await app((req, res) => { res.statusCode = 204; res.end(); });
+  const handler = createHandler({ port: a.port, start: async () => ({}), log: () => {}, telemetry: () => { throw new Error('nope'); } });
+  await withEnv(queueEnv, async () => {
+    assert.deepEqual(await handler({ Records: [record('m1', 'a')] }, context()), { batchItemFailures: [] });
+  });
+  a.close();
+});
+
+test('telemetry: SIGTERM flushes what is pending', async (t) => {
+  const before = process.listeners('SIGTERM');
+  t.after(() => { for (const l of process.listeners('SIGTERM')) if (!before.includes(l)) process.removeListener('SIGTERM', l); });
+  const a = await app((req, res) => { res.statusCode = 204; res.end(); });
+  const fake = fakeTelemetry();
+  const handler = createHandler({ port: a.port, start: async () => ({}), log: () => {}, telemetry: fake.factory });
+  await withEnv(queueEnv, async () => { await handler({ Records: [record('m1', 'a')] }, context()); });
+  a.close();
+  for (const listener of process.listeners('SIGTERM')) if (!before.includes(listener)) listener('SIGTERM');
+  assert.deepEqual(fake.calls.at(-1), ['flush']);
+});

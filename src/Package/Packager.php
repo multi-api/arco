@@ -132,6 +132,7 @@ final class Packager
                 'command' => $config->process->command,
                 'healthPath' => $config->process->healthPath,
                 ...($config->accessLog ? ['accessLog' => true] : []),
+                ...self::telemetryConfig($config),
             ];
         }
         $worker = $preset->workerScript();
@@ -148,7 +149,14 @@ final class Packager
             // accessLog(): runtime/lib/accesslog.js turns Caddy's access log into one `arco: request` line per
             // request. Only when on, so the package of an app without it keeps its hash.
             ...($config->accessLog ? ['accessLog' => true] : []),
+            ...self::telemetryConfig($config),
         ];
+    }
+
+    /** @return array<string, mixed> the version always (the telemetry report names it), `telemetry: false` only when off */
+    private static function telemetryConfig(AppConfig $config): array
+    {
+        return ['arcoVersion' => Arco::version(), ...($config->telemetry ? [] : ['telemetry' => false])];
     }
 
     /** @return array<string, SplFileInfo> relative path => file */

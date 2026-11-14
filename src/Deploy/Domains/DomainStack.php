@@ -2,6 +2,7 @@
 
 namespace Multiapi\Arco\Deploy\Domains;
 
+use Multiapi\Arco\Arco;
 use Multiapi\Arco\Config\AppConfig;
 
 /** The CloudFormation template that puts an environment's endpoint behind CloudFront. */
@@ -13,17 +14,8 @@ final class DomainStack
     /** "Always sign, preserve viewer authorization"; CloudFront rejects always, never and no-override for Web Function origins. */
     public const SIGNING_BEHAVIOR = 'always-amz-auth';
     private const ORIGIN_ID = 'arco-endpoint';
-    private const FUNCTION_CODE = <<<'JS'
-        function handler(event) {
-          var request = event.request;
-          if (request.headers.host) {
-            request.headers['x-forwarded-host'] = { value: request.headers.host.value };
-          } else {
-            delete request.headers['x-forwarded-host'];
-          }
-          return request;
-        }
-        JS;
+    /** The viewer-request function's source, relative to the package root. */
+    public const FUNCTION_SOURCE = 'resources/cloudfront/viewer-request.js';
 
     public static function stackName(AppConfig $config): string
     {
@@ -108,9 +100,9 @@ final class DomainStack
             'Properties' => [
                 'Name' => self::functionName($config),
                 'AutoPublish' => true,
-                'FunctionCode' => self::FUNCTION_CODE,
+                'FunctionCode' => self::functionCode(),
                 'FunctionConfig' => [
-                    'Comment' => 'Arco: pass the viewer host to the app as X-Forwarded-Host',
+                    'Comment' => 'Arco: pass the viewer host as X-Forwarded-Host, send + in the query string as %20',
                     'Runtime' => 'cloudfront-js-2.0',
                 ],
             ],
@@ -134,6 +126,16 @@ final class DomainStack
                 'Aliases' => ['Value' => implode(',', $config->domains)],
             ],
         ];
+    }
+
+    /** The JavaScript of the viewer-request function: forwards the host, rewrites '+' in the query string to %20. */
+    public static function functionCode(): string
+    {
+        $code = file_get_contents(Arco::packageRoot() . '/' . self::FUNCTION_SOURCE);
+        if ($code === false) {
+            throw new \RuntimeException('Cannot read ' . self::FUNCTION_SOURCE);
+        }
+        return $code;
     }
 
     /** @return array<string, mixed> */

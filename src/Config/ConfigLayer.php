@@ -22,7 +22,7 @@ final readonly class ConfigLayer
         'permissionsBoundary' => 'string|false', 'dns' => 'string|false', 'certificate' => 'string',
         'console' => 'bool', 'consoleTimeout' => 'int', 'consoleMemory' => 'int',
         'scheduler' => 'int|false', 'logRetention' => 'int|false', 'protected' => 'bool', 'bundleVariables' => 'bool',
-        'accessLog' => 'bool',
+        'accessLog' => 'bool', 'telemetry' => 'bool',
         'cacheDriver' => 'string', 'account' => 'string',
     ];
     private const QUEUE = [

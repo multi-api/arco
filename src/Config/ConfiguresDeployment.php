@@ -142,6 +142,8 @@ trait ConfiguresDeployment
      * those that never reach the app. Off by default: each line is ingested and scanned like any other log line.
      */
     public function accessLog(bool $enabled = true): static { $this->settings['accessLog'] = $enabled; return $this; }
+    /** Anonymous invocation counts sent by the runtime; on by default (see docs/telemetry.md) */
+    public function telemetry(bool $enabled = true): static { $this->settings['telemetry'] = $enabled; return $this; }
 
     /**
      * An SQS queue with a worker function that consumes it. Options not given keep their defaults
