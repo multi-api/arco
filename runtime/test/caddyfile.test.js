@@ -75,6 +75,18 @@ test('security defaults apply unless the app sets the key (CVE-2026-109618/10961
   assert.doesNotMatch(overridden, /session\.upload_progress\.enabled "0"/);
 });
 
+test('max_execution_time follows the function timeout (ARCO_TIMEOUT) unless phpIni() sets it', () => {
+  const base = { mode: 'direct', publicDir: 'app/public', workerScript: null, threads: 8, workers: { min: 1, max: 8 } };
+  const ctx = { host: '0.0.0.0', port: 3000, root: '/var/task' };
+  // Without a timeout (an older deploy, or the variable missing) PHP keeps its own default: no line.
+  assert.doesNotMatch(buildCaddyfile({ ...base, phpIni: {} }, ctx), /max_execution_time/);
+  assert.doesNotMatch(buildCaddyfile({ ...base, phpIni: {} }, { ...ctx, timeout: Number(undefined) }), /max_execution_time/);
+  assert.match(buildCaddyfile({ ...base, phpIni: {} }, { ...ctx, timeout: 120 }), /\t\tphp_ini max_execution_time "120"\n/);
+  const overridden = buildCaddyfile({ ...base, phpIni: { max_execution_time: 0 } }, { ...ctx, timeout: 120 });
+  assert.match(overridden, /php_ini max_execution_time "0"/);
+  assert.doesNotMatch(overridden, /max_execution_time "120"/);
+});
+
 test('accessLog() sends Caddy access log entries to stdout as JSON', () => {
   const base = { mode: 'direct', publicDir: 'app/public', workerScript: null, threads: 8, workers: { min: 4, max: 64 }, phpIni: {} };
   const target = { host: '0.0.0.0', port: 3000, root: '/var/task' };

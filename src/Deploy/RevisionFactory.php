@@ -34,7 +34,8 @@ final class RevisionFactory
             'executionRoleArn' => $roleArn,
             'timeoutSeconds' => $config->timeout,
             // Lambda rejects empty values; an unset variable reads the same way in PHP (env() → null/'' default).
-            'environmentVariables' => array_filter($variables, fn (string $value) => $value !== ''),
+            // ARCO_TIMEOUT: runtime/index.js gives PHP the same limit as max_execution_time (lib/caddyfile.js).
+            'environmentVariables' => array_filter([...$variables, 'ARCO_TIMEOUT' => (string) $config->timeout], fn (string $value) => $value !== ''),
             'telemetryConfig' => ['loggingConfig' => [
                 'applicationLogLevel' => strtoupper($config->logLevel),
                 'systemLogLevel' => 'INFO',

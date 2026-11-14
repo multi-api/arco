@@ -9,6 +9,11 @@ const SECURITY_INI = { 'session.upload_progress.enabled': false, fatal_error_bac
 // ShareRequestId (multiapi/arco-laravel) and lib/accesslog.js read, so the app's log lines and the access line share it.
 const REQUEST_ID_HEADERS = ['X-Request-ID', 'X-Amzn-RequestId', 'X-Amz-Request-Id', 'X-Amzn-Trace-Id'];
 
+// PHP's own max_execution_time is 30 s for web requests whatever timeout() says, on the wall clock under FrankenPHP
+// (ZTS timers), and it counts deferred work after the response: with timeout(60) a request, a stream or a defer()
+// still died at 30 s and took its worker thread with it. It follows timeout() (ARCO_TIMEOUT) instead; phpIni() wins.
+const timeoutIni = (timeout) => (Number.isInteger(timeout) && timeout > 0 ? { max_execution_time: timeout } : {});
+
 const iniValue = (value) => JSON.stringify(typeof value === 'boolean' ? (value ? '1' : '0') : String(value));
 
 // Telemetry (countPort: where lib/caddycount.js listens and counts the lines): a global logger that takes every access
@@ -22,14 +27,14 @@ const countLogger = (countPort) => [
   '\t\tinclude http.log.access', '\t}',
 ];
 
-function buildCaddyfile(config, { host, port, root, countPort = null }) {
+function buildCaddyfile(config, { host, port, root, countPort = null, timeout = null }) {
   const telemetry = Number.isInteger(countPort) && countPort > 0;
   const worker = config.workerScript;
   const workerCount = worker ? config.workers.min : 0;
   const maxThreads = Math.max(config.workers.max, config.threads + workerCount);
 
   const lines = ['{', '\tadmin off', '\tauto_https off', '\tfrankenphp {', `\t\tnum_threads ${config.threads}`, `\t\tmax_threads ${maxThreads}`];
-  for (const [key, value] of Object.entries({ ...SECURITY_INI, ...(config.phpIni || {}) })) lines.push(`\t\tphp_ini ${key} ${iniValue(value)}`);
+  for (const [key, value] of Object.entries({ ...SECURITY_INI, ...timeoutIni(timeout), ...(config.phpIni || {}) })) lines.push(`\t\tphp_ini ${key} ${iniValue(value)}`);
   if (worker) lines.push('\t\tworker {', `\t\t\tfile ${root}/${worker}`, `\t\t\tnum ${workerCount}`, '\t\t}');
   lines.push('\t}');
   if (telemetry) lines.push(...countLogger(countPort));

@@ -99,7 +99,7 @@ rules and `adopt` are in [Config layer](config-layer.md).
 | `App::make(name)` | required | App name. Function name is `<app>-<env>` (max 56 chars, so that the console function `<app>-<env>-console` fits Lambda's 64; lowercase letters, digits, hyphens, starting with a letter; see [Names and ownership](#names-and-ownership)) |
 | `region(string)` | required | AWS region; must be one of us-east-1, us-east-2, us-west-2, ap-northeast-1, eu-west-1; app level only (see [One region per app](#one-region-per-app)) |
 | `concurrency(int)` | AWS default (64) | Upper bound of requests each instance handles at once: revision `maxConcurrencyPerEnvironment` (1 to 128). Lambda applies its own dynamic limit below it |
-| `timeout(int)` | 30 | Revision `timeoutSeconds` (3 to 900) |
+| `timeout(int)` | 30 | Revision `timeoutSeconds` (3 to 900), and PHP's `max_execution_time` for web requests ([Responses](#responses)) |
 | `maxInstances(int)` | unset | Maximum running instances of the function: endpoint `scalingConfig.maxEnvironments` (2 to 10000). |
 | `rateLimit(int)` | unset | Endpoint `throttleConfig.rateLimit` (requests per second: 100 to 1000 in steps of 100, or 2000 to 10000 in steps of 1000) |
 | `auth('public'\|'iam')` | `public` | Endpoint `authType`: `public` is `ApplicationManaged`, `iam` is `IamAuth` |
@@ -153,6 +153,7 @@ one of yours. The one exception is `ARCO_TELEMETRY_DISABLE`, a switch you may se
 | `PORT`, `HOST` | the process of a [process app](#the-port-contract) | `8000`, `127.0.0.1` | stable: listen on them |
 | `ARCO_TABLES` | web, console and worker functions, with `table()` | JSON map `{"<name>": "<table>"}`, see [Tables](#tables) | stable: read it in your app; its JSON shape may gain keys |
 | `ARCO_WORKER_QUEUE`, `ARCO_QUEUE_ROUTE`, `ARCO_QUEUE_FIFO`, `ARCO_SCHEDULES`, `ARCO_QUEUE_TRIES`, `ARCO_QUEUE_MAX_RECEIVES`, `ARCO_BINARY_BUCKET`, `ARCO_BINARY_KEY`, `ARCO_BINARY_SHA256`, `ARCO_PHP_BINARY`, `ARCO_TMP`, `ARCO_S3_ENDPOINT`, `ARCO_BOOT_STARTED_AT` | the runtime of the console and worker functions | | internal: may change in any release, do not read them |
+| `ARCO_TIMEOUT` | the web function | `timeout()` in seconds; the runtime sets PHP's `max_execution_time` from it | internal: may change in any release, do not read it |
 | `ARCO_REQUEST_ID` | each command the console function runs (with `_X_AMZN_TRACE_ID`, the invocation's trace header) | the Lambda invocation id | internal: `multiapi/arco-laravel` shares it in the log context ([Log context](#log-context)); read `context.requestId` instead |
 | `ARCO_VARIABLES` | web, console and worker functions, with `bundleVariables()` | `s3://<code bucket>/variables/<app>/<env>/<sha256>.json` | internal: may change in any release, do not read it |
 
@@ -1231,6 +1232,44 @@ resources stack. With your own `role()`, give it the same:
 The deploy profile needs the table actions of
 [Permissions for storage and tables](getting-started.md#permissions-for-storage-and-tables); the
 `arn:aws:dynamodb:*:*:table/<app>-*` resource there covers these tables too.
+
+## Responses
+
+Lambda Web Functions forward HTTP to the web server inside the function (FrankenPHP for Laravel), and send its
+response to the client as it is written. There is no invoke payload in between, so nothing needs configuring for:
+
+- **Streamed output.** `response()->stream()`, `StreamedResponse`, `echo` + `flush()` and Octane all reach the client
+  chunk by chunk, through CloudFront too, compressed or not.
+- **Server-sent events.** `response()->eventStream()` (`text/event-stream`) works the same way.
+- **Large responses.** There is no 6 MB limit: buffered (with `Content-Length`) and streamed bodies of 60 MB arrived
+  whole.
+- **Binary responses.** `download()`, `streamDownload()` and raw bytes arrive unchanged; there is no base64 step and
+  no setting to list binary types.
+- **Work after the response.** `defer()`, `app()->terminating()` and Octane's terminate callbacks run after the client
+  has the response, in the same execution environment, and finish there.
+
+Measured on 2026-11-14 with Arco 0.20.5 through CloudFront ([multi-api/arco-smoke](https://github.com/multi-api/arco-smoke),
+`/stream/*`): one flushed line per second arrived one per second, first byte about 0.5 s; 20 server-sent events over
+20 s arrived one per second, with and without gzip; a 10 MB body arrived in about 2 s and a 60 MB one in about 10 s
+(about 6 MB/s), its SHA-256 intact; a `defer()` that slept 3 s left the response at 0.6 s and wrote its record 3 s
+later.
+
+**Limits:**
+
+- **`timeout()` ends the response.** It covers the whole request, streaming included (30 s by default, up to 900).
+  When it runs out, a streamed response just stops: the client sees the status already sent (200) and a normal end of
+  the body, not a failure (a 45-second stream with `timeout(30)` delivered 30 lines and ended cleanly). A response
+  that has not started gets a 504 with `lambda-web-error-type: Runtime.RequestTimeout` instead. Keep streams shorter
+  than `timeout()`, raise it, or have the client reconnect (`EventSource` does, and sends `Last-Event-ID`).
+- **PHP's `max_execution_time` follows `timeout()`.** PHP limits web requests on its own (30 s by default, on the
+  wall clock under FrankenPHP); Arco sets it to `timeout()` so the two agree. `phpIni(['max_execution_time' => ...])`
+  overrides it. A request that reaches it ends with "Maximum execution time exceeded" and its worker restarts.
+- **Work after the response shares that limit.** Lambda's timeout no longer applies once the response has ended, but
+  `max_execution_time` counts from the start of the request, deferred work included, and the work holds one of the
+  function's request slots until it finishes. Use a queue for anything longer.
+- **CloudFront waits at most 60 s between bytes.** With `domain()`, the origin read timeout is `timeout() + 2`
+  seconds, at most 60: a stream that stays silent longer is cut. Send a comment line (`: ping`) or an event more
+  often than that.
 
 ## Custom domains
 

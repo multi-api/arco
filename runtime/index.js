@@ -52,7 +52,7 @@ async function main({ fs = nodeFs, log = defaultLog } = {}) {
   // cannot listen leaves the Caddyfile exactly as without telemetry.
   const counter = countResponse && !proxy ? await caddycount.listenCaddyCount(countResponse) : null;
   if (countResponse && !proxy && counter === null) log('telemetry_counter_failed');
-  fs.writeFileSync(caddyfile, buildCaddyfile(config, { host: phpHost, port: phpPort, root: ROOT, countPort: counter ? counter.port : null }));
+  fs.writeFileSync(caddyfile, buildCaddyfile(config, { host: phpHost, port: phpPort, root: ROOT, countPort: counter ? counter.port : null, timeout: Number(process.env.ARCO_TIMEOUT) }));
 
   supervisor.spawnFrankenphp(
     supervisor.resolveBinary(ROOT, TMP),

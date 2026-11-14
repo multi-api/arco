@@ -3,6 +3,17 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.20.7
+
+- **Fixed: `timeout()` over 30 seconds now applies to PHP too.** PHP stops web requests on its own at
+  `max_execution_time`, 30 s by default and on the wall clock under FrankenPHP, whatever `timeout()` said: with
+  `timeout(60)` a slow request, a long stream or a `defer()` still died at 30 s with "Maximum execution time of 30
+  seconds exceeded" and restarted its worker. The web function now gets `ARCO_TIMEOUT` and the runtime sets
+  `max_execution_time` to `timeout()`. `phpIni(['max_execution_time' => ...])` still wins. Redeploy to get it.
+- **Docs: [Responses](docs/configuration.md#responses).** Streamed responses, server-sent events, bodies over 6 MB,
+  binary responses and work after the response (`defer()`) already work on Lambda Web Functions, through CloudFront
+  too; measured and documented with their limits.
+
 ## 0.20.6
 
 - **Fixed: a `+` in the query string no longer answers 403 with `domain()`.** CloudFront's origin access control and

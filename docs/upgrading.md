@@ -11,6 +11,13 @@ composer require multiapi/arco-laravel:^0.12
 vendor/bin/arco info --env=staging     # validation runs here: errors and deprecations name the fix
 ```
 
+## Upgrading to 0.20.7
+
+Nothing is required. **Redeploy** to give PHP the function's `timeout()` as its `max_execution_time` (until now PHP
+stopped every web request at its own 30 s). Two effects: with `timeout()` over 30, long requests, streams and
+deferred work now run until `timeout()`; with `timeout()` under 30, deferred work (`defer()`, terminating callbacks)
+now stops at `timeout()` instead of 30 s. To keep the old limit, add `phpIni(['max_execution_time' => 30])`.
+
 ## Upgrading to 0.20.6
 
 Nothing is required, but the runtime now sends **anonymous invocation counts**, on by default: one small UDP packet
