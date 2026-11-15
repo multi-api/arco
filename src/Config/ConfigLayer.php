@@ -28,6 +28,7 @@ final readonly class ConfigLayer
     private const QUEUE = [
         'timeout' => 'int', 'memory' => 'int', 'maxInstances' => 'int', 'batchSize' => 'int', 'tries' => 'int',
         'dlq' => 'bool', 'fifo' => 'bool', 'default' => 'bool', 'adopt' => 'bool', 'existing' => 'string', 'route' => 'string',
+        'recursiveLoop' => 'string',
     ];
     private const SCHEDULE = ['every' => 'string', 'route' => 'string', 'timeout' => 'int', 'adopt' => 'bool'];
     private const STORAGE = [

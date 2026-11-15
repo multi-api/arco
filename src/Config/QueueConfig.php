@@ -31,6 +31,11 @@ final readonly class QueueConfig
         public bool $adopt = false,
         /** process apps: the path the queue's messages are posted to; null: /_arco/queues/<name> */
         public ?string $route = null,
+        /**
+         * the worker's Lambda recursive loop detection as written ('allow' or 'terminate'); null: never set by
+         * a deploy, so whatever the function has (AWS's default is Terminate) stays
+         */
+        public ?string $recursiveLoop = null,
     ) {
     }
 
@@ -38,6 +43,16 @@ final readonly class QueueConfig
     public static function urlVariable(string $name): string
     {
         return 'ARCO_QUEUE_' . preg_replace('/[^A-Z0-9]/', '_', strtoupper($name)) . '_URL';
+    }
+
+    /** The PutFunctionRecursionConfig value for $recursiveLoop, or null when the deploy leaves the setting alone. */
+    public function recursionConfig(): ?string
+    {
+        return match ($this->recursiveLoop) {
+            'allow' => 'Allow',
+            'terminate' => 'Terminate',
+            default => null,
+        };
     }
 
     public function route(): string

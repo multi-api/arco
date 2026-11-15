@@ -153,6 +153,9 @@ trait ConfiguresDeployment
      * @param int|null $maxInstances most concurrent worker invocations (the event source mapping's MaximumConcurrency, at least 2)
      * @param string|null $existing name, URL or ARN of a queue Arco does not manage
      * @param int|null $concurrency deprecated: the old name of $maxInstances; removed in 1.0
+     * @param string|null $recursiveLoop the worker's Lambda recursive loop detection: 'allow' lets jobs that re-queue
+     *                                   themselves (release(), re-dispatch) run past AWS's ~16-hop cut-off; 'terminate'
+     *                                   puts back the AWS default; unset leaves the function's setting as it is
      */
     public function queue(
         string $name,
@@ -167,6 +170,7 @@ trait ConfiguresDeployment
         ?string $existing = null,
         ?bool $default = null,
         ?int $concurrency = null,
+        ?string $recursiveLoop = null,
     ): static {
         if ($remove === false) {
             $this->queues[$name] = false;
@@ -174,7 +178,8 @@ trait ConfiguresDeployment
         }
         $options = array_filter(
             ['timeout' => $timeout, 'memory' => $memory, 'maxInstances' => $maxInstances, 'concurrency' => $concurrency, 'batchSize' => $batchSize,
-                'tries' => $tries, 'dlq' => $dlq, 'fifo' => $fifo, 'existing' => $existing, 'default' => $default],
+                'tries' => $tries, 'dlq' => $dlq, 'fifo' => $fifo, 'existing' => $existing, 'default' => $default,
+                'recursiveLoop' => $recursiveLoop],
             fn (mixed $value): bool => $value !== null,
         );
         $current = $this->queues[$name] ?? [];

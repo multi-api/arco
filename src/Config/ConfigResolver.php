@@ -573,6 +573,7 @@ final class ConfigResolver
                 conflictingConcurrency: isset($o['_conflict']),
                 adopt: in_array((string) $name, $adopted, true),
                 route: self::nullableString($o['route'] ?? null),
+                recursiveLoop: self::nullableString($o['recursiveLoop'] ?? null),
             );
         }
         return $queues;

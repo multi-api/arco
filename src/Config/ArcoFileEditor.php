@@ -18,7 +18,7 @@ final class ArcoFileEditor
      */
     private const CONSOLE_KEYS = ['console', 'consoleTimeout', 'consoleMemory'];
     /** The order queue() options are written in. */
-    private const QUEUE_OPTIONS = ['existing', 'default', 'timeout', 'memory', 'maxInstances', 'batchSize', 'tries', 'dlq', 'fifo'];
+    private const QUEUE_OPTIONS = ['existing', 'default', 'timeout', 'memory', 'maxInstances', 'batchSize', 'tries', 'dlq', 'fifo', 'recursiveLoop'];
     /**
      * Calls keyed by a name in their first argument, such as ->queue('jobs', ...): the raw config key
      * they load into and the order their named options are written in.

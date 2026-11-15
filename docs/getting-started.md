@@ -868,6 +868,8 @@ With `queue()`, the deploy profile also needs:
   `lambda:UpdateFunctionCode`, `lambda:UpdateFunctionConfiguration`, `lambda:GetFunctionConfiguration`,
   `lambda:PublishVersion`, `lambda:CreateAlias`, `lambda:UpdateAlias`, `lambda:GetAlias`,
   `lambda:TagResource`, `lambda:ListVersionsByFunction`, `lambda:DeleteFunction`
+- with `recursiveLoop` on a queue, `lambda:GetFunctionRecursionConfig` and `lambda:PutFunctionRecursionConfig` on
+  the same workers (queues without the option never call them)
 - `tag:GetResources`, to find the workers of queues removed from `arco.php` (without it the deploy warns and
   leaves them)
 
@@ -1222,7 +1224,7 @@ deploys several apps, list one resource per app.
       "lambda:GetFunctionConfiguration", "lambda:PublishVersion", "lambda:CreateAlias", "lambda:UpdateAlias",
       "lambda:GetAlias", "lambda:PutFunctionEventInvokeConfig", "lambda:TagResource", "lambda:ListTags",
       "lambda:DeleteFunction", "lambda:InvokeFunction", "lambda:AddPermission", "lambda:RemovePermission",
-      "lambda:GetPolicy"
+      "lambda:GetPolicy", "lambda:GetFunctionRecursionConfig", "lambda:PutFunctionRecursionConfig"
     ],
     "Resource": "arn:aws:lambda:*:<account>:function:<app>-*"
   },

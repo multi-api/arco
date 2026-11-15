@@ -188,11 +188,33 @@ final class WorkerFunctions
             ]);
         }
         $onStep('deploy.worker_mapping', ['queue' => $queue->name, 'function' => $name, 'batch' => $queue->batchSize]);
+        $this->recursion($queue, $name, $onStep);
         // After the new mapping exists, so the worker is never without one.
         foreach ($stale as $uuid => $source) {
             $this->deleteMapping($uuid);
             $onStep('deploy.worker_mapping_removed', ['queue' => $queue->name, 'arn' => $source]);
         }
+    }
+
+    /**
+     * Applies the queue's recursiveLoop to the worker function (the setting is per function, not per version):
+     * read first, written only when it differs, so a deploy that changes nothing makes no write. Unset leaves
+     * the function alone, so an app that never uses the option needs no recursion-config permission.
+     *
+     * @param Closure(string, array<string, string|int>): void $onStep
+     */
+    private function recursion(QueueConfig $queue, string $function, Closure $onStep): void
+    {
+        $wanted = $queue->recursionConfig();
+        if ($wanted === null) {
+            return;
+        }
+        $current = Aws::string(Aws::call($this->lambda, 'GetFunctionRecursionConfig', ['FunctionName' => $function])['RecursiveLoop'] ?? null);
+        if ($current === $wanted) {
+            return;
+        }
+        Aws::call($this->lambda, 'PutFunctionRecursionConfig', ['FunctionName' => $function, 'RecursiveLoop' => $wanted]);
+        $onStep('deploy.worker_recursive_loop', ['queue' => $queue->name, 'function' => $function, 'value' => $wanted]);
     }
 
     private function deleteMapping(string $uuid): void

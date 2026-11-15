@@ -100,6 +100,7 @@ Named entries take the options of the `arco.php` methods, plus `adopt` (see
 | queue | `timeout`, `memory`, `maxInstances`, `batchSize`, `tries` | integer |
 | queue | `dlq`, `fifo`, `default`, `adopt` | boolean |
 | queue | `existing` | string |
+| queue | `recursiveLoop` | string: `allow` or `terminate` |
 | queue | `route` | string; process apps only (`validation.queue_route_php` for PHP apps) |
 | storage | `public`, `cors` | list of strings |
 | storage | `expire` | object of prefix to integer (days) |

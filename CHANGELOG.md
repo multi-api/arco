@@ -3,6 +3,17 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.22.0
+
+- **Added: `recursiveLoop` on queues.** `->queue('default', recursiveLoop: 'allow')` (`"recursiveLoop": "allow"` in a
+  config layer or `arco.json`) turns off AWS Lambda's recursive loop detection on the queue's worker, so a job that
+  `release()`s or re-dispatches itself onto its own queue every few seconds is no longer dropped after about 16 hops
+  (and sent to the dead-letter queue). The deploy reads the worker's setting and calls `PutFunctionRecursionConfig`
+  only on a change (step `deploy.worker_recursive_loop`); `'terminate'` puts back AWS's default; unset never touches
+  it. New error key `validation.queue_recursive_loop`. Queues with the option need
+  `lambda:GetFunctionRecursionConfig` and `lambda:PutFunctionRecursionConfig` on the workers. See
+  [Jobs that re-queue themselves](docs/configuration.md#jobs-that-re-queue-themselves).
+
 ## 0.21.0
 
 - **Added: `timeoutReserve` for Arco Cloud extensions on PHP web functions.** An extension's

@@ -675,6 +675,7 @@ name add to each other.
 | `fifo` | `false` | Create a FIFO queue (its name ends in `.fifo`) |
 | `existing` | none | Name, URL or ARN of an SQS queue Arco does not manage (below) |
 | `default` | first queue | The queue jobs go to without `onQueue()`; at most one queue may say `default: true` |
+| `recursiveLoop` | unset | `'allow'` or `'terminate'`: the worker's Lambda recursive loop detection (see [Jobs that re-queue themselves](#jobs-that-re-queue-themselves)). Unset leaves the function's setting as it is |
 
 - App and environment queues merge by name: the environment's options go over the app's for that queue,
   new names are added, and `->queue('emails', false)` on an environment drops an app-level queue there.
@@ -684,6 +685,31 @@ name add to each other.
   both must fit SQS's 80 characters, and the worker name `<app>-<env>-queue-<name>` Lambda's 64.
 - A queue cannot take the SQS name of another queue's dead-letter queue (for example a queue `emails-dlq`
   next to `emails`): rename one, or turn that dead-letter queue off.
+
+### Jobs that re-queue themselves
+
+AWS Lambda detects recursive loops: when a function sends a message to the SQS queue that invokes it, and that
+message's chain of Lambda → SQS → Lambda hops reaches about 16, Lambda stops invoking the function for it. The
+message is not run: it waits for its next receive and ends in the dead-letter queue (AWS also emails the account
+"Lambda recursive loop detected"). A Laravel job meets this when it sends itself back to its own queue every few
+seconds for a long time: `$this->release(15)` while it waits for something, or a job that dispatches a new copy of
+itself onto the same queue. Each `release()` sends a new message carrying the chain, so the 16th one is dropped.
+
+For such a queue, turn detection off on its worker:
+
+```php
+->queue('default', recursiveLoop: 'allow')
+```
+
+The deploy then calls `PutFunctionRecursionConfig` with `Allow` on `<app>-<env>-queue-default`, after its event
+source mapping (it reads the setting first and writes only a change, printing `deploy.worker_recursive_loop`).
+`recursiveLoop: 'terminate'` puts back AWS's default, `Terminate`, on the next deploy. Leaving the option out
+(or removing it) never touches the function, so a setting changed by hand in the Lambda console stays: to undo
+`allow`, deploy once with `'terminate'` and then remove it if you like. The setting is per function, so a job
+that loops by mistake on that queue is no longer stopped by AWS: keep `tries`, a job's `$tries` or `retryUntil()`
+and the dead-letter queue as the limit. The deploy profile needs `lambda:GetFunctionRecursionConfig` and
+`lambda:PutFunctionRecursionConfig` on the workers (see [Permissions for queues](getting-started.md#permissions-for-queues));
+only queues with the option use them. In a config layer or `arco.json`, it is `"recursiveLoop": "allow"`.
 
 ### Several queues and `onQueue()`
 
@@ -1873,6 +1899,9 @@ the queue's `route` (default `/_arco/queues/<name>`, a [route path](#route-paths
   Each `POST` may use the time left in the invocation minus 2 seconds; a message with less than half a second left is
   not sent and comes back later.
 - A FIFO queue stops at the first failure: the rest of the batch is returned unsent, so the order holds.
+- A process that sends messages back to its own queue every few seconds (polling, waiting for a slot) hits Lambda's
+  recursive loop detection after about 16 hops: give that queue `"recursiveLoop": "allow"` (see
+  [Jobs that re-queue themselves](#jobs-that-re-queue-themselves)).
 - Delivery is at least once: make handlers idempotent.
 
 Send messages with the AWS SDK. Each queue's URL is in `ARCO_QUEUE_<NAME>_URL` (the name in upper case, every

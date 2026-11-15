@@ -11,6 +11,18 @@ composer require multiapi/arco-laravel:^0.12
 vendor/bin/arco info --env=staging     # validation runs here: errors and deprecations name the fix
 ```
 
+## Upgrading to 0.21.0
+
+Nothing is required, and apps without an `.arco-cloud/` directory behave exactly as before. **Redeploy** to get:
+
+- **Timeout reserve** (PHP web functions): an [Arco Cloud extension](cloud-extensions.md#timeout-reserve) can ask
+  PHP's `max_execution_time` to stop a few seconds before `timeout()` (`timeoutReserve`), so its shutdown work
+  finishes before the function stops. Your own `phpIni(['max_execution_time' => ...])` still wins.
+- **Front extensions** (process apps): `.arco-cloud/` is now always packaged under `app/.arco-cloud/`, and a front
+  extension there runs on port 8000 with your app moved to `$PORT` (8001). Make sure your process listens on
+  `$PORT`; one that hard-codes 8000 keeps working, without the front. Queue and schedule deliveries carry
+  `X-Arco-Deadline`.
+
 ## Upgrading to 0.20.7
 
 Nothing is required. **Redeploy** to give PHP the function's `timeout()` as its `max_execution_time` (until now PHP
