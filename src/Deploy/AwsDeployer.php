@@ -450,7 +450,11 @@ final class AwsDeployer implements Deployer
             $step('deploy.step_revision', ['function' => $function]);
             $revisionId = $web->createRevision($function, $revision, $roleCreated);
         }
-        $web->waitRevision($function, $revisionId);
+        if ($console === null) {
+            $web->waitRevision($function, $revisionId);
+        }
+        // With a console (or queues) the wait comes after the functions update below: AWS activates the revision on
+        // its own, so the ~18 s of code updates run meanwhile. Nothing goes live before verification either way.
 
         // The ENI statements are new to the role when no live revision pinned a connector: the console and the
         // workers retry the error a not-yet-propagated permission gives, as with a role created now.
@@ -510,6 +514,7 @@ final class AwsDeployer implements Deployer
             foreach ($config->queues as $queue) {
                 $workerVersions[$queue->name] = ['version' => $versions[$config->workerFunctionName($queue->name)], 'previous' => $previousWorkers[$queue->name]];
             }
+            $web->waitRevision($function, $revisionId);
         }
 
         return new PreparedDeploy($revisionId, $previous, $bucket, $key, $consoleVersion, $previousConsole, $consoleKey, $console?->download?->key, $workerVersions,

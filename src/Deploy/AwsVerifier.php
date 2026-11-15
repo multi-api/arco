@@ -108,6 +108,11 @@ final class AwsVerifier implements Verifier
             : $verification->withInit($report['status'], $report['errorType'], $report['durationMs']);
     }
 
+    public function coldStartLookup(AppConfig $config, DeployResult $result, int $sinceMs): ColdStartLookup
+    {
+        return new ColdStartLookup($this->group($config), $sinceMs, $this->streamPrefixes($config->functionName(), $result->revisionId, $sinceMs));
+    }
+
     /**
      * @param string|null $signFor the endpoint's region when the request must be SigV4-signed
      * @return array{0: ?int, 1: ?string}

@@ -671,6 +671,7 @@ return [
     'step.elapsed' => '{time} elapsed',
     'package.progress' => 'Writing the zip: {percent}%',
     'deploy.cold_start' => '{ms} ms',
+    'deploy.cold_start_deferred' => 'read later by Arco Cloud',
     'deploy.cold_start_unknown' => 'not available yet (the Lambda init report had not reached CloudWatch Logs; see the function logs)',
     'settings.unknown_key' => 'Unknown setting "{key}". Valid settings: {keys}.',
     'settings.one_target' => 'Pass either --env=<name> or --app, not both.',

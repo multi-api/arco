@@ -574,7 +574,13 @@ final class DeployPipeline
             if ($verification->ok && $config->domains !== []) {
                 $result = $deployer->attachDomains($config, $result, $preset instanceof CachesPaths ? $preset->cachedPaths() : [], $onStep, $preset->healthPath());
             }
-            if ($verification->ok) {
+            $coldStartLookup = null;
+            // ARCO_DEFER_COLD_START=1 (Arco Cloud): skip the wait and report where to read the cold start later.
+            // Never for an auth('iam') endpoint verify() already waited on: its init report was its health check.
+            $deferColdStart = getenv('ARCO_DEFER_COLD_START') === '1' && ! ($config->auth === 'iam' && ! RevisionFactory::protectsEndpoint($config));
+            if ($verification->ok && $deferColdStart) {
+                $coldStartLookup = $verifier->coldStartLookup($config, $result, $since);
+            } elseif ($verification->ok) {
                 try {
                     $verification = $verifier->coldStart($config, $result, $since, $verification, $onStep);
                 } catch (Throwable) {
@@ -585,7 +591,7 @@ final class DeployPipeline
             if ($verification->ok) {
                 $deployer->prune($config, $prepared, $onStep);
             }
-            return new DeployOutcome($result, $verification, $rolledBack, $package->bytes, $ran);
+            return new DeployOutcome($result, $verification, $rolledBack, $package->bytes, $ran, $coldStartLookup);
         } finally {
             (new Filesystem())->remove($work);
         }
@@ -671,7 +677,10 @@ final class DeployPipeline
                 $note = ['reason' => 'php_cli_unavailable', 'url' => (string) ($e->params['url'] ?? ''), 'message' => (string) ($e->params['message'] ?? '')];
             }
         }
-        $console = ConsolePackager::fromWeb($package, $work, $phpCli);
+        // Deploys run by Arco Cloud (ARCO_DEFER_COLD_START=1: the in-region runner, the GitHub Action on fast
+        // uplinks) store the CLI uncompressed, saving ~9 s of deflate for ~60 MB more upload; plain CLI
+        // deploys keep it deflated.
+        $console = ConsolePackager::fromWeb($package, $work, $phpCli, getenv('ARCO_DEFER_COLD_START') === '1');
         if ($phpCli !== null && $console->package->bytes > ConsoleFunction::MAX_UNZIPPED_BYTES) {
             // bin/php alone can push the console over Lambda's limit: without it, the console still
             // deploys and downloads FrankenPHP at cold start.

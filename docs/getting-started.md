@@ -683,7 +683,7 @@ vendor/bin/arco deploy --env=production --yes --json > deploy.ndjson
 {"schema":1,"type":"progress","key":"build.zip","percent":100,"at":"2026-10-21T14:03:09Z"}
 {"schema":1,"type":"step","key":"package.writing","status":"done","at":"2026-10-21T14:03:09Z","params":{},"elapsed_ms":2750,"message":"..."}
 {"schema":1,"type":"step","key":"deploy.prune_versions_failed","status":"warning","at":"2026-10-21T14:03:40Z","params":{"function":"shop-production-console","error":"AccessDenied"},"message":"..."}
-{"schema":1,"type":"result","outcome":"deployed","app":"shop","environment":"production","revision":"rev-2","url":"https://abc.lambda-url.us-east-1.on.aws","domains":["shop.example.com"],"rolled_back":false,"cold_start_ms":800,"error":null}
+{"schema":1,"type":"result","outcome":"deployed","app":"shop","environment":"production","revision":"rev-2","url":"https://abc.lambda-url.us-east-1.on.aws","domains":["shop.example.com"],"rolled_back":false,"cold_start_ms":800,"cold_start_deferred":null,"error":null}
 ```
 
 Every line has `schema` (`1`) and `type`, one of:
@@ -706,15 +706,18 @@ Every line has `schema` (`1`) and `type`, one of:
   at most once a second, except the last one at `100`, which always comes and may follow the previous line by
   less than a second. Elapsed time during long waits is not streamed: derive it from the running step's `at`.
 - **`result`**: always the last line, exactly once: `outcome`, `app`, `environment`, `revision`, `url`, `domains`,
-  `rolled_back`, `cold_start_ms` and `error`.
+  `rolled_back`, `cold_start_ms`, `cold_start_deferred` and `error`.
   - `app` is `null` when `arco.php` could not be loaded (`environment` is then the `--env` value).
   - `revision` and `url` are the deployed revision and the function URL. After a failed verification they are
     those of the revision this deploy created, which is no longer live when `rolled_back` is `true`.
   - `domains` lists the custom domains now serving the app; `cold_start_ms` is the verification request's
     cold start, or `null`.
+  - `cold_start_deferred` is `null` unless the deploy ran with `ARCO_DEFER_COLD_START=1` (see below) and
+    succeeded: then it is `{"log_group": ..., "since_ms": ..., "stream_prefixes": [...]}`, where to read the
+    cold start later, and `cold_start_ms` is `null`.
   - `error` is `null` on success, otherwise `{"key": ..., "message": ...}`.
-  - For `remove`, `revision`, `url` and `cold_start_ms` are always `null`, `domains` is `[]` and `rolled_back`
-    is `false`.
+  - For `remove`, `revision`, `url`, `cold_start_ms` and `cold_start_deferred` are always `null`, `domains` is
+    `[]` and `rolled_back` is `false`.
 
 `outcome` is one of:
 
@@ -773,6 +776,28 @@ of its own) and `error.unexpected` (an unexpected exception; `message` is the ex
   error's `key` with its `params` are covered by the [1.x promise](upgrading.md#the-1x-promise): a key keeps its
   meaning and its params, which may only gain entries. `message` texts are not API, and neither are which steps
   a run prints and in what order (a new Arco version can add steps).
+
+#### Deferring the cold start (`ARCO_DEFER_COLD_START`)
+
+At the end of a deploy Arco waits up to 60 seconds for the new revision's cold start to reach CloudWatch Logs.
+A deploy service that runs `arco deploy` on machines billed by the second can skip that wait with
+`ARCO_DEFER_COLD_START=1` in the shell running `arco deploy` (Arco Cloud does). `cold_start_ms` is then `null`
+and a `deployed` result carries where to read the cold start later:
+
+```json
+"cold_start_deferred":{"log_group":"/aws/lambda/web/shop-production","since_ms":1792591380000,"stream_prefixes":["2026/10/21/shop-production[rev-2]"]}
+```
+
+Look for the `platform.initReport` event (`{ $.type = "platform.initReport" }`) in `log_group`, from `since_ms`
+on, in streams starting with one of `stream_prefixes` (the revision's instances; two prefixes when the deploy
+crossed midnight UTC). The region is the environment's and the revision is the result's `revision`. Any other
+value of the variable changes nothing, and so does an `auth('iam')` endpoint without `domain()`: its init report
+is its health check, so the deploy still waits for it and reports `cold_start_ms`. A failed or refused result
+always has `cold_start_deferred: null`.
+
+With the variable set, the human summary reads "Cold start: read later by Arco Cloud", and the console zip stores
+`bin/php` uncompressed (a faster package for about 60 MB more upload, worth it near AWS or on fast uplinks); without
+it, `bin/php` stays deflated.
 
 ### Minimal IAM permissions
 

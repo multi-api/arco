@@ -3,6 +3,29 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.23.0
+
+- **Changed: deploys run by Arco Cloud store the PHP CLI uncompressed in the console zip.** With
+  `ARCO_DEFER_COLD_START=1` (set by Arco Cloud's runner and GitHub Action), `bin/php` (about 91 MB) is no longer
+  deflated when `arco deploy` builds the console zip, which makes the deploy about 8-12 s faster. The zip is about
+  60 MB larger to upload; Lambda's limit counts unzipped bytes, so it is unaffected. Plain `arco deploy` keeps it
+  deflated, for the smaller upload.
+- **Changed: the console and worker update overlaps the web revision.** With a console or queues, `arco deploy` now
+  waits for the new web revision to become active after updating the console and workers, not before, so both run at
+  the same time and the deploy is about 9 s shorter. Step events and their order are unchanged, a failed revision
+  still raises `deploy.revision_failed`, and nothing goes live before verification. A deploy whose revision fails may
+  leave the function versions it published; a later deploy prunes them.
+- **Added: `ARCO_DEFER_COLD_START`.** With `ARCO_DEFER_COLD_START=1` in the shell running `arco deploy`, the deploy
+  skips its last step, the up to 60 s wait for the cold start in CloudWatch Logs. The `--json` result then has
+  `cold_start_ms: null` and a new `cold_start_deferred` field, `{"log_group", "since_ms", "stream_prefixes"}`:
+  where to read the revision's `platform.initReport` later. The field is `null` otherwise (always on failed,
+  refused and remove results). An `auth('iam')` endpoint without `domain()` still waits, since its init report is
+  its health check. For deploy services billed by the second, such as Arco Cloud's runner. See
+  [Deferring the cold start](docs/getting-started.md#deferring-the-cold-start-arco_defer_cold_start).
+- **Changed: `Verifier` has a new method, `coldStartLookup()`.** It returns where `coldStart()` would look, without
+  reading logs, for `ARCO_DEFER_COLD_START`. A custom `Verifier` implementation must add it. With
+  `ARCO_DEFER_COLD_START=1`, the human `arco deploy` summary says "Cold start: read later by Arco Cloud".
+
 ## 0.22.0
 
 - **Added: `recursiveLoop` on queues.** `->queue('default', recursiveLoop: 'allow')` (`"recursiveLoop": "allow"` in a

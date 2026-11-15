@@ -16,4 +16,7 @@ interface Verifier
      * @param (callable(string, array<string, string|int>): void)|null $onStep
      */
     public function coldStart(AppConfig $config, DeployResult $result, int $sinceMs, VerificationResult $verification, ?callable $onStep = null): VerificationResult;
+
+    /** Where coldStart() would look, for a caller that reads the cold start later (ARCO_DEFER_COLD_START). Reads no logs. */
+    public function coldStartLookup(AppConfig $config, DeployResult $result, int $sinceMs): ColdStartLookup;
 }

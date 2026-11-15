@@ -152,6 +152,7 @@ final class JsonStream
      * @param 'deployed'|'removed'|'failed'|'refused' $outcome
      * @param list<string> $domains
      * @param array<string, string|int> $errorParams the error key's params; `error.params` is only written when not empty
+     * @param array{log_group: string, since_ms: int, stream_prefixes: list<string>}|null $coldStartDeferred where to read a cold start ARCO_DEFER_COLD_START skipped
      */
     public function result(
         string $outcome,
@@ -165,6 +166,7 @@ final class JsonStream
         ?string $errorKey = null,
         ?string $errorMessage = null,
         array $errorParams = [],
+        ?array $coldStartDeferred = null,
     ): void {
         if ($this->result) {
             return;
@@ -183,6 +185,7 @@ final class JsonStream
             'domains' => $domains,
             'rolled_back' => $rolledBack,
             'cold_start_ms' => $coldStartMs,
+            'cold_start_deferred' => $coldStartDeferred,
             'error' => $errorKey === null ? null : ['key' => $errorKey, 'message' => (string) $errorMessage] + ($errorParams === [] ? [] : ['params' => $errorParams]),
         ], ['app' => $app, 'environment' => $environment]);
         $this->result = true;

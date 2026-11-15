@@ -110,8 +110,11 @@ would otherwise give.
   - `deploy --json` and `remove --json` print NDJSON on stdout: `step` lines (`key`, `status`: `started`, `done`,
     `warning` or `note`, `params`, `message`), `progress` lines (`key`, `percent`), and exactly one final
     `result` line: `outcome` (`deployed`, `removed`, `refused`, `failed`), `app`, `environment`, `revision`, `url`,
-    `domains`, `rolled_back`, `cold_start_ms` and `error` (`null` or `{"key", "message"}`). Human text, a failing
-    deploy command's output and PHP warnings go to stderr.
+    `domains`, `rolled_back`, `cold_start_ms`, `cold_start_deferred` and `error` (`null` or `{"key", "message"}`).
+    Human text, a failing deploy command's output and PHP warnings go to stderr.
+  - `ARCO_DEFER_COLD_START=1` in the shell running `arco deploy` skips the up to 60 s wait for the cold start at
+    the end of the deploy: `cold_start_ms` is then `null` and a successful result has `cold_start_deferred`
+    (`{"log_group", "since_ms", "stream_prefixes"}`) saying where to read it later. Otherwise it is `null`.
   - `refused` means nothing changed in AWS: fix the cause and run again. `failed` means AWS may have changed: read
     `rolled_back` and check the state (`arco info`) before retrying.
   - A non-zero exit **without** a `result` line is a CLI usage error (unknown option, missing value); stderr says

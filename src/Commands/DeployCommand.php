@@ -281,16 +281,19 @@ final class DeployCommand extends ArcoCommand
                 // With domain() only CloudFront may invoke the endpoint: its URL is shown as such, the domains follow.
                 'url' => $outcome->result->url() . (RevisionFactory::protectsEndpoint($config) ? ' ' . $this->t('deploy.endpoint_cloudfront_only') : ''),
                 'revision' => $outcome->result->revisionId,
-                'cold_start' => $outcome->verification->initDurationMs === null
-                    ? $this->t('deploy.cold_start_unknown')
-                    : $this->t('deploy.cold_start', ['ms' => $outcome->verification->initDurationMs]),
+                'cold_start' => match (true) {
+                    $outcome->verification->initDurationMs !== null => $this->t('deploy.cold_start', ['ms' => $outcome->verification->initDurationMs]),
+                    // ARCO_DEFER_COLD_START skipped the lookup: the caller (Arco Cloud) reads it later.
+                    $outcome->coldStartLookup !== null => $this->t('deploy.cold_start_deferred'),
+                    default => $this->t('deploy.cold_start_unknown'),
+                },
             ]);
             if ($outcome->result->domains !== []) {
                 $success .= "\n" . $this->t('deploy.success_domains', ['urls' => implode("\n", array_map(fn (string $d) => "https://$d", $outcome->result->domains))]);
             }
             $io->success($success);
             $stream?->result('deployed', $config->app, $config->environment, $outcome->result->revisionId, $outcome->result->url(),
-                $outcome->result->domains, false, $outcome->verification->initDurationMs);
+                $outcome->result->domains, false, $outcome->verification->initDurationMs, coldStartDeferred: $outcome->coldStartLookup?->toArray());
             $this->telemetryNotice($config, $output);
 
             // Behind an endpoint override the account is the emulator's (Floci: 000000000000), not one to lock;

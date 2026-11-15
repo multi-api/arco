@@ -19,8 +19,12 @@ final class ConsolePackager
     private const WEB_ONLY_FILES = [self::BINARY, 'index.js'];
     private const WEB_ONLY_PREFIXES = ['lib/'];
 
-    /** @param string|null $phpCli the runtime build's static PHP CLI, carried as bin/php */
-    public static function fromWeb(Package $web, string $dir, ?string $phpCli = null): ConsoleArtifacts
+    /**
+     * @param string|null $phpCli the runtime build's static PHP CLI, carried as bin/php
+     * @param bool $storePhpCli store bin/php uncompressed (deploys run by Arco Cloud, ARCO_DEFER_COLD_START=1):
+     *        a faster zip for a ~60 MB larger upload, worth it on the in-region runner and fast CI uplinks
+     */
+    public static function fromWeb(Package $web, string $dir, ?string $phpCli = null, bool $storePhpCli = false): ConsoleArtifacts
     {
         if (! is_dir($dir) && ! @mkdir($dir, 0777, true) && ! is_dir($dir)) {
             throw BuildException::make('package.write_failed', ['path' => $dir]);
@@ -64,7 +68,10 @@ final class ConsolePackager
         $added = 0;
         if ($phpCli !== null) {
             // addFile() reads the file at close(), which happens below while $phpCli still exists.
+            // Stored when asked: close() deflating the 91 MB CLI took ~9 s of a deploy, and Lambda's limit
+            // counts unzipped bytes, so the larger zip costs only upload size (about 60 MB more).
             if (! @$zip->addFile($phpCli, self::PHP_CLI)
+                || ($storePhpCli && ! $zip->setCompressionName(self::PHP_CLI, ZipArchive::CM_STORE))
                 || ! $zip->setExternalAttributesName(self::PHP_CLI, ZipArchive::OPSYS_UNIX, (0100000 | 0755) << 16)) {
                 $zip->close();
                 throw BuildException::make('package.write_failed', ['path' => $path]);
