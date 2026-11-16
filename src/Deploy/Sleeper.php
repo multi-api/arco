@@ -26,6 +26,15 @@ class Sleeper
         }
     }
 
+    /** Like sleep(), for pauses shorter than a second (the first polls of a wait). */
+    public function sleepMs(int $milliseconds): void
+    {
+        usleep($milliseconds * 1000);
+        if ($this->onSleep !== null) {
+            ($this->onSleep)();
+        }
+    }
+
     /** Wall-clock seconds, for deadlines; tests advance it with sleep(). */
     public function now(): float
     {

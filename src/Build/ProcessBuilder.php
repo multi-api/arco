@@ -49,8 +49,10 @@ final class ProcessBuilder
 
             $step('build.go', ['main' => $main]);
             try {
+                // -s -w drop the symbol table and the DWARF data (about a third of the binary): panics still print
+                // function names and lines, which come from the pclntab that stays.
                 $this->runner->run(
-                    [$this->go, 'build', '-trimpath', '-o', "$appDir/bin/app", $main],
+                    [$this->go, 'build', '-trimpath', '-ldflags=-s -w', '-o', "$appDir/bin/app", $main],
                     $projectDir,
                     ['CGO_ENABLED' => '0', 'GOOS' => 'linux', 'GOARCH' => 'arm64'],
                 );

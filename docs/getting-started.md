@@ -69,7 +69,7 @@ arco info --env=production
 arco logs --env=production --since=10m
 ```
 
-- Arco builds `CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath` of the root package, or of the only
+- Arco builds `CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags='-s -w'` of the root package, or of the only
   `cmd/<name>` with `package main`; set `runtime.main` (`"runtime": {"main": "./cmd/api"}`) when there are several.
 - Only the binary is packaged. Files the app reads at run time (templates, migrations) go in `include`.
 - The first deploy checks `/` (set `runtime.healthPath` for another path): it must answer `2xx`.
@@ -795,9 +795,10 @@ value of the variable changes nothing, and so does an `auth('iam')` endpoint wit
 is its health check, so the deploy still waits for it and reports `cold_start_ms`. A failed or refused result
 always has `cold_start_deferred: null`.
 
-With the variable set, the human summary reads "Cold start: read later by Arco Cloud", and the console zip stores
-`bin/php` uncompressed (a faster package for about 60 MB more upload, worth it near AWS or on fast uplinks); without
-it, `bin/php` stays deflated.
+With the variable set, the human summary reads "Cold start: read later by Arco Cloud", the console zip stores
+`bin/php` uncompressed (a faster package for about 60 MB more upload, worth it near AWS or on fast uplinks), and the
+package is deflated at level 1 (about 3x faster to write for a zip about 15% larger); without it, `bin/php` stays
+deflated and the package uses the default level. Go packages are always deflated at level 1.
 
 ### Minimal IAM permissions
 

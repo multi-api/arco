@@ -27,8 +27,10 @@ final class Packager
     /**
      * @param string|null $runtimeBuild id of the runtime build, null for a custom binary
      * @param (callable(int): void)|null $onProgress whole percent of the zip written, each value once, ending at 100
+     * @param bool $fastDeflate deflate a PHP package at level 1 (deploys run by Arco Cloud): about 3x faster for a
+     *        zip about 15% larger. Process packages always are.
      */
-    public function package(BuildResult $build, string $binaryPath, AppConfig $config, FrameworkPreset $preset, ?string $runtimeBuild = null, ?callable $onProgress = null): Package
+    public function package(BuildResult $build, string $binaryPath, AppConfig $config, FrameworkPreset $preset, ?string $runtimeBuild = null, ?callable $onProgress = null, bool $fastDeflate = false): Package
     {
         // zip entry name => [source path, unix mode]
         $entries = [];
@@ -94,6 +96,11 @@ final class Packager
                 // The static FrankenPHP binary barely compresses (~5%) but deflating its 160 MB
                 // took most of the packaging time.
                 $zip->setCompressionName($name, ZipArchive::CM_STORE);
+            } elseif ($process || $fastDeflate) {
+                // Level 1 deflates a Go binary about 4x faster than the default level 6 for ~10% more bytes
+                // (24 MB: 0.3 s, 9.4 MB instead of 1.2 s, 8.5 MB), and a Laravel vendor/ about 3x faster for
+                // ~15% more. The package hash is taken from the sources, so it does not change.
+                $zip->setCompressionName($name, ZipArchive::CM_DEFLATE, 1);
             }
         }
         $reported = -1;

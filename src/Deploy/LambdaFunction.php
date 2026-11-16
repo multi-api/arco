@@ -73,7 +73,9 @@ final class LambdaFunction
      * code and configuration update on its side, so the functions are updated together and the
      * deploy waits about as long as for the slowest one. Every function gets its code (create or
      * UpdateFunctionCode), then, once all are ready, its configuration, then, once all are ready
-     * again, its version. A failure names the function it happened to.
+     * again, its version. A failure names the function it happened to. The configuration is only
+     * sent to a function whose current one differs from $settings (configured()), or whose role
+     * was just created.
      *
      * @param list<FunctionDeploy> $deploys
      * @return array<string, string> the published version by function name
@@ -82,10 +84,16 @@ final class LambdaFunction
     {
         $all = [];
         $existing = [];
+        $reconfigure = [];
         foreach ($deploys as $deploy) {
             $all[$deploy->name] = $deploy->function;
-            if ($deploy->function->get($deploy->name) !== null) {
+            $current = $deploy->function->get($deploy->name);
+            if ($current !== null) {
                 $existing[$deploy->name] = $deploy->function;
+                // Read before the code update, which leaves the configuration as it is.
+                if ($deploy->roleJustCreated || ! self::configured($current, $deploy->settings)) {
+                    $reconfigure[$deploy->name] = $deploy->function;
+                }
             }
         }
 
@@ -110,14 +118,14 @@ final class LambdaFunction
         self::waitAll($sleeper, $all);
 
         foreach ($deploys as $deploy) {
-            if (! isset($existing[$deploy->name])) {
+            if (! isset($reconfigure[$deploy->name])) {
                 continue;
             }
             $function = $deploy->function;
             // An empty KMSKeyArn puts back the AWS managed key when kmsKey() was removed from arco.php.
             LambdaHelpers::retryRolePropagation($sleeper, $deploy->roleJustCreated, self::ROLE_ERRORS, fn () => $function->execute('UpdateFunctionConfiguration', ['FunctionName' => $deploy->name, ...$deploy->settings + ['KMSKeyArn' => '']]));
         }
-        self::waitAll($sleeper, $existing);
+        self::waitAll($sleeper, $reconfigure);
 
         $versions = [];
         foreach ($deploys as $deploy) {
@@ -130,21 +138,90 @@ final class LambdaFunction
         return $versions;
     }
 
+    /**
+     * Whether UpdateFunctionConfiguration with $settings would change nothing on a function whose
+     * GetFunctionConfiguration is $current: every setting Arco sends is compared, with the KMSKeyArn
+     * reset deployAll() adds. A setting it does not know how to compare counts as a change.
+     *
+     * @param array<string, mixed> $current
+     * @param array<string, mixed> $settings
+     */
+    public static function configured(array $current, array $settings): bool
+    {
+        foreach ($settings + ['KMSKeyArn' => ''] as $key => $wanted) {
+            $have = $current[$key] ?? null;
+            $same = match ($key) {
+                'Role', 'Description', 'MemorySize', 'Timeout' => $have !== null && $have === $wanted,
+                // The AWS managed key: no KMSKeyArn in the configuration.
+                'KMSKeyArn' => (is_string($have) ? $have : '') === $wanted,
+                'EphemeralStorage' => is_array($have) && is_array($wanted) && ($have['Size'] ?? null) === ($wanted['Size'] ?? false),
+                'Environment' => is_array($wanted) && self::sameVariables($have, $wanted),
+                'VpcConfig' => is_array($wanted) && self::sameVpc($have, $wanted),
+                default => false,
+            };
+            if (! $same) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** @param array<mixed> $wanted ['Variables' => [...]] */
+    private static function sameVariables(mixed $have, array $wanted): bool
+    {
+        if (array_keys($wanted) !== ['Variables'] || ! is_array($wanted['Variables'])) {
+            return false;
+        }
+        // Variables Lambda could not decrypt come back as Error instead.
+        if (is_array($have) && isset($have['Error'])) {
+            return false;
+        }
+        $variables = is_array($have) && is_array($have['Variables'] ?? null) ? $have['Variables'] : [];
+        $want = $wanted['Variables'];
+        ksort($variables);
+        ksort($want);
+        return $variables === $want;
+    }
+
+    /** @param array<mixed> $wanted ['SubnetIds' => [...], 'SecurityGroupIds' => [...]] */
+    private static function sameVpc(mixed $have, array $wanted): bool
+    {
+        $keys = array_keys($wanted);
+        sort($keys);
+        if ($keys !== ['SecurityGroupIds', 'SubnetIds']) {
+            return false;
+        }
+        foreach ($keys as $key) {
+            $current = is_array($have) && is_array($have[$key] ?? null) ? $have[$key] : [];
+            $want = is_array($wanted[$key]) ? $wanted[$key] : [null];
+            sort($current);
+            sort($want);
+            if ($current !== $want) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /** Waits until the function is neither being created nor updated. */
     public function wait(string $name, int $timeout = 600): void
     {
         self::waitAll($this->sleeper, [$name => $this], $timeout);
     }
 
+    /** Pauses between the polls of a wait, in ms; the last one repeats. Most updates finish within a few seconds. */
+    private const POLL_MS = [500, 500, 1000, 1000, 2000];
+
     /**
-     * Waits until none of the functions is being created or updated, polling those still busy every
-     * 2 s, so the wait lasts as long as the slowest one.
+     * Waits until none of the functions is being created or updated, polling those still busy after
+     * 0.5, 1, 2 and 3 s, then every 2 s, so the wait lasts about as long as the slowest one.
      *
      * @param array<string, self> $functions by function name
      */
     private static function waitAll(Sleeper $sleeper, array $functions, int $timeout = 600): void
     {
         $deadline = $sleeper->now() + $timeout;
+        $poll = 0;
         while (true) {
             $functions = array_filter($functions, fn (self $function, string $name) => ! $function->ready($name), ARRAY_FILTER_USE_BOTH);
             if ($functions === []) {
@@ -153,7 +230,7 @@ final class LambdaFunction
             if ($sleeper->now() >= $deadline) {
                 throw DeployException::make('deploy.timeout', ['what' => implode(', ', array_keys($functions))]);
             }
-            $sleeper->sleep(2);
+            $sleeper->sleepMs(self::POLL_MS[min($poll++, count(self::POLL_MS) - 1)]);
         }
     }
 

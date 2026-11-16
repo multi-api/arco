@@ -276,7 +276,9 @@ final class DeployPipeline
             }
             $binary = $this->binaries->get($config->runtime, $projectDir);
             $onStep('package.writing', []);
-            $package = $this->packager->package($build, $binary, $config, $preset, $runtimeBuild?->id, fn (int $percent) => $onStep('package.progress', ['percent' => $percent]));
+            // Deploys run by Arco Cloud (ARCO_DEFER_COLD_START=1) deflate at level 1: about 3x faster for a zip about
+            // 15% larger, worth it on the in-region runner and fast CI uplinks. Plain CLI deploys keep the smaller zip.
+            $package = $this->packager->package($build, $binary, $config, $preset, $runtimeBuild?->id, fn (int $percent) => $onStep('package.progress', ['percent' => $percent]), getenv('ARCO_DEFER_COLD_START') === '1');
             $onStep('package.ready', ['size' => (int) round($package->bytes / 1048576)]);
         } catch (Throwable $e) {
             $build->cleanup();

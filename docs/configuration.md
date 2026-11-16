@@ -1817,7 +1817,7 @@ Without `environments`, any `--env` names an environment (as a layer-added one d
 Go: with `GOTOOLCHAIN=auto` (Go's default) `go` fetches the toolchain `go.mod` asks for.
 
 ```bash
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o <staging>/app/bin/app <main>
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags='-s -w' -o <staging>/app/bin/app <main>
 ```
 
 - It runs in the project directory, so the module and its `replace` paths work. `composer install` never runs, and
@@ -1827,6 +1827,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o <staging>/app/bin/ap
   `//go:build ignore` do not count.
 - No `go` on `PATH` is `build.go_missing`; a failing build is `build.command_failed` with the compiler's output.
 - The code must build without cgo.
+- `-s -w` leaves out the symbol table and the DWARF debug data, about a third of the binary. Panics and
+  `runtime/debug` stack traces still name functions, files and lines; only debuggers such as Delve need the
+  removed data.
+- The binary is deflated at level 1 in the zip: about four times faster than the default level for a zip about 10%
+  larger.
 
 The package holds only the binary and what `include` names: `include` patterns are copied from the project into
 `app/` (a wildcard such as `**/*.html` finds files at any depth), then `exclude` removes some of them. `.env` files
