@@ -3,6 +3,17 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.24.1
+
+- **Fixed: `arco remove` no longer fails on resources it already deleted.** The Resource Groups Tagging API can keep
+  listing a deleted resource for many minutes (a network connector stayed listed for more than ten), so every remove,
+  and every retry, ended `failed` with `remove.leftovers` naming something that no longer existed. Each listed
+  resource remove deletes is now confirmed with a direct read for its type (Web Function, console and worker
+  functions, network connector, EventBridge rule, Resource Group, CloudFormation stack, gateway endpoint) before it
+  counts as a leftover; one a read cannot check (another type, a refused or failed read) still counts. The same
+  check decides "nothing to remove" and the list printed before the confirmation, so a remove after a successful one
+  reports nothing to remove. The wait of up to a minute for the listing to catch up is gone.
+
 ## 0.24.0
 
 - **Changed: the deploy that leaves the VPC no longer waits for Lambda to delete the network interfaces.** It deletes

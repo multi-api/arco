@@ -204,7 +204,8 @@ final class RemoveCommand extends ArcoCommand
     private function taggedResources(Deployer $deployer, AppConfig $config): array|Throwable
     {
         try {
-            return $deployer->resources($config);
+            // Confirmed: a resource deleted minutes ago that the Tagging API still lists is not shown nor removed again.
+            return $deployer->resources($config, true);
         } catch (Throwable $e) {
             return $e;
         }

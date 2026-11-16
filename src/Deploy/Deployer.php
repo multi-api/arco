@@ -187,12 +187,14 @@ interface Deployer
 
     /**
      * Every resource of the region tagged for this app and environment (tag:GetResources), sorted by
-     * type and name; `retained` says whether `remove()` keeps it.
+     * type and name; `retained` says whether `remove()` keeps it. The Tagging API can list a resource for many
+     * minutes after it was deleted: $confirmed drops each one `remove()` deletes that a direct read says is gone
+     * (one read-only call per such resource; a type without a check, or a check that fails, keeps it).
      *
      * @return list<array{type: string, name: string, arn: string, retained: bool, relations: list<array{type: string, target: string}>, source: ?string, options: ?array<string, mixed>}>
      * @throws \Aws\Exception\AwsException a refused or failed lookup
      */
-    public function resources(AppConfig $config): array;
+    public function resources(AppConfig $config, bool $confirmed = false): array;
 
     /**
      * Whether each deployed schedule rule of a process app is paused, by schedule name: what `info --resources`

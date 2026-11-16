@@ -369,7 +369,8 @@ DynamoDB tables (cache, failed jobs and `table()`, with their items) are kept; `
 `remove` finishes what it started: "nothing to remove" means nothing it deletes is still tagged for the
 environment, so running it again after an interrupted or failed remove deletes whatever is left (the network
 connector, the roles, the resource group, ...), even when the function is already gone. At the end it lists the
-tagged resources again and, when anything it deletes is still there, fails with `remove.leftovers` naming them; fix
+tagged resources again, confirms each one it deletes with a direct read (the Tagging API can list a deleted resource
+for many minutes), and when anything is still there fails with `remove.leftovers` naming them; fix
 the cause the warnings give and run it again. `--no-wait-interfaces` skips the wait for Lambda to delete the VPC
 network interfaces (up to about 20 minutes): the execution role is kept for Lambda on purpose
 (`remove.role_kept_for_interfaces`, not a failure), and a later `remove` deletes it.
@@ -854,7 +855,10 @@ A deploy role (like the one of Arco's own end-to-end run, in a dedicated test ac
   `arco remove`, `resource-groups:DeleteGroup`. Optional: without them the deploy and the remove print a note
 - for `arco info --resources`, the list `arco remove` prints before it asks and its check for leftovers at the end:
   `tag:GetResources` (without it the check warns `remove.leftovers_unchecked`; and, for a
-  process app's schedules, `events:DescribeRule`: without it `paused` is `null`)
+  process app's schedules, `events:DescribeRule`: without it `paused` is `null`). `arco remove` confirms each listed
+  resource it deletes with the read it already uses for that type (`lambda:GetWebFunction`, `lambda:GetFunctionConfiguration`,
+  `lambda:GetNetworkConnector`, `events:DescribeRule`, `resource-groups:GetGroup`, `cloudformation:DescribeStacks`,
+  `ec2:DescribeVpcEndpoints`); one it cannot read stays a leftover
 - for the runtime clean-up: `s3:ListBucket` on the code bucket and `s3:GetObject`, `s3:PutObject`,
   `s3:DeleteObject` on `runtime/*`
 - for queues (only when `arco.php` has `queue()`; see [Permissions for queues](#permissions-for-queues))

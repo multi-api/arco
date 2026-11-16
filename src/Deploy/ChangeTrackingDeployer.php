@@ -149,9 +149,9 @@ final class ChangeTrackingDeployer implements Deployer
         $this->inner->syncGroup($config, $onStep);
     }
 
-    public function resources(AppConfig $config): array
+    public function resources(AppConfig $config, bool $confirmed = false): array
     {
-        return $this->inner->resources($config);
+        return $this->inner->resources($config, $confirmed);
     }
 
     public function schedulePauses(AppConfig $config): array

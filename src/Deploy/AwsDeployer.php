@@ -30,8 +30,6 @@ final class AwsDeployer implements Deployer
     private const KEEP_PACKAGES = 20;
     /** Console versions kept besides the live one: the newest, so recent rollbacks keep a matching console. */
     private const KEEP_CONSOLE_VERSIONS = 4;
-    /** How long a remove waits for the Tagging API to stop listing what it just deleted. */
-    private const LEFTOVERS_WAIT_SECONDS = 60;
     /** How long a remove waits for the interfaces named after the console or a worker, and between two checks. */
     private const REMOVE_INTERFACES_TIMEOUT = 1800;
     private const REMOVE_INTERFACES_POLL = 15;
@@ -1345,9 +1343,10 @@ final class AwsDeployer implements Deployer
      * and so is what this remove knows it left ($known: the execution role kept after a failed wait for the network
      * interfaces, a gateway endpoint it could not release). Any leftover fails the remove,
      * so it never reports `removed` while something of the environment is left; the next remove deletes it. The role
-     * kept on purpose by --no-wait-interfaces (remove.role_kept_for_interfaces) is not a leftover. The Tagging API may
-     * still list a resource just deleted, so the check waits a little for it to catch up (iam:GetRole, which lists the
-     * role, never lags). Without tag:GetResources it warns and only $known counts.
+     * kept on purpose by --no-wait-interfaces (remove.role_kept_for_interfaces) is not a leftover. The Tagging API can
+     * keep listing a deleted resource for many minutes, so each listed one is confirmed with a direct read for its
+     * type first (ExistingResources) instead of waiting for the listing to catch up. Without tag:GetResources it warns
+     * and only $known counts.
      *
      * @param list<array{type: string, name: string}> $known
      * @param callable(string, array<string, string|int>): void $step
@@ -1357,20 +1356,11 @@ final class AwsDeployer implements Deployer
     {
         $role = ExecutionRole::roleName($config);
         $leftover = static fn (array $resource): bool => ! $resource['retained'] && ! ($roleKeptForInterfaces && $resource['type'] === 'iam:role' && $resource['name'] === $role);
-        $deadline = $this->sleeper->now() + self::LEFTOVERS_WAIT_SECONDS;
-        while (true) {
-            try {
-                $left = array_values(array_filter($this->resources($config), $leftover));
-            } catch (\Throwable $e) {
-                $step('remove.leftovers_unchecked', ['error' => self::errorText($e)]);
-                $left = [];
-                break;
-            }
-            $lagging = array_filter($left, static fn (array $resource): bool => $resource['type'] !== 'iam:role');
-            if ($lagging === [] || $this->sleeper->now() >= $deadline) {
-                break;
-            }
-            $this->sleeper->sleep(10);
+        try {
+            $left = array_values(array_filter($this->resources($config, true), $leftover));
+        } catch (\Throwable $e) {
+            $step('remove.leftovers_unchecked', ['error' => self::errorText($e)]);
+            $left = [];
         }
         foreach ($known as $resource) {
             if (array_filter($left, static fn (array $l): bool => $l['type'] === $resource['type'] && $l['name'] === $resource['name']) === []) {
@@ -1482,9 +1472,10 @@ final class AwsDeployer implements Deployer
         }
     }
 
-    public function resources(AppConfig $config): array
+    public function resources(AppConfig $config, bool $confirmed = false): array
     {
-        return (new TaggedResources($this->aws->taggingApi(), new OwnershipGuard($this->aws)))->list($config);
+        $resources = (new TaggedResources($this->aws->taggingApi(), new OwnershipGuard($this->aws)))->list($config);
+        return $confirmed ? (new ExistingResources($this->aws))->filter($config, $resources) : $resources;
     }
 
     public function schedulePauses(AppConfig $config): array
