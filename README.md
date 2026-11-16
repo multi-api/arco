@@ -165,7 +165,7 @@ Every option, the packaging rules and the Laravel preset are in the
 | `arco vpc:set --env=<env>` / `vpc:remove` | Set `vpc()` (`--subnet`, `--security-group`, `--endpoint`, each repeatable; the whole list at once) or remove it in `arco.php` |
 | `arco certificate:set <arn> --env=<env>` / `certificate:remove` | Use an existing ACM certificate (`us-east-1`) for the environment's domains, or go back to Arco's own |
 | `arco profile --env=<env>` | Show or change the AWS profile remembered for an environment (`--json` too) |
-| `arco remove --env=<env>` | Delete the function, its endpoint, role, workers and domain resources (queues, buckets, tables and log groups are kept); without a terminal it needs `--yes`; `--json` too |
+| `arco remove --env=<env>` | Delete the function, its endpoint, role, workers and domain resources (queues, buckets, tables and log groups are kept); without a terminal it needs `--yes`; `--json` too; fails naming what is left (`remove.leftovers`), and running it again finishes the job; `--no-wait-interfaces` keeps the execution role instead of waiting for Lambda's VPC network interfaces |
 
 Messages are in English or Spanish (`--lang=es` or `ARCO_LANG=es`).
 

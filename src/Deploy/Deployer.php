@@ -102,8 +102,14 @@ interface Deployer
     /** Whether custom-domain resources (the CloudFront stack, a managed certificate) exist for the environment. */
     public function hasDomainResources(AppConfig $config): bool;
 
-    /** @param (callable(string, array<string, string|int>): void)|null $onStep */
-    public function remove(AppConfig $config, ?callable $onStep = null): void;
+    /**
+     * Deletes the environment. Ends with DeployException remove.leftovers when anything of it is left (apart from the
+     * data it keeps); without $waitInterfaces the execution role of an environment that ran in a VPC is kept on purpose
+     * for Lambda to delete the network interfaces (note remove.role_kept_for_interfaces), not a leftover.
+     *
+     * @param (callable(string, array<string, string|int>): void)|null $onStep
+     */
+    public function remove(AppConfig $config, ?callable $onStep = null, bool $waitInterfaces = true): void;
 
     public function describe(AppConfig $config): ?AppStatus;
 

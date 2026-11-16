@@ -3,6 +3,35 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.24.0
+
+- **Changed: the deploy that leaves the VPC no longer waits for Lambda to delete the network interfaces.** It deletes
+  the console and worker versions still in the VPC, tags the execution role `arco:vpc-left` with the time and ends;
+  Lambda deletes the interfaces in the background (up to about 20 minutes). For a day after that, a deploy makes one
+  `ec2:DescribeNetworkInterfaces` call and keeps the role's network interface statements, which Lambda needs to
+  delete them, while one is left. This saves up to about 20 minutes of a deploy (billed minutes on a CI runner or
+  Arco Cloud). Without `iam:TagRole` the deploy waits as before. New notes `deploy.vpc_interfaces_background`,
+  `deploy.vpc_access_kept`, `deploy.vpc_access_unchecked`. See [VPC](docs/configuration.md#changing-and-removing-vpc).
+- **Fixed: `arco remove` finishes what an earlier remove started.** "Nothing to remove" is now decided from the
+  resources tagged for the environment (apart from the data remove keeps) and the domain resources, not from the Web
+  Function alone, so a remove that stopped half way (or kept something) is completed by the next one. With the Web
+  Function already gone, the network connector is found by its tags (as is a connector a deploy failed to delete).
+  An operator role left after its connector went is deleted on its own (step `remove.step_operator_role`, `{role}`)
+  and listed by `arco info --resources`; the gateway endpoints carrying the environment's usage tag are released
+  even when the Web Function that records them is gone. After a deploy that left the VPC less than a day ago
+  (`arco:vpc-left`), remove waits for the interfaces named after the console or a worker before it deletes the
+  execution role.
+- **Changed: `arco remove` fails when something of the environment is left.** After deleting, it lists the tagged
+  resources again (waiting up to a minute for the Tagging API to catch up) and ends with error `remove.leftovers`
+  (`{resources}`, a comma-separated list of `<type> <name>`) when anything it deletes is still there, including the
+  execution role kept after a failed wait for the VPC network interfaces and a gateway endpoint it could not release; `--json` ends `failed`, not `removed`.
+  Without `tag:GetResources` it warns `remove.leftovers_unchecked` (`{error}`) and only the kept role counts. With
+  `--json`, the result's `error.params` now also carries the params of deploy errors (such as `remove.leftovers`).
+- **Added: `arco remove --no-wait-interfaces`.** Does not wait (up to about 20 minutes) for Lambda to delete the VPC
+  network interfaces: the execution role, which Lambda needs for that, is kept on purpose and reported in the note
+  `remove.role_kept_for_interfaces` (`{role, region, functions}`); the remove still ends `removed`. A later
+  `arco remove` deletes the role once the interfaces are gone.
+
 ## 0.23.1
 
 - **Changed: Go binaries are built with `-ldflags='-s -w'`.** The symbol table and the DWARF debug data are left out,

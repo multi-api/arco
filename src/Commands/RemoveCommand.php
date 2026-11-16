@@ -60,6 +60,7 @@ final class RemoveCommand extends ArcoCommand
             ->addOption('profile', 'p', InputOption::VALUE_REQUIRED, 'AWS profile to use')
             ->addOption('yes', 'y', InputOption::VALUE_NONE, 'Answer yes to every confirmation (no typed confirmation)')
             ->addOption('force', null, InputOption::VALUE_NONE, 'Deprecated: use --yes')
+            ->addOption('no-wait-interfaces', null, InputOption::VALUE_NONE, 'Do not wait for Lambda to delete the VPC network interfaces: the execution role is kept for it (a note names it)')
             ->addOption('dns-profile', null, InputOption::VALUE_REQUIRED, 'AWS profile whose Route 53 holds the DNS zones of the custom domains')
             ->addOption('json', null, InputOption::VALUE_NONE, 'Print NDJSON step events and a final result line on stdout (never asks: implies --no-interaction)')
             ->addOption(ConfigLayer::OPTION, null, InputOption::VALUE_REQUIRED, ConfigLayer::DESCRIPTION);
@@ -127,7 +128,14 @@ final class RemoveCommand extends ArcoCommand
             // The CloudFront stack (or a certificate) may outlive the function, e.g. after a
             // half-finished remove or after domain() was deleted from arco.php.
             $domainResources = $deployer->hasDomainResources($config);
-            if ($deployer->describe($config) === null && ! $domainResources) {
+            // So may the connector, the roles or the group: what the tags list (apart from the data remove keeps) is
+            // still to remove. Without tag:GetResources, only the function and the domain resources tell.
+            $resources = $this->taggedResources($deployer, $config);
+            $toDelete = is_array($resources) && array_filter($resources, static fn (array $resource): bool => ! $resource['retained']) !== [];
+            if ($deployer->describe($config) === null && ! $domainResources && ! $toDelete) {
+                if ($resources instanceof Throwable) {
+                    $this->resourcesUnlisted($resources, $io, $stream);
+                }
                 $io->note($this->t('remove.nothing', ['function' => $config->functionName()]));
                 $stream?->note('remove.nothing', ['function' => $config->functionName()]);
                 $stream?->result('removed', $config->app, $config->environment);
@@ -143,7 +151,7 @@ final class RemoveCommand extends ArcoCommand
             }
 
             // What the tags say belongs to the environment, before anything is asked or deleted.
-            $this->listResources($deployer, $config, $io, $stream);
+            $this->listResources($resources, $config, $io, $stream);
 
             // Interactive: the typed confirmation is the protected() confirmation too.
             if (! $input->getOption('yes')) {
@@ -173,7 +181,7 @@ final class RemoveCommand extends ArcoCommand
                 }
                 // A leftover AWS cannot be checked (e.g. the scheduler rule) is a WARNINGS key: a warning block, not a bullet.
                 $steps?->__invoke($key, $params);
-            });
+            }, ! $input->getOption('no-wait-interfaces'));
             $steps?->finish();
             $io->success($this->t('remove.done', ['function' => $config->functionName()]));
             $stream?->result('removed', $config->app, $config->environment);
@@ -189,14 +197,33 @@ final class RemoveCommand extends ArcoCommand
         }
     }
 
-    private function listResources(Deployer $deployer, AppConfig $config, SymfonyStyle $io, ?JsonStream $stream): void
+    /**
+     * @return list<array{type: string, name: string, arn: string, retained: bool, relations: list<array{type: string, target: string}>, source: ?string, options: ?array<string, mixed>}>|Throwable
+     *         the failed lookup instead of the list
+     */
+    private function taggedResources(Deployer $deployer, AppConfig $config): array|Throwable
     {
         try {
-            $resources = $deployer->resources($config);
+            return $deployer->resources($config);
         } catch (Throwable $e) {
+            return $e;
+        }
+    }
+
+    private function resourcesUnlisted(Throwable $e, SymfonyStyle $io, ?JsonStream $stream): void
+    {
+        $io->note($this->t('remove.resources_unlisted', ['error' => self::awsMessage($e)]));
+        $stream?->note('remove.resources_unlisted', ['error' => self::awsMessage($e)]);
+    }
+
+    /**
+     * @param list<array{type: string, name: string, arn: string, retained: bool, relations: list<array{type: string, target: string}>, source: ?string, options: ?array<string, mixed>}>|Throwable $resources
+     */
+    private function listResources(array|Throwable $resources, AppConfig $config, SymfonyStyle $io, ?JsonStream $stream): void
+    {
+        if ($resources instanceof Throwable) {
             // Only a list: without tag:GetResources the remove still goes on.
-            $io->note($this->t('remove.resources_unlisted', ['error' => self::awsMessage($e)]));
-            $stream?->note('remove.resources_unlisted', ['error' => self::awsMessage($e)]);
+            $this->resourcesUnlisted($resources, $io, $stream);
             return;
         }
         if ($resources === []) {

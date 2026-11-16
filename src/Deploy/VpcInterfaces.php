@@ -63,6 +63,40 @@ final class VpcInterfaces
     }
 
     /**
+     * The interfaces Lambda named after the environment's console or workers ("AWS Lambda VPC ENI-<function>..."), in
+     * any subnet: what the deploys after one that left the VPC look for (they no longer know its subnets). One call
+     * (more only with a NextToken). An interface another function now shares keeps the name it was created with, so it
+     * may be listed too: the ENI statements then stay a little longer, never shorter.
+     *
+     * @return list<string> interface ids, sorted
+     * @throws \Aws\Exception\AwsException a refused or failed lookup
+     */
+    public function named(AppConfig $config): array
+    {
+        $ids = [];
+        $token = null;
+        do {
+            $page = $this->ec2->describeNetworkInterfaces([
+                'Filters' => [['Name' => 'description', 'Values' => [
+                    'AWS Lambda VPC ENI-' . $config->consoleFunctionName() . '*',
+                    'AWS Lambda VPC ENI-' . $config->functionName() . '-queue-*',
+                ]]],
+                ...($token === null ? [] : ['NextToken' => $token]),
+            ]);
+            foreach (Aws::maps($page['NetworkInterfaces'] ?? []) as $interface) {
+                $id = Aws::string($interface['NetworkInterfaceId'] ?? null);
+                if ($id !== null) {
+                    $ids[] = $id;
+                }
+            }
+            $token = Aws::string($page['NextToken'] ?? null);
+            $token = $token === '' ? null : $token;
+        } while ($token !== null);
+        sort($ids);
+        return $ids;
+    }
+
+    /**
      * @param list<array{subnets: list<string>, groups: list<string>}> $networks
      * @return array<string, array{subnet: string, groups: list<string>}> by interface id
      */

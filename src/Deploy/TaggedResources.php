@@ -77,9 +77,10 @@ final class TaggedResources
             $token = Aws::string($page['PaginationToken'] ?? null);
             $token = $token === '' ? null : $token;
         } while ($token !== null);
-        $role = $this->executionRole($config);
-        if ($role !== null) {
-            $resources[] = $role;
+        foreach ([$this->executionRole($config), $this->operatorRole($config)] as $role) {
+            if ($role !== null) {
+                $resources[] = $role;
+            }
         }
         $resources = self::withRelations($config, $resources, $scheduleRules);
         usort($resources, static fn (array $a, array $b): int => [$a['type'], $a['name']] <=> [$b['type'], $b['name']]);
@@ -97,7 +98,25 @@ final class TaggedResources
         if ($config->role !== null) {
             return null;
         }
-        $name = ExecutionRole::roleName($config);
+        return $this->role(ExecutionRole::roleName($config), $config);
+    }
+
+    /**
+     * The network connector's operator role, when it exists and is this environment's: `arco remove` deletes it with
+     * the connector, or alone when it outlived it. Informational like the execution role.
+     *
+     * @return array{type: string, name: string, arn: string, retained: bool, relations: list<array{type: string, target: string}>, source: ?string, options: ?array<string, mixed>}|null
+     */
+    private function operatorRole(AppConfig $config): ?array
+    {
+        return $this->role(NetworkConnectors::operatorRoleName($config), $config);
+    }
+
+    /**
+     * @return array{type: string, name: string, arn: string, retained: bool, relations: list<array{type: string, target: string}>, source: ?string, options: ?array<string, mixed>}|null
+     */
+    private function role(string $name, AppConfig $config): ?array
+    {
         try {
             $role = $this->guard->role($name);
         } catch (AwsException) {

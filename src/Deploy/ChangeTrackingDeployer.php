@@ -97,10 +97,10 @@ final class ChangeTrackingDeployer implements Deployer
         return $this->inner->hasDomainResources($config);
     }
 
-    public function remove(AppConfig $config, ?callable $onStep = null): void
+    public function remove(AppConfig $config, ?callable $onStep = null, bool $waitInterfaces = true): void
     {
         $this->change();
-        $this->inner->remove($config, $onStep);
+        $this->inner->remove($config, $onStep, $waitInterfaces);
     }
 
     public function describe(AppConfig $config): ?AppStatus

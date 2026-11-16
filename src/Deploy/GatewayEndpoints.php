@@ -100,6 +100,35 @@ final class GatewayEndpoints
     }
 
     /**
+     * The endpoints that carry the environment's usage tag, gone or going ones left out: what a remove releases when
+     * the Web Function, which records them, is already gone.
+     *
+     * @return list<string> ids, sorted
+     * @throws \Aws\Exception\AwsException a refused or failed lookup
+     */
+    public function usedBy(AppConfig $config): array
+    {
+        $ids = [];
+        $token = null;
+        do {
+            $page = $this->ec2->describeVpcEndpoints([
+                'Filters' => [['Name' => 'tag-key', 'Values' => [self::usageTag($config)]]],
+                ...($token === null ? [] : ['NextToken' => $token]),
+            ]);
+            foreach (Aws::maps($page['VpcEndpoints'] ?? []) as $raw) {
+                $endpoint = self::parse($raw);
+                if ($endpoint !== null) {
+                    $ids[] = $endpoint['id'];
+                }
+            }
+            $token = Aws::string($page['NextToken'] ?? null);
+            $token = $token === '' ? null : $token;
+        } while ($token !== null);
+        sort($ids);
+        return array_values(array_unique($ids));
+    }
+
+    /**
      * Takes the environment's usage tag off each endpoint, and deletes the Arco endpoints that nobody uses any more.
      * Route tables stay where they are. Never throws for AWS: a failure is a warning with the manual commands.
      *

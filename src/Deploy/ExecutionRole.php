@@ -15,6 +15,12 @@ final class ExecutionRole
     ];
 
     public const REGION_TAG = 'arco:region';
+    /**
+     * When the environment left the VPC (unix seconds), set by the deploy that left: Lambda deletes the console's and
+     * workers' network interfaces in the background with this role, so the next deploys keep its ENI statements while
+     * one is left. Never removed (deploy profiles have no iam:UntagRole); it only matters for a day.
+     */
+    public const VPC_LEFT_TAG = 'arco:vpc-left';
     private const DENIED = ['AccessDenied', 'AccessDeniedException'];
 
     public function __construct(private readonly IamClient $iam)
@@ -27,7 +33,8 @@ final class ExecutionRole
     }
 
     /**
-     * @param array<string, mixed> $policy
+     * @param array<string, mixed>|\Closure(array<string, string>): array<string, mixed> $policy the policy, or a closure that
+     *                            makes it from the existing role's tags (read from the GetRole already made; [] for a new role)
      * @param array<string, string> $tags
      * @param string|null $region the app's region: a new role is tagged `arco:region`, an existing one
      *                            tagged with another region is refused (an app lives in one region), an
@@ -42,10 +49,11 @@ final class ExecutionRole
      * @return array{arn: string, created: bool}
      * @throws DeployException deploy.region_changed, deploy.boundary_denied
      */
-    public function ensure(string $roleName, array $policy, array $tags, ?string $region = null, ?callable $onStep = null, ?string $boundary = null): array
+    public function ensure(string $roleName, array|\Closure $policy, array $tags, ?string $region = null, ?callable $onStep = null, ?string $boundary = null): array
     {
         $created = false;
         $current = null;
+        $existingTags = [];
         if ($region !== null) {
             $tags[self::REGION_TAG] = $region;
         }
@@ -57,6 +65,7 @@ final class ExecutionRole
             }
             // From the GetRole result already in hand: no extra call to compare the boundary.
             $current = self::boundary($existing);
+            $existingTags = self::tags($existing);
         } catch (IamException $e) {
             if ($e->getAwsErrorCode() !== 'NoSuchEntity') {
                 throw $e;
@@ -81,6 +90,9 @@ final class ExecutionRole
             $onStep('deploy.boundary_kept', ['role' => $roleName, 'boundary' => $current]);
         }
 
+        if ($policy instanceof \Closure) {
+            $policy = $policy($existingTags);
+        }
         $this->bounded($roleName, $boundary, 'iam:PutRolePolicy', fn () => $this->iam->putRolePolicy([
             'RoleName' => $roleName,
             'PolicyName' => 'arco',
@@ -110,6 +122,44 @@ final class ExecutionRole
         }
     }
 
+    /**
+     * Tags the role with when the environment left the VPC (VPC_LEFT_TAG), with the iam:TagRole the region tag uses.
+     *
+     * @throws IamException a refused or failed TagRole
+     */
+    public function markLeftVpc(string $roleName, int $at): void
+    {
+        $this->iam->tagRole(['RoleName' => $roleName, 'Tags' => [['Key' => self::VPC_LEFT_TAG, 'Value' => (string) $at]]]);
+    }
+
+    /**
+     * When the environment left the VPC, from the role's tags; null when it never did (or the value is not a time).
+     *
+     * @param array<mixed> $tags the role's tags by key
+     */
+    public static function leftVpcAt(array $tags): ?int
+    {
+        $value = $tags[self::VPC_LEFT_TAG] ?? null;
+        return is_string($value) && ctype_digit($value) ? (int) $value : null;
+    }
+
+    /**
+     * The role's tags, from a GetRole result.
+     *
+     * @return array<string, string>
+     */
+    private static function tags(ResultInterface $result): array
+    {
+        $role = $result->get('Role');
+        $tags = [];
+        foreach (is_array($role) && is_array($role['Tags'] ?? null) ? $role['Tags'] : [] as $tag) {
+            if (is_array($tag) && is_string($tag['Key'] ?? null) && is_string($tag['Value'] ?? null)) {
+                $tags[$tag['Key']] = $tag['Value'];
+            }
+        }
+        return $tags;
+    }
+
     /** The role's current permissions boundary, from a GetRole result. */
     private static function boundary(ResultInterface $result): ?string
     {
@@ -134,13 +184,7 @@ final class ExecutionRole
     /** Reads the tag from the GetRole result already in hand: no extra call to refuse; one TagRole to adopt. */
     private function checkRegion(string $roleName, ResultInterface $result, string $region, ?callable $onStep): void
     {
-        $role = $result->get('Role');
-        $current = null;
-        foreach (is_array($role) && is_array($role['Tags'] ?? null) ? $role['Tags'] : [] as $tag) {
-            if (is_array($tag) && ($tag['Key'] ?? null) === self::REGION_TAG && is_string($tag['Value'] ?? null)) {
-                $current = $tag['Value'];
-            }
-        }
+        $current = self::tags($result)[self::REGION_TAG] ?? null;
         if ($current === $region) {
             return;
         }

@@ -1619,20 +1619,38 @@ Removing `vpc()` (or `vpc(false)`) deploys the environment out of the VPC first.
 verified does Arco delete the connector and then the operator role. If the verification fails, the next deploy
 finishes the removal. If the delete itself fails, the deploy still succeeds, the warning prints the
 `aws lambda-core` and `aws iam` commands to run by hand, and later deploys do not try again. Before the connector,
-the same cleanup deletes the console and worker versions still in the VPC (they are no rollback target any more)
-and waits until Lambda has deleted their network interfaces, usually a few minutes and up to about 20: Lambda
-deletes them with the execution role, which keeps the network interface statements until the next deploy. Lambda
-shares one interface among the functions of the account with the same subnets and security groups, so one that
-another function (another environment or app) still uses is not waited for. An interface still there after 30
-minutes is a warning: wait until it is gone before the next deploy. Older revisions that pinned
+the same cleanup deletes the console and worker versions still in the VPC (they are no rollback target any more).
+Lambda then deletes their network interfaces in the background, usually within a few minutes and up to about 20,
+and it needs the execution role's network interface statements to do it. The deploy does not wait: it tags the
+execution role `arco:vpc-left` with the time and prints the note `deploy.vpc_interfaces_background`. For a day after
+that, a deploy makes one `ec2:DescribeNetworkInterfaces` call for interfaces named after the console or a worker
+(`AWS Lambda VPC ENI-<app>-<env>-console*`, `...-queue-*`). While one is left, or when the call fails, the role keeps
+the statements (note `deploy.vpc_access_kept` or `deploy.vpc_access_unchecked`); once none is left, or a day later
+without a call, the deploy removes them. The tag stays on the role (deploy profiles have no `iam:UntagRole`) and
+matters only for that day. When the role cannot be tagged (no `iam:TagRole`), the deploy waits for the interfaces as
+before: Lambda shares one interface among the functions of the account with the same subnets and security groups, so
+one that another function (another environment or app) still uses is not waited for, and an interface still there
+after 30 minutes is a warning: wait until it is gone before the next deploy. With `role()` Arco never edits the
+role's policy, so nothing is tagged or waited for. Older revisions that pinned
 the connector cannot serve traffic once it is gone; this matters only if you move traffic by hand.
 
 `arco remove` deletes the Web Function, the console and the workers, then waits until the connector is gone, then
-deletes the operator role. When the console or a worker was in the VPC, it waits until Lambda has deleted their
+deletes the operator role (an operator role left after its connector went, after a timeout for example, is deleted
+on its own by the next remove). When the console or a worker was in the VPC, it waits until Lambda has deleted their
 network interfaces before it deletes the execution role (up to about 20 minutes): a role deleted earlier leaves
-them in the VPC for good, where they block deleting its subnets and security groups. If they are still there
+them in the VPC for good, where they block deleting its subnets and security groups. Where they ran is known from
+`vpc()`, the console and worker versions still in the VPC and the connector. After a deploy that left the VPC less
+than a day ago (the role's `arco:vpc-left` tag), none of those is left, so it waits for the interfaces named after
+the console or a worker (`AWS Lambda VPC ENI-<app>-<env>-console*`, `...-queue-*`) instead. If they are still there
 after 30 minutes, or cannot be read, the execution role is kept and the warning prints the commands that finish
-the job. A connector that Arco did not create (its operator role is not Arco's) is left alone.
+the job; the remove then fails with `remove.leftovers` and running it again later deletes the role.
+`arco remove --no-wait-interfaces` does not wait: while interfaces may be left (the environment ran in a VPC, or
+interfaces named after the console or a worker still exist, which also covers a VPC that came only from a connector
+already deleted) it keeps the execution role on purpose (note `remove.role_kept_for_interfaces`) and ends `removed`;
+a later `arco remove` deletes it. A connector that Arco did not create (its operator role is not Arco's) is left
+alone. The gateway endpoints the environment used are released after the functions; when the Web Function that
+records them is already gone (a remove that stopped half way), they are found by the environment's usage tag. One
+that cannot be released is a leftover too.
 `arco info` shows the subnets, security groups, connector id, version and state; `arco info --json` has a `vpc`
 object, or `null`.
 
