@@ -22,7 +22,7 @@ run `composer install` first, or read the docs at https://github.com/multi-api/a
 - Confirm which AWS profile and account to use; never assume `default`.
 - Never put secret values in `arco.php`, `.env` files you commit, command arguments or the chat. The user stores them
   with `vendor/bin/arco secret:set <name> --env=<env>`; reference them as `arco-ssm:/<app>/<env>/<name>`.
-- Never pass `--force` or `--force-dns` on your own: they override ownership and DNS safety checks.
+- Never pass `--force` or `--force-dns` on your own: they override ownership and DNS safety checks. On `arco remove`, `--force` also deletes the customer domains of `tenantDomains()` (`remove.tenants_need_force`): only the user decides that.
 - Always pass `-n` and `--env=<env>`. Pass `--yes` only for the exact confirmation the user gave.
 - Validate after editing `arco.php`: `vendor/bin/arco info --env=<env> --json -n` (no AWS change).
 - Use `--json` and exit codes, not message text. `deploy --json` ends with one `result` line: `outcome` is

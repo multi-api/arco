@@ -19,7 +19,7 @@ ARCO_CONFIG_LAYER=layer.json vendor/bin/arco deploy
 
 - `--config-layer=<path>` wins over `ARCO_CONFIG_LAYER`. Surrounding whitespace is trimmed, and an empty or blank
   value falls back to the other one: there is no layer only when both are empty.
-- Only `deploy`, `package`, `info`, `remove`, `logs`, `resources`, `scheduler:pause` and `scheduler:resume` read the layer. Every other command (`tinker`, `command`,
+- Only `deploy`, `package`, `info`, `remove`, `logs`, `resources`, `scheduler:pause`, `scheduler:resume` and `tenants:restore` read the layer. Every other command (`tinker`, `command`,
   `queue:list`, the `arco.php`-editing commands, ...) ignores both the flag and the variable, and the editing commands
   change `arco.php` only.
 - A missing or unreadable file is `config.layer_not_found` (`{path}`).
@@ -88,7 +88,20 @@ Each key has the type the `arco.php` method stores:
 | `scheduler`, `logRetention` | integer or `false` |
 | `console`, `protected`, `bundleVariables`, `accessLog`, `telemetry` | boolean |
 | `cache`, `failedJobsTable` | `true`, `false` or `{"existing": "<table>"}` |
+| `tenantDomainTarget` | string: the hostname `tenantDomains()` stores (see below) |
 | `vpc` | `false` or `{"subnets": [...], "securityGroups": [...], "endpoints": [...]}`, as `vpc()` stores it (`endpoints` a list of services, or `service => id`) |
+
+`tenantDomainTarget` is the one setting that is valid in a layer and not in `arco.json`: it is what
+`tenantDomains('routing.example.com')` stores, so a layer can turn on [tenant domain
+routing](configuration.md#tenant-domain-routing). It merges as any setting (equal to `arco.php` is fine, different is a
+`config.layer_conflict` of kind `setting` named `tenantDomainTarget`, absent from `arco.php` takes the layer's value
+with source `cloud`) and the merged value goes through the usual validation: a hostname, not in `domain()`, and
+`domain()` must exist in the same environment, a `domains` entry of the layer counting
+(`validation.tenant_domain_target`, `validation.tenant_domain_conflict`, `validation.tenant_domain_requires_domain`).
+The key is refused with `config.layer_invalid` on an older Arco (it does not know it), so a tool should gate it on the
+app's Arco version. Process (Go) apps cannot use tenant domains in v1: the key in `arco.json` itself is
+`config.json_invalid` (unknown key), and one in a layer over a process app is `validation.process_unsupported`
+(`{key: "tenantDomainTarget"}`).
 
 ### Queues, storage, tables and schedules
 
@@ -238,9 +251,11 @@ without it. `adopt` is not an option of the resolved schedule: `info --resources
   The console function reports the stored value: `console: null` when only the scheduler turns the console on.
 - `variables`: `[{"name", "source"}]`, sorted by name. Never values.
 - `config`: every item the resolved configuration declares, deployed or not, `[{kind, name, source, options}]` with
-  `kind` one of `queue`, `storage`, `table`, `cache`, `failedJobsTable`, `console`, `scheduler`, `domain`, `vpc`,
-  `schedule` (`name` is the queue, storage, table or schedule name as configured, the domain, or the kind for the
-  singletons; a domain's options are `{domain, dns, certificate}`, a schedule's `{every, route, timeout}`). A queue's
+  `kind` one of `queue`, `storage`, `table`, `cache`, `failedJobsTable`, `console`, `scheduler`, `domain`, `tenantDomains`,
+  `vpc`, `schedule` (`name` is the queue, storage, table or schedule name as configured, the domain, or the kind for the
+  singletons; a domain's options are `{domain, dns, certificate}`, a schedule's `{every, route, timeout}`, and
+  `tenantDomains` (listed after the domains, only when `tenantDomains()` or the layer's `tenantDomainTarget` is
+  configured) has `{target}` and the `source` of the target). A queue's
   options have `route`: its route in a process app, `null` in a PHP app. Schedule rules (`events:rule`) are listed as
   resources with their schedule's options.
 - `schedules` (0.20.3, after `config`): the same list as `arco info --json` below, `[]` for a PHP app. `paused` is read
@@ -250,6 +265,12 @@ without it. `adopt` is not an option of the resolved schedule: `info --resources
   (`arco scheduler:pause`), `false` when enabled and `null` when the rule does not exist or cannot be read (no profile,
   no `events:DescribeRule`); it never fails the command. Only the scheduler rule is read (one `DescribeRule`). It
   carries the same value as `settings.schedulerPaused` in `arco info --json`.
+- `tenantDomains` (after `scheduler`, before a possible `error`): the same object as in `arco info --json`,
+  `{"distribution", "connectionGroup", "target", "endpoint", "tenants"}`, present only when the environment's tenant
+  stack exists and is this environment's (the key is absent otherwise, and for an environment with neither `domain()`
+  nor `tenantDomains()`, which makes no extra call). `tenants` is the number of customer domains the environment owns,
+  `null` when it could not be counted (`cloudfront:ListDistributionTenants` refused, for example); the stack lookup
+  never fails the command. It reads the stack (`cloudformation:DescribeStacks`) and lists the distribution's tenants.
 
 `arco info --json` has `runtime` (`{"kind": "php"}`, or `{"kind": "process", "language": "go", "command": [...],
 "healthPath": "/"}`) and `schedules`, the resolved schedules: `[{name, every, expression, route, timeout, rule,

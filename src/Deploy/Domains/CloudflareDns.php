@@ -91,15 +91,82 @@ final class CloudflareDns implements DnsProvider
     public function records(HostedZone $zone, string $name): array
     {
         $result = $this->api->getAll("zones/{$zone->id}/dns_records", ['name' => Hostname::normalize($name), 'per_page' => 100]);
-        return array_values(array_filter(
-            self::maps($result),
-            fn (array $record) => Hostname::same(self::string($record['name'] ?? null), $name),
-        ));
+        $records = [];
+        foreach (self::maps($result) as $record) {
+            if (self::string($record['id'] ?? null) === '' || self::string($record['name'] ?? null) === ''
+                || self::string($record['type'] ?? null) === '') {
+                throw DeployException::make('cloudflare.list_incomplete', ['call' => "GET /zones/{$zone->id}/dns_records"]);
+            }
+            if (Hostname::same(self::string($record['name']), $name)) {
+                $records[] = $record;
+            }
+        }
+        return $records;
     }
 
     public function servingRecords(string $domain, string $distributionDomain): array
     {
         return [DnsRecord::cname($domain, $distributionDomain)];
+    }
+
+    /** @return array<string, mixed>|null */
+    public function checkTenantTarget(HostedZone $zone, string $target, AppConfig $owner, ?string $ownedEndpoint): ?array
+    {
+        $records = $this->records($zone, $target);
+        if ($records === []) {
+            return null;
+        }
+        if (count($records) === 1 && $ownedEndpoint !== null) {
+            $record = $records[0];
+            if (($record['type'] ?? null) === 'CNAME' && self::owned($record, $owner)
+                && Hostname::same(self::string($record['content'] ?? null), $ownedEndpoint)) {
+                if (($record['proxied'] ?? null) !== false) {
+                    throw DeployException::make('domains.tenant_target_proxied', ['target' => $target]);
+                }
+                return $record;
+            }
+        }
+        throw DeployException::make('domains.tenant_target_occupied', ['target' => $target]);
+    }
+
+    /**
+     * Deletes the tenant target's record when it is exactly this environment's: one CNAME with its marker comment
+     * to $endpoint. Anything else at the name is left alone.
+     *
+     * @return 'deleted'|'absent'|'kept' a TenantTarget outcome
+     */
+    public function releaseTenantTarget(HostedZone $zone, string $target, AppConfig $owner, string $endpoint): string
+    {
+        $records = $this->records($zone, $target);
+        if ($records === []) {
+            return TenantTarget::ABSENT;
+        }
+        $record = $records[0];
+        if (count($records) !== 1 || ($record['type'] ?? null) !== 'CNAME' || ! self::owned($record, $owner)
+            || ! Hostname::same(self::string($record['content'] ?? null), $endpoint) || self::string($record['id'] ?? null) === '') {
+            return TenantTarget::KEPT;
+        }
+        $this->apply($zone, [$record], [], $owner);
+        return TenantTarget::DELETED;
+    }
+
+    public function publishTenantTarget(HostedZone $zone, string $target, string $endpoint, AppConfig $owner, ?string $ownedEndpoint): void
+    {
+        if ($owner->tenantDomainTarget === null || ! Hostname::same($owner->tenantDomainTarget, $target)) {
+            throw DeployException::make('domains.tenant_target_occupied', ['target' => $target]);
+        }
+        if (Hostname::same($zone->name, $target)) {
+            throw DeployException::make('domains.tenant_target_apex', ['target' => $target]);
+        }
+        if ($ownedEndpoint !== null && ! Hostname::same($ownedEndpoint, $endpoint)) {
+            throw DeployException::make('domains.tenant_target_change', ['target' => $target]);
+        }
+        $current = $this->checkTenantTarget($zone, $target, $owner, $ownedEndpoint);
+        if ($current !== null) {
+            return;
+        }
+        $done = &$this->done;
+        $this->write($zone, DnsRecord::cname($target, $endpoint), self::marker($owner), null, $owner, $done);
     }
 
     /**
@@ -131,6 +198,10 @@ final class CloudflareDns implements DnsProvider
 
     public function isSatisfied(DnsRecord $record, array $existing, AppConfig $owner): bool
     {
+        if ($owner->tenantDomainTarget !== null && Hostname::same($owner->tenantDomainTarget, $record->name)
+            && ($existing['proxied'] ?? null) !== false) {
+            return false;
+        }
         if (($existing['type'] ?? null) !== $record->type
             || ! Hostname::same(self::string($existing['name'] ?? null), $record->name)
             || ! Hostname::same(self::string($existing['content'] ?? null), $record->value)
@@ -269,18 +340,29 @@ final class CloudflareDns implements DnsProvider
 
     private function lookup(string $name): ?HostedZone
     {
+        $selected = null;
         foreach (self::maps($this->api->getAll('zones', ['name' => $name, 'status' => 'active', 'per_page' => 5])) as $zone) {
             $id = self::string($zone['id'] ?? null);
-            if ($id !== '' && Hostname::same(self::string($zone['name'] ?? null), $name)) {
-                return new HostedZone($id, Hostname::normalize(self::string($zone['name'] ?? null)), false);
+            $zoneName = self::string($zone['name'] ?? null);
+            if ($id === '' || $zoneName === '') {
+                throw DeployException::make('cloudflare.list_incomplete', ['call' => 'GET /zones']);
+            }
+            if (Hostname::same($zoneName, $name)) {
+                if ($selected !== null) {
+                    throw DeployException::make('cloudflare.list_incomplete', ['call' => 'GET /zones']);
+                }
+                $selected = new HostedZone($id, Hostname::normalize($zoneName), false);
             }
         }
-        return null;
+        return $selected;
     }
 
-    /** A serving record (one of the environment's domains), as opposed to an ACM validation CNAME. */
+    /** A serving or tenant target record, as opposed to an ACM validation CNAME. */
     private static function serves(DnsRecord $record, AppConfig $owner): bool
     {
+        if ($owner->tenantDomainTarget !== null && Hostname::same($owner->tenantDomainTarget, $record->name)) {
+            return true;
+        }
         foreach ($owner->domains as $domain) {
             if (Hostname::same($domain, $record->name)) {
                 return true;

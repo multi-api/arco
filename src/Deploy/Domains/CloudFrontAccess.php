@@ -20,6 +20,7 @@ use Multiapi\Arco\Deploy\WebFunctions;
 final class CloudFrontAccess
 {
     public const SID = 'ArcoCloudFront';
+    public const TENANT_SID = 'ArcoCloudFrontTenant';
     private const POLL = 15;
     private const DEPLOYED_TIMEOUT = 1800;
     /** A HomeRegion policy change can take a short time to take effect; the endpoint waits for it. */
@@ -55,7 +56,7 @@ final class CloudFrontAccess
     {
         $public = false;
         try {
-            $this->lock($config, $distributionId, $distributionDomain, $healthPath, $step, $public);
+            $this->lock($config, $distributionId, $distributionDomain, $healthPath, $step, $public, false);
         } catch (\Throwable $e) {
             if ($public) {
                 // The deploy fails with its own error; this line says the vulnerability 0.11.4 closes is still open.
@@ -66,10 +67,29 @@ final class CloudFrontAccess
     }
 
     /**
+     * Grants a tenant distribution access without requiring a default distribution domain. A public
+     * endpoint can only be switched when an active tenant domain can be checked through CloudFront.
+     *
+     * @param callable(string, array<string, string|int>): void $step
+     */
+    public function protectTenant(AppConfig $config, string $distributionId, ?string $tenantDomain, string $healthPath, callable $step): void
+    {
+        $public = false;
+        try {
+            $this->lock($config, $distributionId, $tenantDomain, $healthPath, $step, $public, true);
+        } catch (\Throwable $e) {
+            if ($public) {
+                $step('deploy.endpoint_still_public', ['function' => $config->functionName()]);
+            }
+            throw $e;
+        }
+    }
+
+    /**
      * @param callable(string, array<string, string|int>): void $step
      * @param bool $public set while the endpoint is (still) ApplicationManaged and the switch has not happened
      */
-    private function lock(AppConfig $config, string $distributionId, string $distributionDomain, string $healthPath, callable $step, bool &$public): void
+    private function lock(AppConfig $config, string $distributionId, ?string $distributionDomain, string $healthPath, callable $step, bool &$public, bool $tenant): void
     {
         $function = $config->functionName();
         $endpoint = $this->web->endpoint($function) ?? throw DeployException::make('deploy.endpoint_missing', ['function' => $function]);
@@ -84,8 +104,13 @@ final class CloudFrontAccess
         }
         $distributionArn = "arn:{$arn[1]}:cloudfront::{$arn[2]}:distribution/$distributionId";
 
+        if ($tenant && $public) {
+            $this->verifyTenant($distributionId, $distributionDomain);
+        }
         $step('deploy.oac_policy', ['function' => $function, 'distribution' => $distributionId]);
-        $changed = $this->grant($functionArn, self::statement($endpointArn, $distributionArn));
+        $sid = $tenant ? self::TENANT_SID : self::SID;
+        $statement = $tenant ? self::tenantStatement($endpointArn, $distributionArn) : self::statement($endpointArn, $distributionArn);
+        $changed = $this->grant($functionArn, $statement, $sid);
         if (($endpoint['authType'] ?? null) === 'IamAuth') {
             return;
         }
@@ -98,10 +123,18 @@ final class CloudFrontAccess
         $this->web->waitEndpoint($function);
         $this->web->setAuth($function, 'IamAuth');
         $public = false;
+        if ($tenant) {
+            $this->web->waitEndpoint($function);
+            $reached = $this->checkThroughCloudFront($distributionDomain ?? '', $healthPath, $step);
+            if ($reached !== null) {
+                throw DeployException::make('deploy.timeout', ['what' => "tenant https://$distributionDomain$healthPath (last answer: $reached; endpoint remains IamAuth)"]);
+            }
+            return;
+        }
         $region = (string) $config->region;
         try {
             $this->web->waitEndpoint($function);
-            $reached = $this->checkThroughCloudFront($distributionDomain, $healthPath, $step);
+            $reached = $this->checkThroughCloudFront($distributionDomain ?? '', $healthPath, $step);
         } catch (\Throwable $e) {
             // Whatever stopped the check, the endpoint must not stay locked unverified: the site could be down.
             $this->revert($function, $region, $e);
@@ -112,6 +145,28 @@ final class CloudFrontAccess
             $this->revert($function, $region);
             throw DeployException::make('deploy.protection_reverted', ['function' => $function, 'url' => "https://$distributionDomain$healthPath", 'answer' => $reached]);
         }
+    }
+
+    private function verifyTenant(string $distributionId, ?string $domain): void
+    {
+        if ($domain === null || strlen($domain) > 253 || preg_match('/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/D', $domain) !== 1) {
+            throw DeployException::make('deploy.tenant_domains_unavailable');
+        }
+        $tenant = Aws::map(Aws::call($this->cloudFront, 'GetDistributionTenantByDomain', ['Domain' => $domain])['DistributionTenant'] ?? null);
+        $tenantId = Aws::string($tenant['Id'] ?? null);
+        if ($tenantId !== null && ($tenant['DistributionId'] ?? null) === $distributionId && ($tenant['Enabled'] ?? null) === true) {
+            foreach (Aws::maps($tenant['Domains'] ?? null) as $entry) {
+                if (($entry['Domain'] ?? null) === $domain && ($entry['Status'] ?? null) === 'active') {
+                    $dns = Aws::maps(Aws::call($this->cloudFront, 'VerifyDnsConfiguration', ['Identifier' => $tenantId, 'Domain' => $domain])['DnsConfigurationList'] ?? null);
+                    $matches = array_values(array_filter($dns, static fn (array $entry): bool => ($entry['Domain'] ?? null) === $domain));
+                    if (count($matches) === 1 && ($matches[0]['Status'] ?? null) === 'valid-configuration') {
+                        return;
+                    }
+                    break;
+                }
+            }
+        }
+        throw DeployException::make('deploy.tenant_domains_unavailable');
     }
 
     /**
@@ -181,13 +236,23 @@ final class CloudFrontAccess
      */
     public function revoke(string $functionArn): bool
     {
+        return $this->revokeStatement($functionArn, self::SID);
+    }
+
+    public function revokeTenant(string $functionArn): bool
+    {
+        return $this->revokeStatement($functionArn, self::TENANT_SID);
+    }
+
+    private function revokeStatement(string $functionArn, string $sid): bool
+    {
         for ($attempt = 1; ; $attempt++) {
             $current = $this->web->policy($functionArn);
             if ($current === null) {
                 return false;
             }
             $statements = self::statements($current['policy'], $functionArn);
-            $others = self::others($statements);
+            $others = self::others($statements, $sid);
             if (count($others) === count($statements)) {
                 return false;
             }
@@ -219,23 +284,29 @@ final class CloudFrontAccess
         ];
     }
 
+    /** @return array<string, mixed> */
+    public static function tenantStatement(string $endpointArn, string $distributionArn): array
+    {
+        return ['Sid' => self::TENANT_SID] + self::statement($endpointArn, $distributionArn);
+    }
+
     /**
      * Puts the statement in the policy, keeping every other statement; no call when it is already there.
      *
      * @param array<string, mixed> $statement
      * @return bool whether the policy changed
      */
-    private function grant(string $functionArn, array $statement): bool
+    private function grant(string $functionArn, array $statement, string $sid): bool
     {
         for ($attempt = 1; ; $attempt++) {
             $current = $this->web->policy($functionArn);
             $statements = self::statements($current['policy'] ?? [], $functionArn);
-            $ours = array_values(array_filter($statements, fn (array $s) => ($s['Sid'] ?? null) === self::SID));
+            $ours = array_values(array_filter($statements, fn (array $s) => ($s['Sid'] ?? null) === $sid));
             if (count($ours) === 1 && self::canonical($ours[0]) === self::canonical($statement)) {
                 return false;
             }
             $policy = ['Version' => '2012-10-17', ...($current['policy'] ?? [])];
-            $policy['Statement'] = [...self::others($statements), $statement];
+            $policy['Statement'] = [...self::others($statements, $sid), $statement];
             try {
                 // The revision read makes a concurrent change fail (ConflictException) instead of being overwritten.
                 $this->web->putPolicy($functionArn, $policy, $current['revisionId'] ?? null);
@@ -292,9 +363,9 @@ final class CloudFrontAccess
      * @param list<array<string, mixed>> $statements
      * @return list<array<string, mixed>>
      */
-    private static function others(array $statements): array
+    private static function others(array $statements, string $sid): array
     {
-        return array_values(array_filter($statements, fn (array $s) => ($s['Sid'] ?? null) !== self::SID));
+        return array_values(array_filter($statements, fn (array $s) => ($s['Sid'] ?? null) !== $sid));
     }
 
     /** JSON with sorted keys, so a statement read back compares equal whatever order AWS keeps. */

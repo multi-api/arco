@@ -13,7 +13,7 @@ final class ConfigItems
 {
     /**
      * Every item the config declares, deployed or not: queues, buckets, tables, cache, failed-jobs table, console,
-     * scheduler, domains (one each), the VPC and the schedules, in that order; singletons are named after their kind.
+     * scheduler, domains (one each), tenantDomains, the VPC and the schedules, in that order; singletons are named after their kind.
      *
      * @return list<array{kind: string, name: string, source: string, options: array<string, mixed>}>
      */
@@ -47,6 +47,9 @@ final class ConfigItems
                 'dns' => self::dns($config),
                 'certificate' => $config->certificate,
             ]);
+        }
+        if ($config->tenantDomainTarget !== null) {
+            $items[] = self::item('tenantDomains', 'tenantDomains', self::source($config, 'tenantDomainTarget'), ['target' => $config->tenantDomainTarget]);
         }
         if ($config->vpc !== null) {
             $items[] = self::item('vpc', 'vpc', self::source($config, 'vpc'), self::vpcOptions($config->vpc));

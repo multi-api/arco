@@ -91,9 +91,20 @@ final class DeployPipeline
         if ($config->isProcess()) {
             // No Laravel wiring (QUEUE_CONNECTION, FILESYSTEM_DISK, CACHE_STORE, ...): the process reads Arco's own.
             $storage = self::storageVariables($config);
-            return [...self::processQueueVariables($config), ...array_intersect_key($storage, ['ARCO_STORAGE' => true]), ...self::genericTableVariables($config), ...self::endpointVariables()];
+            return [...self::processQueueVariables($config), ...array_intersect_key($storage, ['ARCO_STORAGE' => true]), ...self::genericTableVariables($config), ...self::tenantVariables($config), ...self::endpointVariables()];
         }
-        return [...self::queueVariables($config), ...self::storageVariables($config), ...self::tableVariables($config), ...self::genericTableVariables($config), ...self::endpointVariables()];
+        return [...self::queueVariables($config), ...self::storageVariables($config), ...self::tableVariables($config), ...self::genericTableVariables($config), ...self::tenantVariables($config), ...self::endpointVariables()];
+    }
+
+    /**
+     * ARCO_TENANT_DOMAINS_FUNCTION, the mediator's function name, only with tenantDomains(). The app invokes it
+     * through the Laravel client; the role policy allows exactly that function.
+     *
+     * @return array<string, string>
+     */
+    public static function tenantVariables(AppConfig $config): array
+    {
+        return $config->tenantDomainTarget === null ? [] : ['ARCO_TENANT_DOMAINS_FUNCTION' => $config->tenantMediatorFunctionName()];
     }
 
     /**

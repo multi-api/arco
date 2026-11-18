@@ -75,6 +75,9 @@ trait ConfiguresDeployment
         return $this;
     }
 
+    /** A shared routing hostname for customer subdomains. */
+    public function tenantDomains(string $target): static { $this->settings['tenantDomainTarget'] = $target; return $this; }
+
     /**
      * Where the DNS records go: the name of an AWS profile whose Route 53 holds the zones, 'cloudflare' when
      * the zones are on Cloudflare (token in CLOUDFLARE_API_TOKEN or --cloudflare-token; a profile named

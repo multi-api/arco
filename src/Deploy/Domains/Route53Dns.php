@@ -40,11 +40,50 @@ final class Route53Dns implements DnsProvider
      */
     public function records(HostedZone $zone, string $name): array
     {
-        $page = Aws::call($this->route53, 'ListResourceRecordSets', ['HostedZoneId' => $zone->id, 'StartRecordName' => $name, 'MaxItems' => '100']);
-        return array_values(array_filter(
-            Aws::maps($page['ResourceRecordSets'] ?? []),
-            fn (array $set) => Hostname::same((string) Aws::string($set['Name'] ?? null), $name),
-        ));
+        $args = ['HostedZoneId' => $zone->id, 'StartRecordName' => $name, 'MaxItems' => '100'];
+        $records = [];
+        $seen = [];
+        do {
+            $page = Aws::call($this->route53, 'ListResourceRecordSets', $args);
+            if (! is_array($page['ResourceRecordSets'] ?? null) || ! is_bool($page['IsTruncated'] ?? null)) {
+                throw DeployException::make('domains.record_read_incomplete', ['domain' => $name]);
+            }
+            foreach ($page['ResourceRecordSets'] as $entry) {
+                if (! is_array($entry)) {
+                    throw DeployException::make('domains.record_read_incomplete', ['domain' => $name]);
+                }
+                $set = Aws::map($entry);
+                $recordName = Aws::string($set['Name'] ?? null);
+                if ($recordName === null || Aws::string($set['Type'] ?? null) === null) {
+                    throw DeployException::make('domains.record_read_incomplete', ['domain' => $name]);
+                }
+                if (Hostname::same($recordName, $name)) {
+                    $records[] = $set;
+                }
+            }
+            if (! $page['IsTruncated']) {
+                break;
+            }
+            $nextName = Aws::string($page['NextRecordName'] ?? null);
+            $nextType = Aws::string($page['NextRecordType'] ?? null);
+            if ($nextName === null || $nextType === null) {
+                throw DeployException::make('domains.record_read_incomplete', ['domain' => $name]);
+            }
+            if (! Hostname::same($nextName, $name)) {
+                break;
+            }
+            $args = ['HostedZoneId' => $zone->id, 'StartRecordName' => $nextName, 'StartRecordType' => $nextType, 'MaxItems' => '100'];
+            $identifier = Aws::string($page['NextRecordIdentifier'] ?? null);
+            if ($identifier !== null) {
+                $args['StartRecordIdentifier'] = $identifier;
+            }
+            $cursor = json_encode($args, JSON_THROW_ON_ERROR);
+            if (isset($seen[$cursor])) {
+                throw DeployException::make('domains.record_read_incomplete', ['domain' => $name]);
+            }
+            $seen[$cursor] = true;
+        } while (true);
+        return $records;
     }
 
     public function servingRecords(string $domain, string $distributionDomain): array
@@ -81,10 +120,16 @@ final class Route53Dns implements DnsProvider
         ]);
     }
 
+    /** Create without overwriting an existing record, then wait for propagation. */
+    public function create(HostedZone $zone, DnsRecord $record): void
+    {
+        $this->change($zone, [['CREATE', self::recordSet($record)]]);
+    }
+
     /**
      * Applies the changes in one batch and waits until Route 53 has propagated them.
      *
-     * @param list<array{0: 'UPSERT'|'DELETE', 1: array<string, mixed>}> $changes action and ResourceRecordSet
+     * @param list<array{0: 'CREATE'|'UPSERT'|'DELETE', 1: array<string, mixed>}> $changes action and ResourceRecordSet
      */
     private function change(HostedZone $zone, array $changes, int $timeout = 600): void
     {
@@ -100,7 +145,7 @@ final class Route53Dns implements DnsProvider
         ]);
         $id = Aws::string(Aws::map($result['ChangeInfo'] ?? null)['Id'] ?? null);
         if ($id === null) {
-            return;
+            throw DeployException::make('domains.dns_change_unconfirmed', ['zone' => $zone->name]);
         }
         for ($waited = 0; ; $waited += self::POLL) {
             $status = Aws::map(Aws::call($this->route53, 'GetChange', ['Id' => $id])['ChangeInfo'] ?? null)['Status'] ?? null;
@@ -119,18 +164,40 @@ final class Route53Dns implements DnsProvider
     {
         $zones = [];
         $args = [];
+        $seen = [];
         do {
             $page = Aws::call($this->route53, 'ListHostedZonesByName', $args);
-            foreach (Aws::maps($page['HostedZones'] ?? []) as $zone) {
+            if (! is_array($page['HostedZones'] ?? null) || ! is_bool($page['IsTruncated'] ?? null)) {
+                throw DeployException::make('domains.zones_read_incomplete');
+            }
+            foreach ($page['HostedZones'] as $entry) {
+                if (! is_array($entry)) {
+                    throw DeployException::make('domains.zones_read_incomplete');
+                }
+                $zone = Aws::map($entry);
                 $id = Aws::string($zone['Id'] ?? null);
                 $name = Aws::string($zone['Name'] ?? null);
-                if ($id !== null && $name !== null) {
-                    $zones[] = new HostedZone($id, $name, (Aws::map($zone['Config'] ?? null)['PrivateZone'] ?? false) === true);
+                $private = Aws::map($zone['Config'] ?? null)['PrivateZone'] ?? null;
+                if ($id === null || $id === '' || $name === null || $name === '' || ! is_bool($private)) {
+                    throw DeployException::make('domains.zones_read_incomplete');
                 }
+                $zones[] = new HostedZone($id, $name, $private);
             }
-            $truncated = ($page['IsTruncated'] ?? false) === true;
-            $args = ['DNSName' => Aws::string($page['NextDNSName'] ?? null), 'HostedZoneId' => Aws::string($page['NextHostedZoneId'] ?? null)];
-        } while ($truncated && $args['DNSName'] !== null);
+            $truncated = $page['IsTruncated'];
+            if ($truncated) {
+                $nextName = Aws::string($page['NextDNSName'] ?? null);
+                $nextId = Aws::string($page['NextHostedZoneId'] ?? null);
+                if ($nextName === null || $nextName === '' || $nextId === null || $nextId === '') {
+                    throw DeployException::make('domains.zones_read_incomplete');
+                }
+                $args = ['DNSName' => $nextName, 'HostedZoneId' => $nextId];
+                $cursor = json_encode($args, JSON_THROW_ON_ERROR);
+                if (isset($seen[$cursor])) {
+                    throw DeployException::make('domains.zones_read_incomplete');
+                }
+                $seen[$cursor] = true;
+            }
+        } while ($truncated);
         return $zones;
     }
 

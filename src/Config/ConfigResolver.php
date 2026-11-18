@@ -21,6 +21,7 @@ final class ConfigResolver
         'profile' => null,
         'account' => null,
         'dns' => null,
+        'tenantDomainTarget' => null,
         'certificate' => null,
         'consoleTimeout' => 900,
         'consoleMemory' => 2048,
@@ -211,6 +212,7 @@ final class ConfigResolver
             $sources['domains'] = 'cloud';
         }
         $dns = $setting('dns');
+        $tenantDomainTarget = self::nullableString($setting('tenantDomainTarget'));
         $certificate = self::nullableString($setting('certificate'));
 
         /** @var list<string>|null $appCommands */
@@ -327,6 +329,7 @@ final class ConfigResolver
             telemetry: $telemetry,
             process: $process,
             schedules: $schedules,
+            tenantDomainTarget: $tenantDomainTarget,
         );
 
         return $config;

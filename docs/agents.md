@@ -21,7 +21,7 @@ Arco creates, changes and deletes real AWS resources that cost money and serve r
 unless the user explicitly says otherwise for the case at hand.
 
 1. **Ask before anything that touches AWS.** `deploy`, `remove`, `command`, `tinker`, `secret:set`,
-   `queue:dlq --redrive`, `scheduler:pause`/`resume` and `scheduler:set`/`scheduler:remove --apply` change AWS or run
+   `queue:dlq --redrive`, `tenants:restore`, `scheduler:pause`/`resume` and `scheduler:set`/`scheduler:remove --apply` change AWS or run
    code against real data. Run them only when the user asked for that action on that environment. Commands that only
    edit `arco.php` (`set`, `queue:add`, `storage:add`, ...) and read-only commands (`info`, `logs`, `queue:list`,
    `storage:list`, `profile`) are safe.
@@ -68,6 +68,85 @@ unless the user explicitly says otherwise for the case at hand.
 - **Go apps** have `arco.json` instead of `arco.php` (both at once is an error) and run a binary that listens on
   `PORT`. Queues and schedules POST to routes of the app under `/_arco/`, which the public endpoint never serves.
   See [Go apps](#go-apps-arcojson).
+- **Tenant domain targets:** `tenantDomains(target: ...)` validates a hostname distinct from `domain()` and needs
+  `domain()` in the same environment (`validation.tenant_domain_requires_domain`). It deploys and is experimental: it was
+  run on real AWS once, with an administrator profile and a Route 53 target (deploy, add, activation, requests,
+  `remove` without `--force`, `tenants:restore`), but not `remove --force`, Cloudflare or manual-DNS targets, quotas,
+  a limited deploy profile or a boundary on the mediator's role (the list is in the configuration reference), so
+  prefer staging and tell the user. A deploy refuses before any change:
+  a target at a zone apex, without a zone, occupied or unverifiable (`domains.tenant_target_apex`,
+  `domains.tenant_target_zone_missing`, `domains.tenant_target_occupied`, `domains.tenant_target_unverified`,
+  `domains.tenant_target_proxied`), a changed target (`domains.tenant_target_changed`), a stack it cannot trust
+  (`domains.tenant_stack_unusable`) and an update that would replace the distribution or connection group
+  (`domains.stack_replacement`, `domains.stack_changes_unreadable`). None of these has an override flag; do not
+  retry with `--force` or `--force-dns`. With `dns(false)`, `domains.tenant_manual_cname_missing` names the `CNAME`
+  the user must create; deploy again afterwards. See [Tenant domain routing](configuration.md#tenant-domain-routing).
+  Limits of v1 to tell the user: `tenantDomains()` exists only in `arco.php` (not `arco.json`, so Go and process apps
+  cannot use it) and the only supported client is the `multiapi/arco-laravel` API; the mediator's JSON format is
+  internal, so never invoke the function yourself. One target per environment, customer subdomains only (a root
+  domain is refused: a `CNAME` cannot sit at an apex), Cloudflare records DNS only, no Anycast static IPs (v2),
+  AWS quotas and per-tenant charges apply (links in the configuration reference).
+  The deploy also creates the mediator function `<app>-<env>-tenants` and refuses before any change with
+  `deploy.tenant_mediator_runtime_missing` or `deploy.tenant_mediator_suffix_list_missing` (the Arco installation is
+  incomplete: reinstall it), `deploy.tenant_mediator_not_owned` or
+  `deploy.tenant_mediator_untagged` (the function or its role exists for another environment or without Arco's
+  tags: tell the user to rename the app or environment, never delete it yourself), `deploy.tenant_mediator_tags_unreadable`
+  (the profile lacks the permission the error names) and `deploy.tenant_mediator_draining` (reserved concurrency 0:
+  ask the user before running `arco tenants:restore --env=<env>`, the command the error prints).
+  `deploy.tenant_mediator_failed` and `deploy.tenant_mediator_missing` are Lambda errors during the update. None has
+  an override flag. The app gets `ARCO_TENANT_DOMAINS_FUNCTION` (the mediator's name); the Laravel API
+  (`TenantDomains::add`, `status`, `list`, `remove`, `fake()`), its exceptions and the manual `lambda:InvokeFunction`
+  statement `role()` needs are in
+  [Managing tenant domains from the app](configuration.md#managing-tenant-domains-from-the-app).
+  A new customer domain is activated only when the app calls `status` (or `add` again) after the certificate is issued
+  (minutes; `active` about 5 minutes later): `pending` with a `reason` (`activating`, `removing`,
+  `activation failed: <ErrorName>`) is not an error, and an app that never polls `status` never activates the domain.
+  The visitor's address is `$request->ip()`, never `REMOTE_ADDR` (always the link-local `169.254.100.1` on Lambda).
+  The viewer's `Authorization` header reaches the app as sent, on customer domains as on `domain()`.
+  `remove` disables the mediator first, counts the customer domains and stops with `remove.tenants_need_force` when
+  any exist: nothing is deleted. **Never add `--force` on your own to get past `remove.tenants_need_force`:** it
+  deletes the user's customers' domains and takes their sites offline for good. Report the `{count}` to the user and
+  let them decide; only they may say to run `remove --force`. `--yes` does not authorize it. After any stop of that
+  removal the mediator stays disabled (reserved concurrency 0): the message prints the
+  `arco tenants:restore --env=<env>` command that restores it, to run only if the user cancels the removal (see
+  below); running `remove` again resumes. The other `remove.tenant_*` keys (`foreign`,
+  `busy`, `recount`, `delete_timeout`, `unverified`, `listing_incomplete`, `stack_unreadable`, `untagged`,
+  `drain_failed`, `drain_unconfirmed`, `failed`) are listed in
+  [Removing an environment with tenant domains](configuration.md#removing-an-environment-with-tenant-domains).
+  `info --json` and `info --resources --json` have `tenantDomains` (`{distribution, connectionGroup, target, endpoint,
+  tenants}`; `tenants` is the number of customer domains, `null` when it could not be established; the key is absent
+  without a tenant stack), and `info --resources --json` has a `config` item of kind `tenantDomains` with its `source`
+  and `options` `{target}` whenever `tenantDomains()` is configured. A [config layer](config-layer.md) can set the
+  target with `settings.tenantDomainTarget` (same merge and conflict rules as any setting; refused in `arco.json`).
+  **`arco tenants:restore --env=<env>`** enables the mediator again after a stopped `remove` (ask the user first: it
+  changes AWS). It checks, read-only, that `<app>-<env>-tenants`, when it exists, carries this environment's tags and is Arco's
+  mediator (`tenants.restore_not_mediator`, `deploy.tenant_mediator_not_owned`,
+  `deploy.tenant_mediator_untagged`, `deploy.tenant_mediator_tags_unreadable`: nothing is changed, no `--force`), then
+  deletes a reserved concurrency of 0 and reads it back (`tenants.restore_unconfirmed` if it is still there). No
+  reserved concurrency is `already_enabled` and any other value `limit_kept` (left alone); no function at all is `nothing_to_restore` (a note, no write); all four exit 0. Options:
+  `--env`, `--profile`, `--config-layer=<path>`, `--json` (never asks). `--json` prints one document:
+  `{"schema": 1, "outcome": "restored"|"already_enabled"|"limit_kept"|"nothing_to_restore", "app", "environment", "function",
+  "reservedConcurrency"}` (`reservedConcurrency` is the limit kept, else `null`), or on a failure (exit 1)
+  `{"schema": 1, "outcome": "refused"|"failed", "app", "environment", "function", "error": {"key", "message",
+  "params"}}` (`refused`: nothing changed; `failed`: an AWS error or an unconfirmed delete; the three fields are `null`
+  when the configuration did not load). It is not a way to cancel a remove that already deleted the function
+  (`nothing_to_restore`).
+  **Error params you may rely on** (`error.params` in `--json`, only ever added to):
+  `domains.tenant_manual_cname_missing` has `{target, endpoint}` (the `CNAME` to create: `<target>` to `<endpoint>`),
+  `domains.tenant_target_changed` has `{target, current}` (the configured target and the one the environment was
+  deployed with) and `remove.tenants_need_force` has `{count, function, environment}` (the customer domains, the
+  mediator, and the environment for `arco tenants:restore --env=`). `deploy.tenant_mediator_draining` and the
+  `remove.tenant_*` stops that leave the mediator disabled (`foreign`, `busy`, `recount`, `delete_timeout`,
+  `unverified`, `listing_incomplete`, `drain_failed`, `drain_unconfirmed`, `failed`) carry `function` and `environment`
+  too. **`remove --force` from a non-interactive caller (`--json`, CI, an agent) is the
+  explicit authorization to delete the customer domains:** nothing asks again, so pass it only when the user said so
+  for this environment.
+- **DNS safety:** `domains.record_read_incomplete` and `domains.zones_read_incomplete` mean Route 53 returned
+  incomplete or malformed records or hosted zones. Arco stops instead of making DNS decisions from partial data.
+  `domains.dns_change_unconfirmed` means a change may have been submitted but its propagation could not be verified;
+  inspect the zone's records before retrying.
+  `cloudflare.list_incomplete` means Cloudflare returned an incomplete or malformed listing; Arco stops rather than
+  assuming a name is available.
 - **`.arco/`** (git-ignored) holds the remembered profile per environment (`.arco/local.php`) and built zips
   (`.arco/build/`).
 
@@ -89,9 +168,11 @@ question either takes its default, is answered by a flag, or stops the command:
 | `init` questions (console, migrations, scheduler, queues, ...) | only what the flags say; prints the `arco ...:add` lines for what it left out | `--console`, `--migrate`, `--scheduler=N`, `--queue=<name>`, ... |
 | `domain:add`: where is the DNS? | error naming the flag to pass when the configured place lacks a zone | `--dns-profile=<p>`, `--dns=cloudflare`, `--dns=manual` |
 | `secret:set` value | read from stdin | pipe the value in |
+| `tenants:restore` | never asks; `--json` writes one document | `--env=<env>`, `--profile=<name>` (as every AWS command) |
+| `remove` on an environment with customer domains | `--yes` stops with `remove.tenants_need_force`; `--force` on the command line (also with `--json`) is the explicit authorization and nothing asks again | `--force`, only when the user said so |
 | `tinker` shell | not usable | `--execute="<code>"` |
 
-`--yes` answers confirmations only; it never overrides a safety check (that is `--force`). `--json` on `deploy` and
+`--yes` answers confirmations only; it never overrides a safety check (that is `--force`), and it never authorizes deleting customer domains (`remove.tenants_need_force`). `--json` on `deploy` and
 `remove` implies `--no-interaction`, so a missing `--yes` makes the run end with `outcome: refused`.
 
 Pass `--yes` only when the user asked for that exact action on that environment: it is the confirmation the user
@@ -101,10 +182,11 @@ would otherwise give.
 
 - **Exit codes:** `0` success, `1` failure. Two exceptions: `arco command` exits with the remote command's own exit
   code, and a deploy stopped by a failing deploy command exits with that command's code.
-- **`--json`** exists on `info`, `info --resources`, `logs`, `queue:list`, `storage:list`, `profile`, `deploy` and
-  `remove`. Every document (every line, for the NDJSON ones) starts with `"schema": 1`; within a schema keys are only
+- **`--json`** exists on `info`, `info --resources`, `logs`, `queue:list`, `storage:list`, `profile`, `tenants:restore`,
+  `deploy` and `remove`. Every document (every line, for the NDJSON ones) starts with `"schema": 1`; within a schema keys are only
   added, never renamed or removed.
-  - `info`, `queue:list`, `storage:list`, `profile` print one JSON document. On failure `queue:list`, `storage:list`
+  - `info`, `queue:list`, `storage:list`, `profile`, `tenants:restore` print one JSON document (`tenants:restore` puts the
+    error in `error.key`/`error.message`/`error.params` next to an `outcome`). On failure `queue:list`, `storage:list`
     and `profile` print `{"schema": 1, "error": "..."}`; `info` adds an `error` key when AWS could not be read.
   - `logs --json` prints raw events, one per line.
   - `deploy --json` and `remove --json` print NDJSON on stdout: `step` lines (`key`, `status`: `started`, `done`,
@@ -150,9 +232,10 @@ Flags shared by many commands:
 |---|---|---|
 | `deploy` | Build, upload, run deploy commands, deploy, verify (rollback on failure), then workers, scheduler, domains | `--env`, `--profile`, `-y/--yes` (create a new environment), `--json`, `--package=<zip>` (deploy a prebuilt zip), `--migrate` (add `migrate --force` to this deploy's deploy commands; Laravel only), `--no-deploy-commands` (not with `--migrate`), `--dns-profile=<p>`, `--cloudflare-token=<t>`, `--permissions-boundary=<arn>`, `--config-layer=<path>`, `--force` (dangerous, see ground rules), `--force-dns` (dangerous) |
 | `package` | Build the zip only (`.arco/build/arco-<app>-<env>.zip`) | `--env`, `-o/--output=<path>`, `--config-layer=<path>` |
-| `info` | Resolved settings with their source, URL, live revision; validation | `--env`, `--profile`, `--json`, `--resources` (every AWS resource tagged for the environment, each with `source` and `options`, plus `variables`, `config`, `schedules` and `scheduler` (`{every, paused}` or `null`); `tag:GetResources`), `--permissions-boundary=<arn>`, `--config-layer=<path>` |
-| `remove` | Delete the web function, endpoint, console, workers, execution role, scheduler rule, network connector and the domain stack, DNS aliases and an Arco-requested certificate. Keeps queues, buckets, tables, SSM parameters, log groups and the code bucket. Fails with `remove.leftovers` when anything else is left; run again to finish | `--env`, `--profile`, `-y/--yes`, `--json`, `--no-wait-interfaces` (keep the execution role instead of waiting for VPC network interfaces), `--dns-profile`, `--cloudflare-token`, `--config-layer=<path>`, `--force` (deprecated spelling of `--yes`) |
+| `info` | Resolved settings with their source, URL, live revision; validation | `--env`, `--profile`, `--json` (with a tenant stack it adds `tenantDomains`), `--resources` (every AWS resource tagged for the environment, each with `source` and `options`, plus `variables`, `config`, `schedules` and `scheduler` (`{every, paused}` or `null`); `tag:GetResources`), `--permissions-boundary=<arn>`, `--config-layer=<path>` |
+| `remove` | Delete the web function, endpoint, console, workers, execution role, scheduler rule, network connector and the domain stack, DNS aliases and an Arco-requested certificate. With `tenantDomains()` it disables the mediator, counts customer domains and deletes them only with `--force`. Keeps queues, buckets, tables, SSM parameters, log groups and the code bucket. Fails with `remove.leftovers` when anything else is left; run again to finish | `--env`, `--profile`, `-y/--yes`, `--json`, `--no-wait-interfaces` (keep the execution role instead of waiting for VPC network interfaces), `--dns-profile`, `--cloudflare-token`, `--config-layer=<path>`, `--force` (with `tenantDomains()`, the only way to delete customer domains; otherwise a deprecated spelling of `--yes`; never add it on your own) |
 | `logs` | Web, console and worker logs merged | `--env`, `--profile`, `-f/--follow`, `--since=10m` (`30s`, `10m`, `2h`, `1d` or a date; bare numbers are rejected), `--until` (not with `--follow`), `--level=debug\|info\|warning\|error`, `--request=<id>`, `--filter=<text>`, `--source=all\|web\|console\|queues`, `--console`, `--queue=<name>`, `--platform`, `--config-layer=<path>`, `--json` |
+| `tenants:restore` | Enable the tenant domains mediator `<app>-<env>-tenants` again after a stopped `remove` (deletes its reserved concurrency of 0 after the ownership checks; AWS) | `--env`, `--profile`, `--config-layer=<path>`, `--json` |
 | `profile` | Show or change the remembered profile per environment (`.arco/local.php`) | `--env`, `--set=<profile>`, `--json` (not with `--set`) |
 
 `--follow` never ends by itself: do not run it in a foreground tool call. Use `--since`/`--until` to read a window.
@@ -160,7 +243,7 @@ Flags shared by many commands:
 #### Config layer
 
 `--config-layer=<path>` (or `ARCO_CONFIG_LAYER`, the flag wins; empty or blank means the other one) on `deploy`,
-`package`, `info`, `remove`, `logs`, `scheduler:pause` and `scheduler:resume` merges a JSON file over `arco.php`, or replaces a missing `arco.php`. It adds queues,
+`package`, `info`, `remove`, `logs`, `scheduler:pause`, `scheduler:resume` and `tenants:restore` merges a JSON file over `arco.php`, or replaces a missing `arco.php`. It adds queues,
 buckets, tables, variables, domains and settings and never overrides `arco.php`: a different value is
 `config.layer_conflict` before any AWS call. Every other command ignores the flag and the variable, so do not expect
 `queue:list` or the editing commands to see layer entries. A layer queue, storage or table with `adopt: true` imports
@@ -206,7 +289,8 @@ multiapi/arco`), so run `arco`, not `vendor/bin/arco`, and Go must be on `PATH`.
 (`kind`, `language`, `main`, `command`, `healthPath`), `include`, `exclude`, `settings`, `variables`, `permissions`,
 `domains`, `queues` (with `route`), `storage`, `tables`, `schedules` (`every`, `route`, `timeout`) and
 `environments`. Never put `console`, `scheduler`, `consoleTimeout`, `consoleMemory`, `cache`, `failedJobsTable` or
-`deployCommands` in it (`validation.process_unsupported`).
+`deployCommands` in it (`validation.process_unsupported`), nor `tenantDomainTarget` (in `arco.json` itself it is
+`config.json_invalid`; from a layer over a Go app it is `validation.process_unsupported`).
 
 ### Run code on the console function
 
@@ -725,6 +809,7 @@ not. The most common ones:
 | `deploy.tags_unreadable`, `ownership.tags_unreadable`, `remove.tags_unreadable` | The profile cannot read tags | Allow the action named (`lambda:ListTags`, `events:ListTagsForResource`, ...) |
 | `deploy.region_changed` | `region()` changed for a deployed environment | Restore the region, or deploy under a new environment name |
 | `stack.not_ours` | A CloudFormation stack with Arco's name not tagged for this environment | Rename or remove that stack, or change the app/environment name |
+| `remove.tenants_need_force` | `remove` found customer domains (tenants) of `tenantDomains()`; nothing was deleted and the mediator stays disabled | Ask the user. Only with their explicit go-ahead, `remove --force`; never on your own. To keep the environment instead: `arco tenants:restore --env=<env>` |
 | `deploy.network_foreign` | A network connector named `<app>-<env>` with another operator role (refused even with `--force`) | Remove or rename it, or change the app/environment name |
 
 ### Build and package
@@ -786,6 +871,7 @@ failed, usually for a missing permission the message names.
 | `queue.unknown`, `queue.option_fixed`, `queue.unknown_option` | Use a queue name from `arco.php`; `fifo` and `existing` cannot change |
 | `queue.dlq_missing` | Deploy first |
 | `scheduler.no_schedule_rules` | `scheduler:pause`/`resume` in a Go app found no schedule rule for the environment: add `schedules` to `arco.json` and deploy |
+| `tenants.restore_not_mediator`, `tenants.restore_unconfirmed` | `tenants:restore`: the function is tagged for the environment but is not Arco's mediator; or the delete did not take effect (run again) |
 | `scheduler.no_rule`, `scheduler.apply_needs_env`, `scheduler.apply_needs_deploy` | `scheduler:set` and deploy first; `--apply` needs `--env` |
 | `editor.lint_failed`, `editor.verify_failed` | The edit was refused and `arco.php` restored: make the change by hand with the line printed |
 | `config.process_unsupported_command` | The command (`command`) is PHP-only or edits `arco.php`, and this is a Go app: edit `arco.json` by hand. Text only, no `--json` |
@@ -803,3 +889,4 @@ mkdir -p .claude/skills && cp -R vendor/multiapi/arco/skills/arco .claude/skills
 
 `.claude/` is never packaged into the deploy. Other agents can read `vendor/multiapi/arco/llms.txt`, which links to
 these docs.
+

@@ -88,7 +88,7 @@ final class InfoCommand extends ArcoCommand
             return $this->showResources($config, $this->profileFlag($input), (bool) $input->getOption('json'), $output, $io);
         }
 
-        [$status, $remoteError] = $this->remoteStatus($config, $this->profileFlag($input));
+        [$status, $remoteError, $tenants] = $this->remoteStatus($config, $this->profileFlag($input));
         $settings = $this->settings($config);
 
         if ($input->getOption('json')) {
@@ -133,7 +133,11 @@ final class InfoCommand extends ArcoCommand
                 // process app ([] for PHP apps), paused from the rule (null when unknown or not deployed).
                 'runtime' => self::jsonRuntime($config),
                 'schedules' => self::jsonSchedules($config, $status?->schedules),
-            ] + ($remoteError !== null ? ['error' => $remoteError] : []), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+            ]
+                // Additive, after schedules: only when the environment's tenant stack exists; `tenants` is the number of
+                // customer domains the environment owns, null when it could not be established.
+                + ($tenants !== null ? ['tenantDomains' => self::jsonTenantDomains($tenants)] : [])
+                + ($remoteError !== null ? ['error' => $remoteError] : []), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
             return $remoteError === null ? self::SUCCESS : self::FAILURE;
         }
 
@@ -200,6 +204,15 @@ final class InfoCommand extends ArcoCommand
             $io->error($remoteError);
             return self::FAILURE;
         }
+        if ($tenants !== null) {
+            $io->definitionList(
+                [$this->t('info.tenant_distribution') => $this->t('info.tenant_distribution_value', ['distribution' => $tenants['distribution'], 'group' => $tenants['connectionGroup']])],
+                [$this->t('info.tenant_target') => $this->t('info.tenant_target_value', ['target' => $tenants['target'], 'endpoint' => $tenants['endpoint']])],
+                [$this->t('info.tenant_domains') => $tenants['tenants'] !== null
+                    ? (string) $tenants['tenants']
+                    : $this->t('info.tenant_count_unknown', ['error' => $tenants['error'] === null ? '-' : ($this->describeError($tenants['error']) ?? $tenants['error']->getMessage())])],
+            );
+        }
         if ($status === null) {
             $io->note($this->t('info.no_remote'));
         } else {
@@ -229,7 +242,7 @@ final class InfoCommand extends ArcoCommand
     private function showResources(AppConfig $config, ?string $profile, bool $json, OutputInterface $output, SymfonyStyle $io): int
     {
         $group = EnvironmentGroup::name($config);
-        [$resources, $error, $paused, $schedulerPaused] = $this->taggedResources($config, $profile);
+        [$resources, $error, $paused, $schedulerPaused, $tenants] = $this->taggedResources($config, $profile);
         if ($json) {
             $output->writeln((string) json_encode([
                 'schema' => 1,
@@ -247,7 +260,11 @@ final class InfoCommand extends ArcoCommand
                 // Arco Cloud keeps its paused state; null without scheduler() (process apps use `schedules`). paused
                 // is null when the rule is missing or unreadable (as `settings.schedulerPaused` in `info --json`).
                 'scheduler' => $config->scheduler === null ? null : ['every' => $config->scheduler, 'paused' => $schedulerPaused],
-            ] + ($error !== null ? ['error' => $error] : []), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+            ]
+                // Additive (tenant domains, unreleased), last before `error`: the same `tenantDomains` as `info --json`, only when the
+                // environment's tenant stack exists.
+                + ($tenants !== null ? ['tenantDomains' => self::jsonTenantDomains($tenants)] : [])
+                + ($error !== null ? ['error' => $error] : []), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
             return $error === null ? self::SUCCESS : self::FAILURE;
         }
         if ($error !== null) {
@@ -260,7 +277,7 @@ final class InfoCommand extends ArcoCommand
         } else {
             $io->table(
                 [$this->t('info.resource_type'), $this->t('info.resource_name'), $this->t('info.resource_on_remove')],
-                array_map(fn (array $resource) => [$resource['type'], $resource['name'], $this->t($resource['retained'] ? 'info.resource_kept' : 'info.resource_deleted')], $resources),
+                array_map(fn (array $resource) => [$resource['type'], $resource['name'], $this->t($resource['retained'] ? 'info.resource_kept' : ($resource['type'] === 'cloudfront:distribution-tenant' ? 'info.resource_deleted_with_force' : 'info.resource_deleted'))], $resources),
             );
         }
         $io->writeln($this->t('info.resources_group', ['group' => $group]));
@@ -274,7 +291,9 @@ final class InfoCommand extends ArcoCommand
      * With them, the paused state of a process app's schedule rules (see pauses()) and of the Laravel scheduler rule
      * (see schedulerPaused()).
      *
-     * @return array{0: list<array{type: string, name: string, arn: string, retained: bool, relations: list<array{type: string, target: string}>, source: ?string, options: ?array<string, mixed>}>, 1: ?string, 2: array<string, bool>|null, 3: ?bool}
+     * The tenant domains (see remoteStatus()) are the fifth element, null when there are none or they could not be read.
+     *
+     * @return array{0: list<array{type: string, name: string, arn: string, retained: bool, relations: list<array{type: string, target: string}>, source: ?string, options: ?array<string, mixed>}>, 1: ?string, 2: array<string, bool>|null, 3: ?bool, 4: array{distribution: string, connectionGroup: string, target: string, endpoint: string, tenants: int|null, error: Throwable|null}|null}
      */
     private function taggedResources(AppConfig $config, ?string $profileFlag): array
     {
@@ -282,17 +301,17 @@ final class InfoCommand extends ArcoCommand
         $env = getenv();
         $choice = ProfileResolver::resolve($profileFlag, $env, $config, new LocalState($this->projectDir()));
         if ($choice === null) {
-            return [[], $this->t('info.resources_no_profile', ['environment' => $config->environment]), null, null];
+            return [[], $this->t('info.resources_no_profile', ['environment' => $config->environment]), null, null, null];
         }
         try {
             $deployer = ($this->deployerFactory)($this->guardedClients($config, $choice->profile));
-            return [$deployer->resources($config), null, self::pauses($deployer, $config), self::schedulerPaused($deployer, $config)];
+            return [$deployer->resources($config), null, self::pauses($deployer, $config), self::schedulerPaused($deployer, $config), self::tenantDomains($deployer, $config)];
         } catch (UserError $e) {
-            return [[], $e->getMessage(), null, null];
+            return [[], $e->getMessage(), null, null, null];
         } catch (Throwable $e) {
             $message = $e instanceof AwsException ? $e->getAwsErrorMessage() : null;
             return [[], $this->credentialProblem($e, $choice->profile)
-                ?? $this->t('info.resources_failed', ['error' => is_string($message) && $message !== '' ? $message : $e->getMessage()]), null, null];
+                ?? $this->t('info.resources_failed', ['error' => is_string($message) && $message !== '' ? $message : $e->getMessage()]), null, null, null];
         }
     }
 
@@ -312,6 +331,41 @@ final class InfoCommand extends ArcoCommand
         } catch (Throwable) {
             return null;
         }
+    }
+
+    /**
+     * The tenant domains, looked up only for an environment with domain() or tenantDomains(): any other makes no extra
+     * call. A failed lookup is "no tenant domains", never an error: the rest of the output still is.
+     *
+     * @return array{distribution: string, connectionGroup: string, target: string, endpoint: string, tenants: int|null, error: Throwable|null}|null
+     */
+    private static function tenantDomains(Deployer $deployer, AppConfig $config): ?array
+    {
+        if ($config->tenantDomainTarget === null && $config->domains === []) {
+            return null;
+        }
+        try {
+            return $deployer->tenantDomainsStatus($config);
+        } catch (Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * The `tenantDomains` object of `info --json` and `info --resources --json`.
+     *
+     * @param array{distribution: string, connectionGroup: string, target: string, endpoint: string, tenants: int|null, error: Throwable|null} $tenants
+     * @return array{distribution: string, connectionGroup: string, target: string, endpoint: string, tenants: int|null}
+     */
+    private static function jsonTenantDomains(array $tenants): array
+    {
+        return [
+            'distribution' => $tenants['distribution'],
+            'connectionGroup' => $tenants['connectionGroup'],
+            'target' => $tenants['target'],
+            'endpoint' => $tenants['endpoint'],
+            'tenants' => $tenants['tenants'],
+        ];
     }
 
     /** Whether the Laravel scheduler rule is disabled; null without scheduler(), without the rule or when unreadable. */
@@ -471,7 +525,10 @@ final class InfoCommand extends ArcoCommand
      * Remote status only when a profile resolves without prompting, plus the error to show when
      * the credentials are missing or expired (anything else still reads as "not deployed").
      *
-     * @return array{0: ?AppStatus, 1: ?string}
+     * The tenant domains are looked up only for an environment with domain() or tenantDomains(): any other makes no
+     * extra call. A failed lookup is "no tenant domains", never an error of info.
+     *
+     * @return array{0: ?AppStatus, 1: ?string, 2: array{distribution: string, connectionGroup: string, target: string, endpoint: string, tenants: int|null, error: Throwable|null}|null}
      */
     private function remoteStatus(AppConfig $config, ?string $profileFlag): array
     {
@@ -479,14 +536,16 @@ final class InfoCommand extends ArcoCommand
         $env = getenv();
         $choice = ProfileResolver::resolve($profileFlag, $env, $config, new LocalState($this->projectDir()));
         if ($choice === null) {
-            return [null, null];
+            return [null, null, null];
         }
         try {
-            return [($this->deployerFactory)($this->guardedClients($config, $choice->profile))->describe($config), null];
+            $deployer = ($this->deployerFactory)($this->guardedClients($config, $choice->profile));
+            $status = $deployer->describe($config);
+            return [$status, null, self::tenantDomains($deployer, $config)];
         } catch (UserError $e) {
-            return [null, $e->getMessage()];
+            return [null, $e->getMessage(), null];
         } catch (Throwable $e) {
-            return [null, $this->credentialProblem($e, $choice->profile)];
+            return [null, $this->credentialProblem($e, $choice->profile), null];
         }
     }
 

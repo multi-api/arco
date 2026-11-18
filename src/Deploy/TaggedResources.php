@@ -9,6 +9,7 @@ use Multiapi\Arco\Config\ConfigItems;
 use Multiapi\Arco\Config\QueueConfig;
 use Multiapi\Arco\Deploy\Domains\Aws;
 use Multiapi\Arco\Deploy\Domains\DomainStack;
+use Multiapi\Arco\Deploy\Domains\TenantDomainStack;
 
 /**
  * Every resource of the app's region carrying both `arco:app` and `arco:environment` tags of the
@@ -77,7 +78,8 @@ final class TaggedResources
             $token = Aws::string($page['PaginationToken'] ?? null);
             $token = $token === '' ? null : $token;
         } while ($token !== null);
-        foreach ([$this->executionRole($config), $this->operatorRole($config)] as $role) {
+        // The mediator's role only with tenantDomains() in arco.php: no extra IAM read for an environment without it.
+        foreach ([$this->executionRole($config), $this->operatorRole($config), ...($config->tenantDomainTarget === null ? [] : [$this->role(TenantMediator::roleName($config), $config)])] as $role) {
             if ($role !== null) {
                 $resources[] = $role;
             }
@@ -291,17 +293,20 @@ final class TaggedResources
             // Its ARN carries the id, not the name; remove deletes the environment's connector.
             $type === 'lambda:network-connector' => true,
             str_starts_with($type, 'lambda:') => $name === $config->functionName() || $name === $config->consoleFunctionName()
-                || str_starts_with($name, $config->functionName() . '-queue-'),
+                || str_starts_with($name, $config->functionName() . '-queue-') || $name === $config->tenantMediatorFunctionName(),
             // The Laravel scheduler rule, or a process app's schedule rule (ProcessSchedules, tagged arco:schedule):
             // remove deletes those only for a process app.
             $type === 'events:rule' => $name === SchedulerRule::name($config) || ($config->isProcess() && ($tags[ProcessSchedules::TAG] ?? '') !== ''),
-            $type === 'cloudformation:stack' => in_array($name, [ResourcesStack::name($config), $domainStack], true),
+            $type === 'cloudformation:stack' => in_array($name, [ResourcesStack::name($config), $domainStack, TenantDomainStack::stackName($config)], true),
             $type === 'resource-groups:group' => $name === EnvironmentGroup::name($config),
-            $type === 'iam:role' => $name === ExecutionRole::roleName($config),
+            $type === 'iam:role' => $name === ExecutionRole::roleName($config) || $name === TenantMediator::roleName($config),
             // Made by the domain stack, which remove deletes (its tags reach the distribution, but not the
             // aws:cloudformation:* ones; the distribution is the only one carrying this environment's tags).
             $type === 'cloudfront:distribution' => true,
-            $type === 'cloudfront:function' => $name === DomainStack::functionName($config),
+            $type === 'cloudfront:function' => $name === DomainStack::functionName($config) || $name === TenantDomainStack::functionName($config),
+            // The tenant stack's connection group (its id is not a name Arco can match: only that stack makes
+            // tagged ones) and the customer domains, which remove deletes only with --force (RemoveCommand labels them).
+            $type === 'cloudfront:connection-group', $type === 'cloudfront:distribution-tenant' => true,
             // Only the certificate Arco requested (arco:managed): one it found and reused is kept.
             $type === 'acm:certificate' => ($tags['arco:managed'] ?? null) === 'true',
             default => ($tags['aws:cloudformation:stack-name'] ?? null) === $domainStack,

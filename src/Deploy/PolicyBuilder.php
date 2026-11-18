@@ -23,9 +23,10 @@ final class PolicyBuilder
      * @param list<string> $genericTableArns the table() tables (created and existing)
      * @param string|null $variablesPrefix the code bucket prefix of the environment's variable bundles (VariableBundle)
      * @param string|null $kmsKey kmsKey(): the key the variable bundles are encrypted with
+     * @param string|null $tenantMediatorArn tenantDomains(): the ARN of the mediator function, the only thing the app may invoke
      * @return array{Version: string, Statement: list<array<string, mixed>>}
      */
-    public static function document(string $region, string $account, string $function, array $references, array $permissions = [], ?string $codeBucket = null, array $queueArns = [], array $workerFunctions = [], array $bucketArns = [], array $tableArns = [], array $genericTableArns = [], bool $vpcAccess = false, ?string $variablesPrefix = null, ?string $kmsKey = null): array
+    public static function document(string $region, string $account, string $function, array $references, array $permissions = [], ?string $codeBucket = null, array $queueArns = [], array $workerFunctions = [], array $bucketArns = [], array $tableArns = [], array $genericTableArns = [], bool $vpcAccess = false, ?string $variablesPrefix = null, ?string $kmsKey = null, ?string $tenantMediatorArn = null): array
     {
         // Web Functions log to the in-Region "<group>.local" group, then Lambda centralizes into
         // /aws/lambda/web/<function>: without both, a Region's logs are not delivered. The
@@ -50,6 +51,10 @@ final class PolicyBuilder
                 ],
                 'Resource' => '*',
             ];
+        }
+        if ($tenantMediatorArn !== null) {
+            // Exactly the function: it alone holds the CloudFront permissions, and only over this environment's tenants.
+            $statements[] = ['Sid' => 'ArcoTenantDomains', 'Effect' => 'Allow', 'Action' => 'lambda:InvokeFunction', 'Resource' => $tenantMediatorArn];
         }
         if ($queueArns !== []) {
             $statements[] = [

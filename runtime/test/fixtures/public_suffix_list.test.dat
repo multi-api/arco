@@ -1,0 +1,13 @@
+// Small fixture in the Public Suffix List format.
+// ===BEGIN ICANN DOMAINS===
+com
+uk
+co.uk
+ar
+com.ar
+*.ck
+!www.ck
+// ===END ICANN DOMAINS===
+// ===BEGIN PRIVATE DOMAINS===
+github.io
+// ===END PRIVATE DOMAINS===

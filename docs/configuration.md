@@ -114,6 +114,7 @@ rules and `adopt` are in [Config layer](config-layer.md).
 | `permissions(array)` | `[]` | Extra IAM statements for the managed execution role (below) |
 | `exclude(array)` / `include(array)` | preset rules | Packaging globs (below) |
 | `domain(string\|array)` | none | Custom domains served through CloudFront (below); lowercase hostnames, no wildcards, at most 10 |
+| `tenantDomains(string $target)` | none | Declare a routing hostname for customer domains; needs `domain()`; experimental (see [Tenant domain routing](#tenant-domain-routing)) |
 | `dns(string\|false $dns)` | Route 53 in the deploy account | `dns('profile')`: Route 53 in the account of that AWS profile; `dns('cloudflare')`: Cloudflare (see [Cloudflare](#cloudflare)), so a profile named `cloudflare` cannot be used here; `dns(false)`: DNS is elsewhere, Arco prints the records |
 | `deployCommands(array)` | `[]` | Commands run on the console function during every deploy, before traffic moves; an environment's list replaces the app's |
 | `console(bool = true, ?int timeout, ?int memory)` | off | Deploy the console function (`arco command`, `arco tinker`, `deployCommands()`); `console(false)` deletes an existing one on the next deploy; a scheduler implies it. `timeout:` is in seconds (3 to 900, default 900), `memory:` in MB (128 to 10240, default 2048); giving either also turns the console on |
@@ -1339,6 +1340,446 @@ After the function is deployed and verified, `deploy`:
 
 The summary lists `https://<domain>` for every domain next to the endpoint URL.
 
+### Tenant domain routing
+
+`tenantDomains(target: 'routing.example.com')` declares the hostname your customers point their own domains at,
+inherited from the app unless an environment replaces it. `domain()` stays what it is, the application's own
+domains; the target is not a site served by itself. Customer domains are never written in `arco.php`: the app adds
+and removes them at runtime (see [Managing tenant domains from the app](#managing-tenant-domains-from-the-app)), each
+with a `CNAME` to the target, and the target points at the routing endpoint of a CloudFront connection group. Use a
+lowercase hostname without a wildcard and choose a name absent from `domain()`; if it is listed there, remove it
+before using it as a target.
+
+**Experimental.** The feature was run on real AWS for the first time on 2026-11-17 and 2026-11-18, with an
+administrator deploy profile, a Route 53 target, a Laravel app and two customer subdomains. It stays experimental
+until the rest is verified; try it on a staging environment first.
+
+Verified on real AWS:
+
+- `arco deploy` and a redeploy with `tenantDomains()` (Route 53 target): the redeploy over existing tenants goes
+  through the change set without replacing anything, and a tenant stack left in `ROLLBACK_COMPLETE` by a failed first
+  creation is deleted and recreated by the next deploy.
+- `add` creates the tenant and requests CloudFront's managed certificate (HTTP validation through the `CNAME`); it was
+  issued within minutes for a customer subdomain pointing at the target, and a chain customer domain, target, routing
+  endpoint is accepted.
+- Activation: CloudFront does not activate the domain by itself. `status` (or a repeated `add`) applies the issued
+  certificate and answers `pending` with the reason `activating`; about 5 minutes later `status` answered `active` and
+  the domain served HTTPS. While the domain is inactive `status` answers `pending`, never `not_found`.
+- Requests through a customer domain reach the app (see [What the app receives](#what-the-app-receives-through-a-customer-domain)).
+- `list` returned every domain with `cursor: null` at the end; `remove` of an active domain succeeded on the first
+  call.
+- `arco info` shows the tenant distribution, the target and the number of customer domains.
+- `arco remove` without `--force`, after the typed confirmation, disabled the mediator, waited 90 s, counted the
+  customer domain, stopped and deleted nothing; `arco tenants:restore` enabled the mediator again.
+- The app role under a permissions boundary that allows `lambda:InvokeFunction` on the mediator.
+
+Not verified yet:
+
+- `arco remove --force` (deleting tenants, then the tenant infrastructure) and the 15-minute delete limit.
+- A Cloudflare target and a manual-DNS target; a domain already used by another distribution or environment;
+  account quotas (`quota`); `list` paging with a cursor; a duplicate `add` of a domain still being created.
+- A limited (non-administrator) deploy profile: every run used an administrator profile, so the permission lists in
+  [getting started](getting-started.md#permissions-for-custom-domains) are derived from the code, not from a run.
+- `permissionsBoundary()` on the mediator's role (the run's mediator role had no boundary), and apps in a VPC.
+- Which ACM actions the mediator's role needs besides `acm:RequestCertificate` (see below).
+
+**Limits of this version.**
+
+- **Laravel apps only.** `tenantDomains()` exists only in `arco.php`, not in `arco.json`, so Go and other process
+  apps cannot use it yet. The only supported client of the mediator is the `multiapi/arco-laravel` API below; the
+  mediator's request and response format is internal and may change, so do not call the function directly.
+- **One target per environment.** A second routing hostname, or a customer domain served by two targets, is not
+  supported.
+- **Customer subdomains only.** A customer's root (apex) domain such as `customer.com` is refused
+  (`apex_not_supported`): the customer would have to point it at the target with a `CNAME`, and DNS does not allow a
+  `CNAME` at a zone apex. Customers use a subdomain such as `shop.customer.com`.
+- **Cloudflare must be DNS only** (proxy off) for the target and for every customer domain.
+- **No Anycast static IPs.** Neither implemented nor provisioned: customers cannot point an `A` record at fixed
+  addresses. They are left for v2. AWS's published list price for them was USD 0.005 per IP per hour at the time of
+  writing ([CloudFront pay-as-you-go pricing](https://aws.amazon.com/cloudfront/pricing/pay-as-you-go/)); check the
+  page, it is AWS's to change.
+- **Quotas and prices are AWS's.** Per-account quotas on distribution tenants and a charge per tenant apply: see
+  [CloudFront pricing](https://aws.amazon.com/cloudfront/pricing/) and
+  [CloudFront quotas](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/cloudfront-limits.html).
+
+`tenantDomains()` needs `domain()` in the same environment (`validation.tenant_domain_requires_domain`). The endpoint
+is only locked to CloudFront through a `domain()` whose path Arco can check; tenant domains alone would be served by
+an endpoint anyone can call with a forged host.
+
+After the `domain()` steps, `deploy`:
+
+1. Checks the target, before anything is created (see the table below).
+2. Creates or updates the stack `arco-<app>-<env>-tenants`: a multi-tenant distribution (same origin access
+   control, `/build/*` caching, managed origin request policy and viewer-request function as `domain()`, so the app
+   reads the customer's host from `X-Forwarded-Host`; cached assets are keyed by customer host) with CloudFront's
+   default certificate (`sni-only`, TLS 1.2) until each tenant gets its own, and a connection group. Distribution
+   tenants are never part of the stack.
+3. Adds a second statement (`ArcoCloudFrontTenant`) to the endpoint's policy so the tenant distribution may invoke
+   it, keeping the `domain()` statement and any statement of yours.
+4. Points the target at the connection group's routing endpoint with a `CNAME`.
+
+| `dns()` | The target's `CNAME` |
+|---|---|
+| default, `dns('profile')` | Created in Route 53 (standard query charges apply; an alias is not possible for this name) |
+| `dns('cloudflare')` | Created **DNS only** (proxy off) with the comment `managed by arco: <app>/<env>` |
+| `dns(false)` | Printed (`<target> CNAME <endpoint>`); you create it, and the deploy only succeeds once public DNS serves exactly that record |
+
+In every mode the target must be a subdomain of its DNS zone, not its apex (`domains.tenant_target_apex`), in a zone
+Arco can find (`domains.tenant_target_zone_missing`), and free: any record already at the name that is not exactly
+this environment's `CNAME` stops the deploy with `domains.tenant_target_occupied`, also with `--force-dns`. A record
+is only taken as this environment's when it points at the routing endpoint of the environment's own stack. Arco never
+overwrites or deletes a record at the target; an existing Cloudflare record with the proxy on stops with
+`domains.tenant_target_proxied` instead of being changed. With `dns(false)` Arco reads public DNS (DNS over HTTPS at
+`cloudflare-dns.com`): if it cannot tell whether the target is free, the deploy stops with
+`domains.tenant_target_unverified`; while your record is missing or different it stops with
+`domains.tenant_manual_cname_missing`, naming the record. Create it and deploy again: the stack and the policy
+statement are kept and the deploy resumes at the check.
+
+A deploy never replaces what tenant domains depend on. It is refused, before any change:
+
+- when the target differs from the one the environment was deployed with (`domains.tenant_target_changed`; moving a
+  live target is outside this version);
+- when the stack is not this environment's (`domains.stack_not_ours`), is being created or deleted, or lacks its
+  outputs (`domains.tenant_stack_unusable`);
+- when the update would replace or remove the distribution or the connection group (`domains.stack_replacement`), or
+  its changes cannot be read completely (`domains.stack_changes_unreadable`). The stack is updated through a
+  CloudFormation change set that is deleted without running in both cases;
+- when `domain()` and `tenantDomains()` were both removed from `arco.php` while the tenant stack exists
+  (`deploy.tenant_domains_left`): releasing the endpoint would leave tenant domains served by a public endpoint.
+
+Removing only `tenantDomains()` leaves the stack, the policy statement, the target record and the mediator in place.
+
+With Cloudflare, the proxy breaks HTTP validation of CloudFront-managed certificates, which is why both the target
+and customer domains must be **DNS only** (see the limits above).
+
+**Español:** El target puede usar Route 53, Cloudflare o DNS manual, y debe ser un subdominio de su zona, no el
+apex. En Cloudflare, tanto el target como los dominios de clientes deben usar **solo DNS** (proxy desactivado):
+el proxy impide la validación HTTP de los certificados administrados por CloudFront. Anycast queda para v2 (no se implementa ni se crea).
+En esta versión `tenantDomains()` solo existe en `arco.php` (no en `arco.json`) y solo se admiten apps Laravel: el único
+cliente soportado es la API de `multiapi/arco-laravel`; el formato de la función mediadora es interno. Hay un
+target por entorno, los dominios de clientes deben ser subdominios (un `CNAME` no puede estar en el apex) y las cuotas
+y precios por tenant son los de AWS.
+
+#### Managing tenant domains from the app
+
+**The mediator.** After the tenant infrastructure is routing, the deploy creates the Lambda function
+`<app>-<env>-tenants` (Node.js, 256 MB, 30 s timeout, code sent inline, no version or alias) with its own role
+`arco-<app>-<env>-tenants` (shortened with a hash when longer than 64 characters; it carries `permissionsBoundary()`
+if set). The app never calls CloudFront: it invokes the mediator, which holds the feature's whole CloudFront surface
+and uses it only on distribution tenants tagged `arco:app` and `arco:environment` for this environment. That is why
+the app's role gets one statement, `ArcoTenantDomains`: `lambda:InvokeFunction` on exactly that function, and the
+app gets `ARCO_TENANT_DOMAINS_FUNCTION` (the function name). The mediator uses the AWS SDK bundled in the Lambda
+Node.js runtime; its code does not ship its own copy.
+
+**With a permissions boundary.** `permissionsBoundary()` (or `--permissions-boundary`) is applied to both roles, and a
+boundary only limits: it grants nothing. The effective permissions of each role are the intersection of its policy and
+the boundary, so the boundary may allow more than the lists below, never less. One `permissionsBoundary()` applies to
+both roles: a boundary written for the app's role alone (the usual case) lacks the mediator's statements. Checklist:
+
+- **The app's role** `arco-<app>-<env>`: `lambda:InvokeFunction` on
+  `arn:aws:lambda:<region>:<account>:function:<app>-<env>-tenants` (the statement `ArcoTenantDomains` Arco adds to the
+  role). Without it the app's calls are denied and the Laravel API throws `TenantDomainsUnavailable`. *Verified on real
+  AWS:* the app could not call the mediator until the boundary allowed it, then it could.
+- **The mediator's role** `arco-<app>-<env>-tenants`: every statement of its inline policy, by `Sid` (the next list).
+  *Not verified:* the run's mediator role had no boundary, so a boundary on it has never been exercised. Without one of
+  these statements in the boundary the matching mediator call is denied and the add, status, list or remove that needs
+  it fails with `failed`.
+
+The mediator role's inline policy is exactly (`TenantMediator::policy()`; `<tenants>` is
+`arn:aws:cloudfront::<account>:distribution-tenant/*`):
+
+| `Sid` | Actions | Resource and condition |
+|---|---|---|
+| `ArcoTenantLogs` | `logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents` | `arn:aws:logs:<region>:<account>:log-group:/aws/lambda/<app>-<env>-tenants:*` |
+| `ArcoTenantCreate` | `cloudfront:CreateDistributionTenant` | `*`, only with the request tags `arco:app` and `arco:environment` of the environment |
+| `ArcoTenantTagOnCreate` | `cloudfront:TagResource` | `<tenants>`, same request tags |
+| `ArcoTenantWrite` | `cloudfront:UpdateDistributionTenant`, `cloudfront:DeleteDistributionTenant` | `<tenants>`, only on tenants carrying the environment's tags |
+| `ArcoTenantRead` | `cloudfront:GetDistributionTenant`, `cloudfront:GetDistributionTenantByDomain`, `cloudfront:GetManagedCertificateDetails`, `cloudfront:ListTagsForResource` | `<tenants>` |
+| `ArcoTenantCertificates` | `acm:RequestCertificate`, `acm:DescribeCertificate`, `acm:AddTagsToCertificate` | `arn:aws:acm:us-east-1:<account>:certificate/*` |
+| `ArcoTenantList` | `cloudfront:ListDistributionTenants` | `*` |
+
+`ListTagsForResource` is there because CloudFront's tenant reads return no tags: ownership is read from the tenant's own
+ARN. `ArcoTenantCertificates` exists because CloudFront requests each customer domain's managed certificate with the
+mediator's permissions (`CreateDistributionTenant` is denied without them). Only `acm:RequestCertificate` was proven
+necessary on real AWS; AWS does not document which ACM actions CloudFront uses for a tenant's managed certificate, so
+`acm:DescribeCertificate` and `acm:AddTagsToCertificate` are an estimate. If a future AWS change needs another ACM
+action, the failure names it and the policy is a one-line addition.
+
+Before changing anything the deploy refuses, and `--force` overrides none of it (a mediator of another environment
+would hand this environment's customer domains to that environment's CloudFront permissions):
+
+| Error | Meaning and what to do |
+|---|---|
+| `deploy.tenant_mediator_runtime_missing` | The mediator code is missing from the Arco installation: reinstall Arco |
+| `deploy.tenant_mediator_suffix_list_missing` | The public suffix list is missing from the installation: reinstall Arco |
+| `deploy.tenant_mediator_not_owned` | The function or role exists with another app's or environment's tags: rename this app or environment |
+| `deploy.tenant_mediator_untagged` | The function or role exists without Arco's tags: rename, or delete it if unused |
+| `deploy.tenant_mediator_tags_unreadable` | The tags could not be read: allow the action the error names, deploy again |
+| `deploy.tenant_mediator_draining` | The function's reserved concurrency is 0 (see below) |
+| `deploy.tenant_mediator_failed`, `deploy.tenant_mediator_missing` | Lambda refused the create or update, or the function vanished mid-deploy |
+
+The deploy step is `deploy.step_tenant_mediator`. Arco never sets or removes the function's reserved concurrency
+by itself on a deploy. `arco remove` sets it to 0 to drain the function and never restores it (see
+[Removing an environment with tenant domains](#removing-an-environment-with-tenant-domains)), and a deploy that finds
+0 stops with `deploy.tenant_mediator_draining` instead of undoing that. If the function was drained and you want to
+keep the environment, restore it with `arco tenants:restore --env=<env>` (see
+[Restoring the mediator](#restoring-the-mediator)) and deploy again.
+
+**The public suffix list.** The mediator ships `runtime/lib/tenants/public_suffix_list.dat` (from publicsuffix.org,
+MPL 2.0), refreshed with Arco releases: a suffix added after the release you run is not known to it. Without the
+file the deploy stops with `deploy.tenant_mediator_suffix_list_missing`.
+
+**The Laravel API.** `multiapi/arco-laravel` binds `Multiapi\Arco\Laravel\Contracts\TenantDomains` (also the facade
+`Multiapi\Arco\Laravel\Facades\TenantDomains`). It only works on Arco (`ARCO=1`) with `tenantDomains()` deployed;
+anywhere else it throws `TenantDomainsUnavailable`.
+
+```php
+use Multiapi\Arco\Laravel\Facades\TenantDomains;
+
+$status = TenantDomains::add('shop.customer.com');   // TenantDomainStatus: domain, state, reason
+$status = TenantDomains::status('shop.customer.com');
+$page = TenantDomains::list(cursor: null, limit: 50); // TenantDomainPage: domains, cursor
+TenantDomains::remove('shop.customer.com');
+```
+
+- `add` answers `pending` for a new domain; adding it again (a retry) answers its current state and, like `status`,
+  applies an issued certificate. `status` throws `TenantDomainNotFound` for a domain the environment does not have.
+- States are `pending`, `active` and `failed`; `isPending()`, `isActive()` and `isFailed()` read them. `reason` is
+  `null` unless one of these applies:
+
+  | State | `reason` | Meaning |
+  |---|---|---|
+  | `pending` | `null` | The tenant exists, its domain is not active and nothing else is known: the certificate is being validated (typically minutes), or `list` found an issued certificate it does not apply |
+  | `pending` | `activating` | The certificate is issued and applied to the tenant; CloudFront is activating the domain (about 5 minutes were seen) |
+  | `pending` | `activation failed: <ErrorName>` | The certificate is issued but CloudFront refused to apply it (`<ErrorName>` is CloudFront's error name); the next `status` tries again |
+  | `pending` | `removing` | The tenant is disabled and being removed |
+  | `active` | `null` | The domain is active and serves HTTPS |
+  | `failed` | `certificate failed`, `certificate validation-timed-out`, `certificate revoked`, `certificate expired` or `certificate inactive` | CloudFront's certificate status for the domain; look at the domain's DNS first |
+
+- A new domain is not served the moment its certificate is issued: CloudFront keeps it inactive (and
+  `GetDistributionTenantByDomain` does not find it) until the certificate is applied to its tenant. **Only `status` and a
+  repeated `add` apply it; `list` never changes anything. So an app must poll `status` (every 30 seconds or so) until it
+  answers `active`.** While the domain is inactive `status` answers `pending`, not `TenantDomainNotFound`. Times seen:
+  the certificate issued within minutes; `active` about 5 minutes after the first `status` that applied it.
+- `list` takes a `limit` from 1 to 100 (default 50) and returns the page's `cursor`: pass it back to continue, and
+  only a `null` cursor is the end (a page can be empty and still carry one). It is not a snapshot: under concurrent
+  changes a domain can be missed or seen twice.
+- `remove` is idempotent: an unknown domain succeeds. The domain stops being served at once (the tenant is
+  disabled first); if CloudFront does not allow deleting it yet, `remove` throws `TenantDomainRemovalPending`: call
+  it again later.
+
+All exceptions extend `TenantDomainException`, whose `errorCode` string is listed below (the mediator's internal code,
+kept for logs and support; handle the exception classes, not the strings):
+
+| Exception | `errorCode` | When |
+|---|---|---|
+| `InvalidTenantDomain` | `invalid_domain`, `apex_not_supported`, `reserved_domain`, `invalid_request` | Not a plain hostname, a root domain or public suffix, the target or a `domain()` of the environment, a bad cursor or limit |
+| `TenantDomainDnsIncorrect` | `dns_incorrect` | The domain does not lead to the target; `$expected` holds it |
+| `TenantDomainTaken` | `domain_taken` | CloudFront has the domain on a tenant that is not this environment's |
+| `TenantDomainQuotaExceeded` | `quota` | CloudFront refused the creation for a limit |
+| `TenantDomainNotFound` | `not_found` | The environment has no such domain |
+| `TenantDomainRemovalPending` | `removal_pending` | Disabled, but not deletable yet |
+| `TenantDomainsUnavailable` | `unavailable` | Not on Arco, `tenantDomains()` not deployed, mediator not usable, or the app's role may not invoke it |
+| `TenantDomainException` | `failed`, `conflict`, `ownership_unverified` | Anything else. `conflict`: the tenant changed during the call, so retry. `ownership_unverified`: the mediator could not prove the tenant is this environment's (its tags, domain or state could not be read), so it changed nothing; check the mediator's logs and its `cloudfront:ListTagsForResource` permission. `failed`: any other CloudFront or mediator error, with the AWS error name in the message |
+
+In tests, `TenantDomains::fake()` swaps in an in-memory service (it works without `ARCO=1` and never touches AWS) and
+returns it: `assertAdded($domain)`, `assertRemoved($domain)` and `assertNothingAdded()`, plus `activate($domain)` and
+`fail($domain, $reason)` to move a domain's state.
+
+##### What the app receives through a customer domain
+
+A request to a customer domain goes through the tenant distribution, which signs it to the app's endpoint exactly as
+`domain()` does. Observed on real AWS for a request to `https://shop.example.com/path?q=a+b&x=%2B`:
+
+- `Host` is the Lambda endpoint's own host, not the customer's. The customer domain is in `X-Forwarded-Host` (set by
+  the viewer-request function, as with `domain()`), which `multiapi/arco-laravel` trusts, so `$request->getHost()`
+  answers the customer domain.
+- The query string arrives as `q=a%20b&x=%2B`: a literal `+` is sent as `%20` and an encoded `+` (`%2B`) is kept, as
+  [`+` in query strings](#-in-query-strings) describes for `domain()`.
+- `X-Forwarded-For` holds the visitor's address followed by a CloudFront address, and a `CloudFront-Viewer-Address`
+  header carries the visitor's `ip:port`.
+- The viewer's `Authorization` header reaches the app exactly as the visitor sent it, on a customer domain as on
+  `domain()`: the distribution signs its origin requests without replacing it, so `Authorization: Bearer <token>`
+  authentication works unchanged.
+- **The visitor's address:** read `$request->ip()`. It returns the visitor's address, the same on a customer domain as
+  on `domain()`. Never read `REMOTE_ADDR`: on Lambda it is always `169.254.100.1`, a link-local address. Code that
+  runs before Laravel's trusted proxies (a global middleware prepended ahead of them) still sees that link-local
+  address.
+
+Not verified: per-host caching of `/build/*` between two customer domains, and that the endpoint's own URL answers 403
+to a direct call with a customer host (the endpoint protection of [Protecting the endpoint](#protecting-the-endpoint)
+applies to the same endpoint).
+
+**Rules for customer domains.** A domain must be a lowercase, multi-label hostname (no wildcard, underscore, IP
+address or unicode: send punycode), a **subdomain** of a registrable domain according to the public suffix list
+(both its ICANN and private sections, so `shop.github.io` is refused and a root domain like `customer.com` is
+refused with `apex_not_supported`), and neither the tenant target nor a `domain()` of the environment. Its DNS must
+already point at the target when you call `add`: a `CNAME` to the target, a `CNAME` chain (up to 8 hops) that reaches
+the target or the routing endpoint, or, for a name that has no `CNAME`, addresses all contained in the routing
+endpoint's. Otherwise `add` throws `TenantDomainDnsIncorrect`; a resolver error counts as incorrect. With Cloudflare
+the customer's record must be **DNS only**.
+
+**With `role()`.** Arco does not change a role you provide, so add this statement to it; without it the app gets
+`TenantDomainsUnavailable`, whose message names `lambda:InvokeFunction` and the function:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": "lambda:InvokeFunction",
+  "Resource": "arn:aws:lambda:<region>:<account>:function:<app>-<env>-tenants"
+}
+```
+
+The mediator's own role is always created by Arco, as the network operator role is.
+
+**With `vpc()`.** The app calls the Lambda API, so it needs HTTPS egress to it: a NAT or a
+`com.amazonaws.<region>.lambda` interface endpoint. Arco creates neither. The mediator itself is not in the VPC.
+
+**Costs and quotas.** AWS charges per distribution tenant and has per-account quotas (see
+[CloudFront pricing](https://aws.amazon.com/cloudfront/pricing/) and
+[CloudFront quotas](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/cloudfront-limits.html));
+reaching one makes `add` throw `TenantDomainQuotaExceeded`. The target's `CNAME` in Route 53 adds query charges. Anycast static IPs are not part of this version (see the limits above).
+
+**Removing `tenantDomains()`** from `arco.php` deletes nothing: the stack, the mediator, its role and the DNS record
+stay and tenants keep being served. The app loses `ARCO_TENANT_DOMAINS_FUNCTION` and its permission, so it can no
+longer manage them. Only `arco remove` deletes them.
+
+**Español:** Con `role()` Arco no modifica el rol: agrega `lambda:InvokeFunction` sobre
+`arn:aws:lambda:<región>:<cuenta>:function:<app>-<env>-tenants`, o la app recibirá `TenantDomainsUnavailable`.
+Con `vpc()` la app necesita salida HTTPS a la API de Lambda (NAT o endpoint `com.amazonaws.<región>.lambda`), que
+Arco no crea. AWS cobra por cada tenant de distribución y tiene cuotas por cuenta (`TenantDomainQuotaExceeded`).
+En Cloudflare, tanto el target como los dominios de clientes deben usar solo DNS. Errores principales:
+`TenantDomainDnsIncorrect` (el DNS no apunta al target), `InvalidTenantDomain` (no es un subdominio válido o es
+reservado), `TenantDomainTaken` y `TenantDomainRemovalPending` (volver a llamar más tarde). La función es
+experimental: se probó en AWS real con un perfil de administrador (ver la lista de lo verificado arriba). `arco remove` solo borra los dominios de clientes con `--force`
+explícito (`--yes` no basta).
+
+#### Removing an environment with tenant domains
+
+Customer domains are distribution tenants created at runtime, so `arco remove` cannot delete the tenant distribution
+until none is left, and it deletes a tenant only when you pass `--force` on the command line. `--yes` and the typed
+confirmation never count: they confirm the removal, not the loss of your customers' sites. In order:
+
+1. **Ownership, read-only.** The stack `arco-<app>-<env>-tenants`, the function `<app>-<env>-tenants` and its role
+   must carry this environment's `arco:app` and `arco:environment` tags. Anything else, or anything unreadable,
+   stops the remove with nothing changed. An environment without these resources goes straight on.
+2. **The mediator is disabled.** Reserved concurrency 0, read back to confirm, so the app can add no more domains.
+   Then Arco waits for the function's timeout plus 60 seconds (90 s with the deployed 30 s timeout) so invocations
+   already running end.
+3. **Full count.** The tenants of the distribution are listed in full. Operations in progress (a tenant being
+   created, deployed or deleted) are waited for, up to 10 minutes, listing every 15 seconds. A tenant that is not
+   this environment's (other tags, or another connection group) stops the remove: Arco never deletes the
+   distribution under someone else's tenant.
+4. **Customer domains.** With none, the remove goes on. With some and no `--force`, it stops with
+   `remove.tenants_need_force` (the count is in the message): **nothing is deleted and the environment stays**.
+   With `--force`, each tenant is read again (ownership checked before every change), disabled, and deleted as soon
+   as CloudFront accepts it, up to 15 minutes per tenant. A final listing must be empty; tenants just deleted may
+   still show for up to 5 minutes, anything else (a new or foreign tenant) stops the remove with
+   `remove.tenant_recount`.
+5. **The tenant infrastructure.** The target's DNS record (only when it is exactly the `CNAME` to the stack's routing
+   endpoint; with `dns(false)` or a different record Arco leaves it and says so), the `ArcoCloudFrontTenant` policy
+   statement on the endpoint, the stack (distribution and connection group), the function and its role.
+
+The rest of the environment is removed as usual afterwards. A step that is already gone is skipped.
+
+*Observed on real AWS (without `--force`):* after the typed confirmation, `arco remove` set the mediator's reserved
+concurrency to 0, waited 90 s, counted the customer domain (1), stopped with `remove.tenants_need_force` and deleted
+nothing; the app and the customer domain kept serving. `arco tenants:restore --env=<env>` then enabled the mediator
+again and the app's `list` answered. `arco remove --force` has not been run on real AWS yet.
+
+A tenant stack left in `ROLLBACK_COMPLETE` by a failed first creation needs no manual deletion: the next `arco deploy`
+deletes and recreates it.
+
+**The mediator stays disabled after any stop.** From step 2 on, reserved concurrency 0 is never restored by Arco, so
+a refused, failed or cancelled remove leaves the app unable to add or remove customer domains. If you cancel the
+removal and keep the environment, restore it with `arco tenants:restore --env=<env>` (see below). Every stop prints
+this command. To go on instead, run `arco remove` again (with `--force` if customer domains
+remain): it starts at the ownership checks and resumes where the last run stopped. Until then a deploy of the
+environment stops with `deploy.tenant_mediator_draining`.
+
+| Error | Cause and what to do |
+|---|---|
+| `remove.tenants_need_force` | Customer domains exist (`{count}`). Nothing was deleted. Deleting them takes those sites offline for good: run `arco remove --force` only when that is intended, or restore the mediator and keep the environment |
+| `remove.tenant_foreign` | A tenant on the distribution is not this environment's. Remove or move it yourself, then run `arco remove` again |
+| `remove.tenant_busy` | Tenants still had an operation in progress after 10 minutes. Run `arco remove` again later |
+| `remove.tenant_delete_timeout` | A tenant did not become deletable within 15 minutes of being disabled. Run `arco remove --force` again |
+| `remove.tenant_recount` | Tenants remained after the deletes (one was added meanwhile, or is not this environment's). Check CloudFront, then run `arco remove` again |
+| `remove.tenant_unverified` | A tenant's ownership could not be checked. Allow `cloudfront:GetDistributionTenant`, `UpdateDistributionTenant` and `DeleteDistributionTenant`, run again |
+| `remove.tenant_listing_incomplete` | The tenants could not be listed completely, so they cannot be counted. Allow `cloudfront:ListDistributionTenants`, run again |
+| `remove.tenant_stack_unreadable` | The tenant stack could not be read and the function or role exists. Allow `cloudformation:DescribeStacks`, run again |
+| `remove.tenant_untagged` | The function or role has no Arco tags. Delete it yourself if unused, then run again |
+| `remove.not_owned`, `remove.tags_unreadable`, `domains.stack_not_ours`, `domains.tenant_stack_unusable` | The function, role or stack is another environment's, its tags cannot be read, or the stack lacks its outputs: see [Ownership and guards](agents.md#ownership-and-guards-nothing-was-changed) |
+| `remove.tenant_drain_failed` | The mediator could not be disabled. Allow `lambda:PutFunctionConcurrency`, `GetFunctionConcurrency` and `GetFunctionConfiguration`, run again |
+| `remove.tenant_drain_unconfirmed` | Reserved concurrency did not read back as 0. Run `arco remove` again |
+| `remove.tenant_failed` | Any other AWS failure while removing tenant resources (`{error}` names the call). Fix the cause, run again |
+
+`remove.tenant_stopped` is the note printed with every stop after step 2. In `--json`, the steps are
+`remove.step_tenant_drain`, `remove.step_tenant_wait`, `remove.step_tenant_settle`, `remove.step_tenant_count`,
+`remove.step_tenant_delete` (once per tenant), `remove.step_tenant_dns`, `remove.step_tenant_access`,
+`remove.step_tenant_stack`, `remove.step_tenant_function` and `remove.step_tenant_role`; the notes
+`remove.tenants_note`, `remove.tenant_dns_kept` and `remove.tenant_dns_manual` can appear too.
+
+`remove --force` on an environment without `tenantDomains()` is still only the deprecated spelling of `--yes`, with a
+warning. With `tenantDomains()` it prints no warning and, without customer domains, changes nothing. When
+`tenantDomains()` is set and `--force` is absent, `remove` prints `remove.tenants_note` before it asks, because the
+count is only made after the mediator is disabled.
+
+**`--force` is the authorization, and nothing else is.** `--yes` and the typed confirmation never delete customer
+domains. A non-interactive caller (`--json`, a CI job, an agent) authorizes the deletion only by passing `--force`
+itself: Arco treats the flag on the command line as the explicit decision of whoever runs it and asks nothing more,
+so a tool must pass it only when its user said so. The failure without it carries `error.params` `{count, function,
+environment}` (`count`: the customer domains; `function`: the mediator; `environment`: for `arco tenants:restore`).
+
+##### Restoring the mediator
+
+```bash
+arco tenants:restore --env=<env> [--profile=<profile>] [--json]
+```
+
+Re-enables the mediator after a stopped `arco remove`. Read-only checks come first: a function
+`<app>-<env>-tenants` that exists must carry this app's and environment's `arco:app` and `arco:environment` tags and be
+described as Arco's tenant domains function, or the command stops with nothing changed (`tenants.restore_not_mediator`, `deploy.tenant_mediator_not_owned`, `deploy.tenant_mediator_untagged`,
+`deploy.tenant_mediator_tags_unreadable`); there is no `--force`. Then it reads the function's reserved concurrency:
+
+| Reserved concurrency | What the command does | `outcome` |
+|---|---|---|
+| no function at all | Nothing: there is no mediator to restore (never deployed, or a remove finished); `tenants.nothing_to_restore` | `nothing_to_restore` |
+| none | Nothing: the mediator is already enabled | `already_enabled` |
+| `0` | Deletes it (`lambda:DeleteFunctionConcurrency`) and reads it back; a value still there is `tenants.restore_unconfirmed` | `restored` |
+| any other number | Nothing: someone set that limit on purpose; it is reported | `limit_kept` |
+
+All four succeed (exit code 0); an error exits 1. It does not need `tenantDomains()` in `arco.php`, only the
+environment (and the layer, with `--config-layer`, as `deploy` takes it). It does not undo the rest of a removal:
+a removal that went on past the mediator (the stack or the function already deleted) leaves nothing to restore
+(`nothing_to_restore`, exit 0, no write). With `--json` the command never asks, writes one document on stdout and nothing else:
+
+```json
+{"schema": 1, "outcome": "restored", "app": "shop", "environment": "production", "function": "shop-production-tenants", "reservedConcurrency": null}
+```
+
+`reservedConcurrency` is the limit that was kept (`limit_kept`), else `null`. An error is `{"schema": 1, "outcome":
+"refused" | "failed", "app", "environment", "function", "error": {"key", "message", "params"}}`: `refused` when a
+check stopped it before AWS changed anything (config, credentials, ownership, a missing function, a refused read),
+`failed` for an AWS error or an unconfirmed delete; `app`, `environment` and `function` are `null` when the
+configuration did not load, and `params` is left out when the key has none.
+
+An environment that never had tenant domains pays three extra read-only calls: CloudFormation `DescribeStacks` of
+`arco-<app>-<env>-tenants`, Lambda `GetFunctionConfiguration` of `<app>-<env>-tenants` (and `ListTags` when it
+exists) and IAM `GetRole` of the mediator's role. A denied read of them counts as "no tenant resources" when
+`arco.php` has no `tenantDomains()` and there is no tenant stack, so a plain remove needs no new permission. Permissions: [Permissions for custom
+domains](getting-started.md#permissions-for-custom-domains).
+
+#### Seeing tenant domains in `arco info`
+
+When the environment's tenant stack exists, `arco info` shows the tenant distribution and connection group, the
+target with its routing endpoint, and the number of customer domains (the tenants tagged for this environment; a
+tenant of someone else is not counted). `arco info --json` adds the key `tenantDomains` after `schedules`:
+`{"distribution": "<id>", "connectionGroup": "<id>", "target": "routing.example.com", "endpoint": "<routing endpoint>", "tenants": 12}`.
+`tenants` is `null` when the count could not be established (the listing was refused or incomplete; the text output
+says why). A failure to read the stack is not an error of `info`: the key is absent, as when the environment has no
+tenant stack. The lookup runs only for an environment with `domain()` or `tenantDomains()`; others make no extra call.
+It needs `cloudformation:DescribeStacks` and `cloudfront:ListDistributionTenants`.
+
 ### Where the DNS records go
 
 | Config | DNS |
@@ -1352,6 +1793,11 @@ For each record Arco picks the longest public hosted zone that is a suffix of th
 takes over a live record: if a domain already has an `A`, `AAAA` or `CNAME` record that does not
 point at this environment's distribution, `deploy` stops before creating anything and names the
 record. `deploy --force-dns` replaces such records.
+
+If Route 53 does not return a change ID, Arco stops with `domains.dns_change_unconfirmed` rather than claiming the
+change propagated. The change may already have been submitted: inspect the zone's records before retrying.
+Cloudflare listings with incomplete pagination or malformed entries stop with `cloudflare.list_incomplete` rather
+than treating a name as available.
 
 At a zone apex (`example.com`), most DNS providers do not allow a `CNAME`; in manual mode use your
 provider's ALIAS/ANAME record type.
@@ -1408,6 +1854,9 @@ Cloudflare, the `CNAME`s carrying this environment's comment), then the stack, t
 you created are never deleted. Certificate validation `CNAME`s (`_….<domain>`) are always kept: they
 are harmless, and ACM reuses the same record for any certificate of that name in any region of the
 account. Delete them yourself if no certificate needs them.
+
+With `tenantDomains()`, customer domains are counted and deleted (only with `--force`) before the stack goes: see
+[Removing an environment with tenant domains](#removing-an-environment-with-tenant-domains).
 
 ### Protecting the endpoint
 

@@ -118,6 +118,148 @@ final class Stacks
     }
 
     /**
+     * deploy() for a stack whose resources hold state CloudFormation cannot restore: an existing stack is
+     * updated through a change set, executed only when every change to $protected keeps the resource
+     * (added, or modified without replacement). A change set that would replace or remove one, or whose
+     * changes cannot be read completely, is deleted without running and the stack is left as it was.
+     *
+     * @param array<string, string> $tags
+     * @param list<string> $protected logical ids
+     * @return array<string, string> stack outputs
+     *
+     * @throws DeployException with the key prefix: replacement, changes_unreadable, failed, not_updatable
+     */
+    public function deployProtected(string $name, string $body, array $tags, array $protected, int $timeout = 1800): array
+    {
+        $stack = $this->stack($name);
+        if (self::busy($stack)) {
+            $stack = $this->waitStable($name, $timeout);
+        }
+        // Nothing to protect yet: created (again) as any stack.
+        if ($stack === null || in_array($stack['StackStatus'] ?? null, self::EMPTY, true)) {
+            return $this->deploy($name, $body, $tags, $timeout);
+        }
+        $status = (string) Aws::string($stack['StackStatus'] ?? null);
+        if (! in_array($status, self::UPDATABLE, true)) {
+            throw DeployException::make($this->keys . 'not_updatable', ['stack' => $name, 'status' => $status]);
+        }
+
+        $before = [$status, self::updatedAt($stack)];
+        $changeSet = ['StackName' => $name, 'ChangeSetName' => 'arco-update-' . (int) $this->sleeper->now()];
+        Aws::call($this->cloudFormation, 'CreateChangeSet', [
+            ...$changeSet,
+            'ChangeSetType' => 'UPDATE',
+            'TemplateBody' => $body,
+            'Tags' => array_map(fn (string $k, string $v) => ['Key' => $k, 'Value' => $v], array_keys($tags), $tags),
+        ]);
+        for ($waited = 0; ; $waited += self::CHANGE_SET_POLL) {
+            $described = Aws::call($this->cloudFormation, 'DescribeChangeSet', $changeSet);
+            $changeStatus = (string) Aws::string($described['Status'] ?? null);
+            if ($changeStatus === 'CREATE_COMPLETE') {
+                break;
+            }
+            if ($changeStatus === 'FAILED') {
+                $reason = Aws::string($described['StatusReason'] ?? null) ?? '-';
+                Aws::call($this->cloudFormation, 'DeleteChangeSet', $changeSet);
+                if (str_contains($reason, "didn't contain changes") || str_contains($reason, 'No updates are to be performed')) {
+                    return self::outputs($stack);
+                }
+                throw DeployException::make($this->keys . 'failed', ['stack' => $name, 'status' => 'FAILED', 'reason' => $reason]);
+            }
+            if ($waited >= $timeout) {
+                Aws::call($this->cloudFormation, 'DeleteChangeSet', $changeSet);
+                throw DeployException::make('deploy.timeout', ['what' => "change set {$changeSet['ChangeSetName']} of stack $name"]);
+            }
+            $this->sleeper->sleep(self::CHANGE_SET_POLL);
+        }
+
+        $refused = $this->refusedChanges($changeSet, $described, $protected);
+        if ($refused !== []) {
+            Aws::call($this->cloudFormation, 'DeleteChangeSet', $changeSet);
+            throw $refused === null
+                ? DeployException::make($this->keys . 'changes_unreadable', ['stack' => $name])
+                : DeployException::make($this->keys . 'replacement', ['stack' => $name, 'resources' => implode(', ', $refused)]);
+        }
+
+        Aws::call($this->cloudFormation, 'ExecuteChangeSet', $changeSet);
+        $stack = $this->waitExecuted($changeSet, $timeout) ? $this->waitForChange($name, $before, 'UPDATE', $timeout) : $this->waitStable($name, $timeout);
+        $status = $stack === null ? 'DELETED' : (string) Aws::string($stack['StackStatus'] ?? null);
+        if ($stack === null || ! in_array($status, self::SUCCESS, true)) {
+            throw DeployException::make($this->keys . 'failed', ['stack' => $name, 'status' => $status, 'reason' => $stack === null ? '-' : $this->failureReason($name)]);
+        }
+        return self::outputs($stack);
+    }
+
+    /**
+     * The protected resources a change set would replace or remove, reading every page of its changes.
+     *
+     * @param array{StackName: string, ChangeSetName: string} $changeSet
+     * @param array<string, mixed> $page the first page, already read
+     * @param list<string> $protected
+     * @return list<string>|null null when the changes cannot be read completely
+     */
+    private function refusedChanges(array $changeSet, array $page, array $protected): ?array
+    {
+        $refused = [];
+        $seen = [];
+        while (true) {
+            $changes = $page['Changes'] ?? null;
+            if (! is_array($changes) || ! array_is_list($changes)) {
+                return null;
+            }
+            foreach ($changes as $entry) {
+                $change = is_array($entry) ? Aws::map($entry['ResourceChange'] ?? null) : [];
+                $id = Aws::string($change['LogicalResourceId'] ?? null);
+                $action = Aws::string($change['Action'] ?? null);
+                if ($id === null || $id === '' || $action === null) {
+                    return null;
+                }
+                $kept = $action === 'Add' || ($action === 'Modify' && ($change['Replacement'] ?? null) === 'False');
+                if (! $kept && in_array($id, $protected, true) && ! in_array($id, $refused, true)) {
+                    $refused[] = $id;
+                }
+            }
+            if (! isset($page['NextToken'])) {
+                return $refused;
+            }
+            $token = Aws::string($page['NextToken']);
+            if ($token === null || $token === '' || isset($seen[$token])) {
+                return null;
+            }
+            $seen[$token] = true;
+            $page = Aws::call($this->cloudFormation, 'DescribeChangeSet', [...$changeSet, 'NextToken' => $token]);
+        }
+    }
+
+    /**
+     * Waits until an executed change set has run. The stack may still show its previous status right after
+     * ExecuteChangeSet, so its status is only read once the change set says it ran.
+     *
+     * @param array{StackName: string, ChangeSetName: string} $changeSet
+     * @return bool whether CloudFormation already removed the change set (it does once one has been executed)
+     */
+    private function waitExecuted(array $changeSet, int $timeout): bool
+    {
+        for ($waited = 0; ; $waited += self::CHANGE_SET_POLL) {
+            try {
+                $execution = (string) Aws::string(Aws::call($this->cloudFormation, 'DescribeChangeSet', $changeSet)['ExecutionStatus'] ?? null);
+            } catch (AwsException $e) {
+                if ($e->getAwsErrorCode() !== 'ChangeSetNotFound') {
+                    throw $e;
+                }
+                return true;
+            }
+            if (in_array($execution, ['EXECUTE_COMPLETE', 'EXECUTE_FAILED', 'OBSOLETE'], true)) {
+                return false;
+            }
+            if ($waited >= $timeout) {
+                throw DeployException::make('deploy.timeout', ['what' => "stack {$changeSet['StackName']}"]);
+            }
+            $this->sleeper->sleep(self::CHANGE_SET_POLL);
+        }
+    }
+
+    /**
      * Imports existing resources into the stack (creating it when it does not exist) with an IMPORT change
      * set and waits for it. $body must be the template the stack runs plus the resources to import, each
      * with a DeletionPolicy and no reference to a resource not yet in the stack. A failed change set is
@@ -171,27 +313,8 @@ final class Stacks
 
         // The stack may still show its previous status right after ExecuteChangeSet (an UPDATE_COMPLETE, or the
         // IMPORT_COMPLETE of an earlier import): its status is only read once the change set has run.
-        $gone = false;
-        for ($waited = 0; ; $waited += self::CHANGE_SET_POLL) {
-            try {
-                $execution = (string) Aws::string(Aws::call($this->cloudFormation, 'DescribeChangeSet', $changeSet)['ExecutionStatus'] ?? null);
-            } catch (AwsException $e) {
-                if ($e->getAwsErrorCode() !== 'ChangeSetNotFound') {
-                    throw $e;
-                }
-                // CloudFormation removes a stack's change sets once one has been executed.
-                $gone = true;
-                break;
-            }
-            if (in_array($execution, ['EXECUTE_COMPLETE', 'EXECUTE_FAILED', 'OBSOLETE'], true)) {
-                break;
-            }
-            if ($waited >= $timeout) {
-                throw DeployException::make('deploy.timeout', ['what' => "stack $name"]);
-            }
-            $this->sleeper->sleep(self::CHANGE_SET_POLL);
-        }
-        $stack = $gone ? $this->waitForImport($name, $before, $timeout) : $this->waitStable($name, $timeout);
+        $gone = $this->waitExecuted($changeSet, $timeout);
+        $stack = $gone ? $this->waitForChange($name, $before, 'IMPORT', $timeout) : $this->waitStable($name, $timeout);
         $status = $stack === null ? 'DELETED' : (string) Aws::string($stack['StackStatus'] ?? null);
         if ($status !== 'IMPORT_COMPLETE') {
             throw DeployException::make('deploy.import_failed', ['stack' => $name, 'reason' => $stack === null ? $status : $this->failureReason($name)]);
@@ -199,22 +322,24 @@ final class Stacks
     }
 
     /**
-     * The stack once the import whose change set CloudFormation already removed has ended. Without the change
-     * set to ask, the stack is only taken as the result once it moved on from $before (an IMPORT_* operation
-     * seen, another status or a newer LastUpdatedTime; never while it is still in review): right after
-     * ExecuteChangeSet it may still show the status from before, an earlier import's IMPORT_COMPLETE included.
-     * A stack still as it was when the wait ends never ran the import: deploy.import_failed.
+     * The stack once the import or update whose change set CloudFormation already removed has ended. Without
+     * the change set to ask, the stack is only taken as the result once it moved on from $before (an
+     * operation of that kind seen, another status or a newer LastUpdatedTime; never while it is still in
+     * review): right after ExecuteChangeSet it may still show the status from before, an earlier import's
+     * IMPORT_COMPLETE included. A stack still as it was when the wait ends never ran the change set:
+     * deploy.import_failed, or the prefixed "failed" key for an update.
      *
      * @param array{string, string} $before the status and LastUpdatedTime before ExecuteChangeSet
+     * @param 'IMPORT'|'UPDATE' $operation
      * @return array<string, mixed>|null null when the stack no longer exists
      */
-    private function waitForImport(string $name, array $before, int $timeout): ?array
+    private function waitForChange(string $name, array $before, string $operation, int $timeout): ?array
     {
         $importing = false;
         for ($waited = 0; ; $waited += self::POLL) {
             $stack = $this->stack($name);
             $status = $stack === null ? null : (string) Aws::string($stack['StackStatus'] ?? null);
-            $importing = $importing || ($status !== null && str_starts_with($status, 'IMPORT_') && self::busy($stack));
+            $importing = $importing || ($status !== null && str_starts_with($status, $operation . '_') && self::busy($stack));
             // A stack still in review has not started the import, whatever time it reports.
             $moved = $importing || $stack === null
                 || ($status !== 'REVIEW_IN_PROGRESS' && [$status, self::updatedAt($stack)] !== $before);
@@ -222,9 +347,11 @@ final class Stacks
                 return $stack;
             }
             if ($waited >= $timeout) {
-                throw $moved
-                    ? DeployException::make('deploy.timeout', ['what' => "stack $name"])
-                    : DeployException::make('deploy.import_failed', ['stack' => $name, 'reason' => 'the change set was removed without running']);
+                throw match (true) {
+                    $moved => DeployException::make('deploy.timeout', ['what' => "stack $name"]),
+                    $operation === 'IMPORT' => DeployException::make('deploy.import_failed', ['stack' => $name, 'reason' => 'the change set was removed without running']),
+                    default => DeployException::make($this->keys . 'failed', ['stack' => $name, 'status' => $before[0], 'reason' => 'the change set was removed without running']),
+                };
             }
             $this->sleeper->sleep(self::POLL);
         }

@@ -47,7 +47,7 @@ final class LambdaFunction
      * Environment, KMSKeyArn when set).
      *
      * @param array<string, mixed> $settings
-     * @param array{S3Bucket: string, S3Key: string, S3ObjectVersion?: string} $code
+     * @param array{S3Bucket: string, S3Key: string, S3ObjectVersion?: string}|array{ZipFile: string} $code
      * @param array<string, string> $tags
      * @return string the published version
      */
@@ -57,10 +57,23 @@ final class LambdaFunction
     }
 
     /**
+     * deploy() without publishing a version: for a function that is invoked unqualified and has no alias. Code
+     * is sent inline, as {ZipFile: bytes}. Waits and reconfigures exactly as deploy() does.
+     *
+     * @param array<string, mixed> $settings
+     * @param array{ZipFile: string} $code
+     * @param array<string, string> $tags
+     */
+    public function deployInline(string $name, string $handler, array $code, array $settings, array $tags, bool $roleJustCreated, string $runtime): void
+    {
+        self::deployAll($this->sleeper, [new FunctionDeploy($this, $name, $handler, $code, $settings, $tags, $roleJustCreated, $runtime, publish: false)]);
+    }
+
+    /**
      * What deploy() needs for one function, for deployAll().
      *
      * @param array<string, mixed> $settings
-     * @param array{S3Bucket: string, S3Key: string, S3ObjectVersion?: string} $code
+     * @param array{S3Bucket: string, S3Key: string, S3ObjectVersion?: string}|array{ZipFile: string} $code
      * @param array<string, string> $tags
      */
     public function request(string $name, string $handler, array $code, array $settings, array $tags, bool $roleJustCreated = false, string $runtime = self::RUNTIME): FunctionDeploy
@@ -78,7 +91,7 @@ final class LambdaFunction
      * was just created.
      *
      * @param list<FunctionDeploy> $deploys
-     * @return array<string, string> the published version by function name
+     * @return array<string, string> the published version by function name (none for a deploy that does not publish)
      */
     public static function deployAll(Sleeper $sleeper, array $deploys): array
     {
@@ -129,6 +142,9 @@ final class LambdaFunction
 
         $versions = [];
         foreach ($deploys as $deploy) {
+            if (! $deploy->publish) {
+                continue;
+            }
             $version = $deploy->function->lambda->publishVersion(['FunctionName' => $deploy->name])['Version'] ?? null;
             if (! is_string($version) || $version === '') {
                 throw new \UnexpectedValueException("Lambda returned no version for $deploy->name.");

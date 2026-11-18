@@ -6,7 +6,7 @@ namespace Multiapi\Arco\Deploy;
 final readonly class FunctionDeploy
 {
     /**
-     * @param array{S3Bucket: string, S3Key: string, S3ObjectVersion?: string} $code
+     * @param array{S3Bucket: string, S3Key: string, S3ObjectVersion?: string}|array{ZipFile: string} $code
      * @param array<string, mixed> $settings
      * @param array<string, string> $tags
      */
@@ -20,6 +20,8 @@ final readonly class FunctionDeploy
         public bool $roleJustCreated,
         /** the Lambda runtime a new function is created with: provided.al2023 (PHP) or nodejs24.x (process apps) */
         public string $runtime = LambdaFunction::RUNTIME,
+        /** false: no version is published (a function nothing invokes through an alias) */
+        public bool $publish = true,
     ) {
     }
 }

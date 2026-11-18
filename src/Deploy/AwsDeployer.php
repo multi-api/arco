@@ -19,6 +19,8 @@ use Multiapi\Arco\Deploy\Domains\CustomDomains;
 use Multiapi\Arco\Deploy\Domains\DnsProvider;
 use Multiapi\Arco\Deploy\Domains\DomainStack;
 use Multiapi\Arco\Deploy\Domains\Stacks;
+use Multiapi\Arco\Deploy\Domains\TenantDomains;
+use Multiapi\Arco\Deploy\Domains\TenantDomainStack;
 use Multiapi\Arco\Logs\LogGroups;
 use Multiapi\Arco\Package\ConsoleArtifacts;
 use Multiapi\Arco\Package\Package;
@@ -57,9 +59,11 @@ final class AwsDeployer implements Deployer
         private readonly bool $forceDns = false,
         private readonly bool $force = false,
         private readonly ?DnsProvider $dnsProvider = null,
-        /** HTTP client for the check through CloudFront after the endpoint is locked; null for a default one */
+        /** HTTP client for the check through CloudFront after the endpoint is locked and for the public DNS queries of a manual tenantDomains() target; null for a default one */
         private readonly ?ClientInterface $http = null,
         private readonly ?Closure $endpointDecider = null,
+        /** the directory with tenant-domains.js and lib/tenants/ the tenant mediator ships; null for the package's runtime/ */
+        private readonly ?string $tenantRuntimeDir = null,
     ) {
     }
 
@@ -176,9 +180,10 @@ final class AwsDeployer implements Deployer
      * the ownership of functions, role and rule, never of a stack). deployResources() and the domains
      * step check again when they run.
      *
-     * @throws DeployException stack.not_ours, domains.stack_not_ours
+     * @throws DeployException stack.not_ours, domains.stack_not_ours, and with tenantDomains() what
+     *         TenantDomains::preflight() refuses (stack, changed target, occupied or unverifiable DNS target)
      * @throws AwsException a refused read of the resources stack while the config has resources (the
-     *         deploy would stop on it in deployResources() anyway)
+     *         deploy would stop on it in deployResources() anyway), or of the tenant stack or its DNS zone
      */
     private function checkStacks(AppConfig $config): void
     {
@@ -192,6 +197,13 @@ final class AwsDeployer implements Deployer
             if ($stack !== null && ! self::ownsStack($stack, $config)) {
                 throw DeployException::make('stack.not_ours', ['stack' => $name, 'app' => $config->app, 'environment' => $config->environment]);
             }
+        }
+        if ($config->tenantDomainTarget !== null) {
+            // The tenant stack's ownership and target, and a target that is free, before anything changes. A read
+            // that is refused or fails stops the deploy here: tenant domains never go on what could not be checked.
+            $this->tenantDomains($config)->preflight($config);
+            // The mediator's function and role, and the code it ships: refused before traffic moves, not after.
+            $this->tenantMediator()->preflight($config);
         }
         if ($config->domains !== []) {
             $name = DomainStack::stackName($config);
@@ -420,7 +432,8 @@ final class AwsDeployer implements Deployer
                 array_map(fn (GenericTableConfig $table) => $table->arn($config), $config->tables),
                 $vpcAccess || $this->interfacesMayRemain($config, $roleTags, $step),
                 VariableBundle::prefix($config),
-                $config->kmsKey);
+                $config->kmsKey,
+                $config->tenantDomainTarget === null ? null : TenantMediator::arn($config, $region, $account));
             ['arn' => $roleArn, 'created' => $roleCreated] = (new ExecutionRole($this->aws->iam()))->ensure(ExecutionRole::roleName($config), $policy, $tags, $region, $step, $config->permissionsBoundary);
         }
 
@@ -715,6 +728,7 @@ final class AwsDeployer implements Deployer
             // its stack), so with auth('iam') it would otherwise keep serving the app. Without a stack there is no
             // distribution to invoke the endpoint and nothing to revoke: an auth('iam') → auth('public') change of
             // an environment that never had domain() makes no policy call, as in 0.11.3.
+            $this->refuseTenantDomainsLeft($config);
             $functionArn = WebFunctions::text($current['functionArn'] ?? null);
             if (RevisionFactory::authType($config) === 'ApplicationManaged') {
                 $step('deploy.endpoint_unprotected', ['function' => $function]);
@@ -1120,17 +1134,33 @@ final class AwsDeployer implements Deployer
     public function attachDomains(AppConfig $config, DeployResult $result, array $cachedPaths, ?callable $onStep = null, string $healthPath = '/up'): DeployResult
     {
         if ($config->domains === []) {
+            // tenantDomains() needs domain() (validation.tenant_domain_requires_domain): nothing to attach either.
             return $result;
         }
         $step = $onStep ?? static function (string $key, array $params = []): void {};
+        $tenants = $config->tenantDomainTarget === null ? null : $this->tenantDomains($config);
         if (! RevisionFactory::protectsEndpoint($config)) {
             // An emulator endpoint (AWS_ENDPOINT_URL): no origin access control, no policy, the configured auth.
             $step('deploy.endpoint_unprotected_emulator', ['function' => $config->functionName()]);
-            return $result->withDomains($this->customDomains($config)->deploy($config, $result->domainName, $cachedPaths, self::tags($config), $step));
+            $result = $result->withDomains($this->customDomains($config)->deploy($config, $result->domainName, $cachedPaths, self::tags($config), $step));
+            if ($tenants !== null) {
+                $infra = $tenants->deploy($config, $result->domainName, $cachedPaths, self::tags($config), $step, null, false);
+                // Last: no tenant can be added before the routing target is verified.
+                $this->tenantMediator()->deploy($config, $infra, self::tags($config), $step);
+            }
+            return $result;
         }
         $access = $this->cloudFrontAccess(new WebFunctions($this->aws->lambdaWeb(), $this->sleeper));
         $domains = $this->customDomains($config)->deploy($config, $result->domainName, $cachedPaths, self::tags($config), $step,
             fn (string $distributionId, string $distributionDomain) => $access->protect($config, $distributionId, $distributionDomain, $healthPath, $step));
+        // After domain(): the endpoint is IamAuth by now, so the tenant distribution only gains its own statement.
+        // The tenant path itself is not checked here (a multi-tenant distribution serves nothing without a tenant).
+        if ($tenants !== null) {
+            $infra = $tenants->deploy($config, $result->domainName, $cachedPaths, self::tags($config), $step,
+                fn (string $distributionId) => $access->protectTenant($config, $distributionId, null, $healthPath, $step));
+            // Last: no tenant can be added before the routing target is verified.
+            $this->tenantMediator()->deploy($config, $infra, self::tags($config), $step);
+        }
         return $result->withDomains($domains);
     }
 
@@ -1154,12 +1184,12 @@ final class AwsDeployer implements Deployer
 
     public function hasDomainResources(AppConfig $config): bool
     {
-        return $this->stackExists($config) || ($config->domains !== [] && $this->tolerateAccessDenied(
+        return $this->stackExists($config) || $this->tenantStackExists($config) || ($config->domains !== [] && $this->tolerateAccessDenied(
             fn () => (new Certificates($this->aws->acm(), $this->sleeper))->managed($config) !== [],
         ));
     }
 
-    public function remove(AppConfig $config, ?callable $onStep = null, bool $waitInterfaces = true): void
+    public function remove(AppConfig $config, ?callable $onStep = null, bool $waitInterfaces = true, bool $forceTenants = false): void
     {
         $step = $onStep ?? static function (string $key, array $params = []): void {};
         $queues = $this->workerQueues($config, $step);
@@ -1189,6 +1219,10 @@ final class AwsDeployer implements Deployer
         }
         // A process app's schedule rules, found by tag (so all this environment's), read before anything is deleted.
         $scheduleRules = $config->isProcess() ? $this->scheduleRulesToRemove($config, $step) : [];
+        // Customer domains first: the mediator is disabled and any tenant counted (and deleted, with --force) before
+        // the distribution, the function and everything else of the environment can go. Read-only for an
+        // environment that never had tenant domains.
+        $this->tenantRemoval($config)->remove($config, $forceTenants, $web?->arn, $step);
         if ($config->domains !== [] || $this->stackExists($config)) {
             $this->customDomains($config)->remove($config, $step);
         }
@@ -2321,6 +2355,73 @@ final class AwsDeployer implements Deployer
         return CustomDomains::create($config, $this->aws, $this->dns, $this->sleeper, $this->forceDns, $this->dnsProvider);
     }
 
+    private function tenantRemoval(AppConfig $config): TenantRemoval
+    {
+        $tenants = $this->tenantDomains($config);
+        return new TenantRemoval(
+            $this->aws,
+            $this->sleeper,
+            $tenants->release(...),
+            fn (string $functionArn): bool => $this->cloudFrontAccess(new WebFunctions($this->aws->lambdaWeb(), $this->sleeper))->revokeTenant($functionArn),
+        );
+    }
+
+    public function tenantDomainsStatus(AppConfig $config): ?array
+    {
+        try {
+            $stack = (new Stacks($this->aws->cloudFormation(), $this->sleeper))->describe(TenantDomainStack::stackName($config));
+        } catch (AwsException) {
+            // Without CloudFormation access the environment shows no tenant domains, as it shows no distribution.
+            return null;
+        }
+        if ($stack === null || ! self::ownsStack($stack, $config) || in_array($stack['status'], Stacks::EMPTY, true)) {
+            return null;
+        }
+        $outputs = $stack['outputs'];
+        $values = [];
+        foreach (['distribution' => 'DistributionId', 'connectionGroup' => 'ConnectionGroupId', 'target' => 'Target', 'endpoint' => 'RoutingEndpoint'] as $key => $output) {
+            if (($outputs[$output] ?? '') === '') {
+                return null;
+            }
+            $values[$key] = $outputs[$output];
+        }
+        try {
+            $tenants = (new TenantInventory($this->aws->cloudFront(), $values['distribution'], $values['connectionGroup'], $config, 'info.tenant_'))->scan();
+            return $values + ['tenants' => count(array_filter($tenants, static fn (Tenant $tenant): bool => $tenant->owned)), 'error' => null];
+        } catch (\Throwable $e) {
+            return $values + ['tenants' => null, 'error' => $e];
+        }
+    }
+
+    private function tenantMediator(): TenantMediator
+    {
+        return new TenantMediator($this->aws, $this->sleeper, $this->tenantRuntimeDir);
+    }
+
+    private function tenantDomains(AppConfig $config): TenantDomains
+    {
+        return TenantDomains::create($config, $this->aws, $this->dns, $this->sleeper, $this->dnsProvider, $this->http);
+    }
+
+    /**
+     * domain() and tenantDomains() both left arco.php while the tenant stack is still there: its distribution
+     * keeps serving tenant domains, and releasing the endpoint from CloudFront would let anyone call it with a
+     * forged host. Refused before traffic moves or the policy changes; only remove deletes the stack.
+     *
+     * @throws DeployException deploy.tenant_domains_left
+     */
+    private function refuseTenantDomainsLeft(AppConfig $config): void
+    {
+        if ($config->tenantDomainTarget !== null) {
+            return;
+        }
+        $name = TenantDomainStack::stackName($config);
+        $stack = (new Stacks($this->aws->cloudFormation(), $this->sleeper))->describe($name);
+        if ($stack !== null && self::ownsStack($stack, $config) && ! in_array($stack['status'], Stacks::EMPTY, true)) {
+            throw DeployException::make('deploy.tenant_domains_left', ['stack' => $name]);
+        }
+    }
+
     /**
      * Whether the domains stack is still there for an environment without domain() whose endpoint is IamAuth.
      * A refused read is a warning, not a silent "no": if the stack is left, its distribution may still invoke
@@ -2348,6 +2449,16 @@ final class AwsDeployer implements Deployer
     private function stackExists(AppConfig $config): bool
     {
         return $this->tolerateAccessDenied(fn () => $this->domainStack($config) !== null);
+    }
+
+    /** Whether this environment's tenant stack is still there (tenantDomains() may have left arco.php); a refused read means "no stack", like stackExists(). */
+    private function tenantStackExists(AppConfig $config): bool
+    {
+        return $this->tolerateAccessDenied(function () use ($config): bool {
+            $stack = (new Stacks($this->aws->cloudFormation(), $this->sleeper))->describe(TenantDomainStack::stackName($config));
+            // arco-<app>-X-tenants is also the domains stack of an environment called X-tenants: only ours counts.
+            return $stack !== null && self::ownsStack($stack, $config);
+        });
     }
 
     /** @return array{status: string, outputs: array<string, string>, tags: array<string, string>}|null */

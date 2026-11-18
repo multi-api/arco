@@ -65,11 +65,27 @@ final class CloudflareApi
     public function getAll(string $path, array $query = []): array
     {
         $items = [];
+        $expectedTotal = null;
         for ($page = 1; ; $page++) {
             $body = $this->request('GET', $path, $page === 1 ? $query : $query + ['page' => $page]);
-            array_push($items, ...array_values(is_array($body['result'] ?? null) ? $body['result'] : []));
-            $info = is_array($body['result_info'] ?? null) ? $body['result_info'] : [];
-            $total = is_int($info['total_pages'] ?? null) ? $info['total_pages'] : 1;
+            $result = $body['result'] ?? null;
+            $info = $body['result_info'] ?? null;
+            if (! is_array($result) || ! array_is_list($result) || ! is_array($info)
+                || ($info['page'] ?? null) !== $page || ! is_int($info['total_pages'] ?? null)) {
+                throw DeployException::make('cloudflare.list_incomplete', ['call' => "GET /$path"]);
+            }
+            $total = $info['total_pages'];
+            if ($total < 0 || ($total === 0 && ($page !== 1 || $result !== []))
+                || ($total !== 0 && $page > $total) || ($expectedTotal !== null && $expectedTotal !== $total)) {
+                throw DeployException::make('cloudflare.list_incomplete', ['call' => "GET /$path"]);
+            }
+            foreach ($result as $item) {
+                if (! is_array($item)) {
+                    throw DeployException::make('cloudflare.list_incomplete', ['call' => "GET /$path"]);
+                }
+                $items[] = $item;
+            }
+            $expectedTotal = $total;
             if ($page >= $total) {
                 return $items;
             }

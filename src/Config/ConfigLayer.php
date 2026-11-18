@@ -25,6 +25,11 @@ final readonly class ConfigLayer
         'accessLog' => 'bool', 'telemetry' => 'bool',
         'cacheDriver' => 'string', 'account' => 'string',
     ];
+    /**
+     * Settings only the config layer accepts. arco.json shares checkEntry() but not these: tenantDomains() is a
+     * PHP-app feature in v1, so a process app keeps getting `unknown key` for it.
+     */
+    private const LAYER_SETTINGS = ['tenantDomainTarget' => 'string'];
     private const QUEUE = [
         'timeout' => 'int', 'memory' => 'int', 'maxInstances' => 'int', 'batchSize' => 'int', 'tries' => 'int',
         'dlq' => 'bool', 'fifo' => 'bool', 'default' => 'bool', 'adopt' => 'bool', 'existing' => 'string', 'route' => 'string',
@@ -104,7 +109,7 @@ final readonly class ConfigLayer
             throw self::invalid($base, 'expected an object');
         }
 
-        self::checkEntry($entry, $base);
+        self::checkEntry($entry, $base, layer: true);
 
         /** @var array{settings?: array<string, mixed>, variables?: array<string, string>, permissions?: list<array<string, mixed>>, domains?: list<string>, queues?: array<string, array<string, mixed>>, schedules?: array<string, array<string, mixed>>, storage?: array<string, array<string, mixed>>, tables?: array<string, array<string, mixed>>} $entry */
         return new self($path, $name, $region, $environment, $entry);
@@ -115,14 +120,15 @@ final readonly class ConfigLayer
      *
      * @param array<mixed> $entry
      * @param bool $allowFalse a named entry may be `false` (arco.json's environment level: it frees the app level's name)
+     * @param bool $layer the entry is a config layer's: LAYER_SETTINGS are accepted too (arco.json passes false)
      * @throws ConfigException config.layer_invalid, with the JSON pointer in `path`
      */
-    public static function checkEntry(array $entry, string $base, bool $allowFalse = false): void
+    public static function checkEntry(array $entry, string $base, bool $allowFalse = false, bool $layer = false): void
     {
         foreach ($entry as $key => $value) {
             $at = $base . '/' . self::pointer((string) $key);
             match ($key) {
-                'settings' => self::checkSettings($value, $at),
+                'settings' => self::checkSettings($value, $at, $layer),
                 'variables' => self::checkMap($value, $at, fn (mixed $v, string $p) => self::expect(is_string($v), $p, 'expected string')),
                 'permissions' => self::checkPermissions($value, $at),
                 'domains' => self::checkStrings($value, $at),
@@ -135,11 +141,13 @@ final readonly class ConfigLayer
         }
     }
 
-    private static function checkSettings(mixed $settings, string $at): void
+    private static function checkSettings(mixed $settings, string $at, bool $layer): void
     {
-        self::checkMap($settings, $at, null, function (string $key, mixed $value, string $p): void {
+        self::checkMap($settings, $at, null, function (string $key, mixed $value, string $p) use ($layer): void {
             if (isset(self::SETTINGS[$key])) {
                 self::checkType($value, self::SETTINGS[$key], $p);
+            } elseif ($layer && isset(self::LAYER_SETTINGS[$key])) {
+                self::checkType($value, self::LAYER_SETTINGS[$key], $p);
             } elseif ($key === 'vpc') {
                 self::checkVpc($value, $p);
             } elseif ($key === 'cache' || $key === 'failedJobsTable') {

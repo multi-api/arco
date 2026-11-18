@@ -107,9 +107,24 @@ interface Deployer
      * data it keeps); without $waitInterfaces the execution role of an environment that ran in a VPC is kept on purpose
      * for Lambda to delete the network interfaces (note remove.role_kept_for_interfaces), not a leftover.
      *
+     * Customer domains (tenantDomains()) are protected: the mediator function is disabled (reserved concurrency 0, never
+     * restored by a remove), the tenants counted, and any tenant is deleted only with $forceTenants, which is true
+     * only when --force was given explicitly on the command line (--yes and the typed confirmation never set it).
+     * Without it and with tenants the remove stops with remove.tenants_need_force before deleting anything.
+     *
      * @param (callable(string, array<string, string|int>): void)|null $onStep
+     * @param bool $forceTenants the user explicitly authorized deleting the customer domains of the environment
      */
-    public function remove(AppConfig $config, ?callable $onStep = null, bool $waitInterfaces = true): void;
+    public function remove(AppConfig $config, ?callable $onStep = null, bool $waitInterfaces = true, bool $forceTenants = false): void;
+
+    /**
+     * The tenant domains of the environment (arco info): null without an owned tenant stack, or when it cannot be
+     * read. `tenants` is the number of customer domains (distribution tenants owned by the environment, every page),
+     * null with the reason in `error` when it cannot be established.
+     *
+     * @return array{distribution: string, connectionGroup: string, target: string, endpoint: string, tenants: int|null, error: \Throwable|null}|null
+     */
+    public function tenantDomainsStatus(AppConfig $config): ?array;
 
     public function describe(AppConfig $config): ?AppStatus;
 

@@ -295,7 +295,7 @@ final class Validator
 
     /** PHP-only settings a process app sets (any source), as the keys the error names. */
     private const PROCESS_UNSUPPORTED = [
-        'console', 'scheduler', 'consoleTimeout', 'consoleMemory', 'cache', 'failedJobsTable', 'deployCommands',
+        'console', 'scheduler', 'consoleTimeout', 'consoleMemory', 'cache', 'failedJobsTable', 'deployCommands', 'tenantDomainTarget',
         'runtime.php', 'runtime.frankenphp', 'runtime.build', 'runtime.binary', 'runtime.phpBinary',
         'runtime.workers', 'runtime.maxThreads', 'runtime.threads', 'runtime.mode',
     ];
@@ -805,8 +805,22 @@ final class Validator
 
     private static function validateDomains(AppConfig $config, ValidationResult $result): void
     {
+        if ($config->tenantDomainTarget !== null) {
+            $target = $config->tenantDomainTarget;
+            if (! self::isHostname($target) || trim($target) !== $target) {
+                $result->error('validation.tenant_domain_target', ['target' => $target]);
+            }
+            if (in_array($target, $config->domains, true)) {
+                $result->error('validation.tenant_domain_conflict', ['target' => $target]);
+            }
+            // The endpoint is only locked to CloudFront (IamAuth) through a domain() whose path can be checked;
+            // tenant domains alone would be served by an endpoint anyone can call with a forged host.
+            if ($config->domains === []) {
+                $result->error('validation.tenant_domain_requires_domain', ['target' => $target]);
+            }
+        }
         if ($config->domains === []) {
-            if ($config->dnsProfile !== null || $config->dnsManual || $config->dnsCloudflare || $config->certificate !== null) {
+            if (($config->tenantDomainTarget === null && ($config->dnsProfile !== null || $config->dnsManual || $config->dnsCloudflare)) || $config->certificate !== null) {
                 $result->warning('validation.domain_settings_unused');
             }
             return;

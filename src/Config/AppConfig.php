@@ -89,6 +89,8 @@ final readonly class AppConfig
         public ?ProcessRuntime $process = null,
         /** process apps: declaration order, app level first */
         public array $schedules = [],
+        /** null: no tenant domain routing hostname */
+        public ?string $tenantDomainTarget = null,
     ) {
     }
 
@@ -169,6 +171,7 @@ final readonly class AppConfig
             telemetry: $this->telemetry,
             process: $this->process,
             schedules: $this->schedules,
+            tenantDomainTarget: $this->tenantDomainTarget,
         );
     }
 
@@ -180,6 +183,12 @@ final readonly class AppConfig
     public function consoleFunctionName(): string
     {
         return $this->functionName() . '-console';
+    }
+
+    /** The tenantDomains() mediator: the Lambda function the app invokes to manage customer domains. */
+    public function tenantMediatorFunctionName(): string
+    {
+        return $this->functionName() . '-tenants';
     }
 
     public function workerFunctionName(string $queue): string

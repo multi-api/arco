@@ -366,6 +366,12 @@ CloudFront stack, its DNS aliases and a certificate Arco requested. The shared c
 your SSM parameters, the SQS queues (with their messages), the storage buckets (with their files) and the
 DynamoDB tables (cache, failed jobs and `table()`, with their items) are kept; `remove` lists each one it kept.
 
+With `tenantDomains()`, `remove` first disables the tenant domains function, counts the customer domains and stops
+without deleting anything unless you pass `--force` (`--yes` does not authorize it); the function stays disabled after
+a stop (`arco tenants:restore --env=<env>` enables it again). The full order, the errors and that command are in
+[Removing an environment with tenant domains](configuration.md#removing-an-environment-with-tenant-domains), and
+`info` shows the distribution, the target and the number of customer domains (`tenantDomains` in `--json`).
+
 `remove` finishes what it started: "nothing to remove" means nothing it deletes is still tagged for the
 environment, so running it again after an interrupted or failed remove deletes whatever is left (the network
 connector, the roles, the resource group, ...), even when the function is already gone. At the end it lists the
@@ -631,7 +637,7 @@ vendor/bin/arco command "migrate:status" --env=production --yes --no-interaction
 vendor/bin/arco remove --env=production --yes --no-interaction
 ```
 
-`--yes` answers every confirmation: creating a new environment, the typed confirmation of `remove`, and the question protected environments (`production` by default) ask before `arco command`, `arco tinker` and `queue:dlq --redrive`. `--force` overrides a safety check instead (`init`, `deploy`, `deploy --force-dns`); `remove --force` and `tinker --force` are deprecated spellings of `--yes`.
+`--yes` answers every confirmation: creating a new environment, the typed confirmation of `remove`, and the question protected environments (`production` by default) ask before `arco command`, `arco tinker` and `queue:dlq --redrive`. `--force` overrides a safety check instead (`init`, `deploy`, `deploy --force-dns`); `tinker --force` is a deprecated spelling of `--yes`, and so is `remove --force` except on an environment with `tenantDomains()`, where only an explicit `--force` deletes customer domains (see [Removing an environment with tenant domains](configuration.md#removing-an-environment-with-tenant-domains)).
 Arco's own real-AWS end-to-end run deploys `examples/laravel` to a dedicated test account this way.
 
 **Scripting.** `info`, `info --resources`, `logs`, `queue:list`, `storage:list` and `profile` take `--json`, and so
@@ -995,6 +1001,81 @@ DNS aliases, certificate) is skipped.
 
 The zone check of `init` and `domain:add` calls only the profile you choose and needs
 `route53:ListHostedZonesByName` and `sts:GetCallerIdentity` there.
+
+With `tenantDomains()` (experimental, see [Tenant domain routing](configuration.md#tenant-domain-routing)), the
+deploy profile needs the custom domain permissions above and:
+
+- `cloudformation:CreateChangeSet`, `DescribeChangeSet`, `ExecuteChangeSet`, `DeleteChangeSet` on
+  `arn:aws:cloudformation:*:*:stack/arco-*` (the tenant stack is only updated through a change set)
+- `cloudfront:CreateConnectionGroup`, `GetConnectionGroup`, `UpdateConnectionGroup`, `DeleteConnectionGroup`,
+  `cloudfront:CreateCachePolicy`, `GetCachePolicy`, `UpdateCachePolicy`,
+  `DeleteCachePolicy` (the tenant stack has its own cache policy for `/build/*` and uses CloudFront's managed origin
+  request policy; CloudFormation calls them with the deploy credentials; `cloudfront:*Distribution*` does not
+  match them)
+- `cloudfront:VerifyDnsConfiguration` (`cloudfront:GetDistributionTenantByDomain` is covered by
+  `cloudfront:*Distribution*`)
+
+For the mediator function `<app>-<env>-tenants` (see
+[Managing tenant domains from the app](configuration.md#managing-tenant-domains-from-the-app)) it also needs, on
+`arn:aws:lambda:*:*:function:<app>-*-tenants`: `lambda:GetFunctionConcurrency` (a deploy stops if it is refused),
+`lambda:CreateFunction`, `lambda:UpdateFunctionCode`, `lambda:UpdateFunctionConfiguration`,
+`lambda:GetFunctionConfiguration`, `lambda:ListTags` and `lambda:TagResource`. The mediator's role is
+`arco-<app>-<env>-tenants`, so `iam:GetRole`, `iam:CreateRole`, `iam:PutRolePolicy`, `iam:TagRole`,
+`iam:PutRolePermissionsBoundary` (with a permissions boundary) and `iam:PassRole` on `arn:aws:iam::*:role/arco-*` are
+already listed above; a profile scoped to `arco-<app>-*` roles must include `arco-<app>-*-tenants`. The mediator's
+role gets this inline policy, the feature's whole CloudFront surface (`<tenants>` is
+`arn:aws:cloudfront::<account>:distribution-tenant/*`):
+
+| Statement | Actions | Resource and condition |
+|---|---|---|
+| `ArcoTenantLogs` | `logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents` | `arn:aws:logs:<region>:<account>:log-group:/aws/lambda/<app>-<env>-tenants:*` |
+| `ArcoTenantCreate` | `cloudfront:CreateDistributionTenant` | `*`, only with the request tags `arco:app` and `arco:environment` of the environment |
+| `ArcoTenantTagOnCreate` | `cloudfront:TagResource` | `<tenants>`, same request tags |
+| `ArcoTenantWrite` | `cloudfront:UpdateDistributionTenant`, `cloudfront:DeleteDistributionTenant` | `<tenants>`, only on tenants carrying the environment's tags |
+| `ArcoTenantRead` | `cloudfront:GetDistributionTenant`, `GetDistributionTenantByDomain`, `GetManagedCertificateDetails`, `ListTagsForResource` (CloudFront returns no tags on a tenant read) | `<tenants>` |
+| `ArcoTenantCertificates` | `acm:RequestCertificate`, `acm:DescribeCertificate`, `acm:AddTagsToCertificate` | `arn:aws:acm:us-east-1:<account>:certificate/*` (CloudFront requests each customer domain's managed certificate with the mediator's permissions; only `acm:RequestCertificate` is proven necessary, the other two are an estimate) |
+| `ArcoTenantList` | `cloudfront:ListDistributionTenants` | `*` |
+
+These lists were derived from the code and exercised on real AWS only with an administrator deploy profile; a profile
+that names actions has not been verified. Under a permissions boundary both roles are limited by it (see
+[the checklist](configuration.md#managing-tenant-domains-from-the-app)).
+
+Reads have no tag condition so the mediator can tell that a domain belongs to someone else. The app's role is not
+the mediator's: it only gets `lambda:InvokeFunction` on the mediator (`ArcoTenantDomains`).
+
+`arco remove` and `arco info` with tenant domains also need, beyond the deploy's list above:
+
+- `cloudfront:ListDistributionTenants` (`info` and `remove`), and for `remove` `cloudfront:GetDistributionTenant`,
+  `cloudfront:UpdateDistributionTenant` and `cloudfront:DeleteDistributionTenant`, and, in both, `cloudfront:ListTagsForResource`
+  (CloudFront returns no tags on `GetDistributionTenant`, so ownership is read from the tenant's ARN; the custom domains'
+  list above already has it). Already covered by the custom
+  domains' `cloudfront:*Distribution*` (a profile that names actions must add these four; the mediator's role above
+  holds the same names as a different principal)
+- `lambda:PutFunctionConcurrency` (disable the mediator; not listed before) and `lambda:GetFunctionConcurrency`,
+  `lambda:GetFunctionConfiguration` (read back; already listed for the deploy) on
+  `arn:aws:lambda:*:*:function:<app>-*-tenants`, plus `lambda:DeleteFunction` there (not listed before; the minimal
+  list grants it only on the console and worker functions)
+- `lambda:DeleteFunctionConcurrency` on `arn:aws:lambda:*:*:function:<app>-*-tenants` (not listed before): `arco
+  tenants:restore` deletes the reserved concurrency `remove` set. It also reads the function with
+  `lambda:GetFunctionConfiguration`, `lambda:ListTags` and `lambda:GetFunctionConcurrency` (already above), and needs
+  nothing else
+- `iam:DeleteRolePolicy` and `iam:DeleteRole` on the mediator's role: already in the minimal list on `arco-*`
+- `cloudformation:DescribeStacks` and `DeleteStack` on the tenant stack (covered by `cloudformation:*Stack*` above;
+  CloudFormation deletes the distribution, connection group and policies with the profile's credentials, the
+  permissions listed above), `lambda:GetResourcePolicy`, `PutResourcePolicy` and `DeleteResourcePolicy` on the
+  endpoint (custom domains, above) and the Route 53 or Cloudflare permissions for the target's record
+
+A plain `arco remove` (no `tenantDomains()`) makes three extra read-only calls to find out that there is nothing to
+do: CloudFormation `DescribeStacks` of `arco-<app>-<env>-tenants`, Lambda `GetFunctionConfiguration` (then `ListTags`
+if it exists) of `<app>-<env>-tenants`, and IAM `GetRole` of the mediator's role. A denied read of any of the
+three is treated as "no tenant resources" when the environment has no `tenantDomains()` and no tenant stack, so no
+permission needs adding for a plain remove (a profile scoped to the console and worker functions keeps working).
+With `tenantDomains()` in `arco.php`, or when the tenant stack exists, a denied read stops the remove before
+anything is changed (`remove.tenant_stack_unreadable` for the stack, AWS's access error for the function and the
+role): allow `lambda:GetFunctionConfiguration` and `lambda:ListTags` on `arn:aws:lambda:*:*:function:<app>-*-tenants`.
+
+The target's `CNAME` uses the same Route 53 permissions or Cloudflare token as custom domains. With `dns(false)` no
+DNS permission is used: Arco reads public DNS over HTTPS.
 
 ### Permissions for VPC
 

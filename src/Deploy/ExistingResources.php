@@ -55,6 +55,9 @@ final class ExistingResources
                 'resource-groups:group' => self::missing(fn () => Aws::call($this->aws->resourceGroups(), 'GetGroup', ['Group' => $resource['name']]), ['NotFoundException']),
                 'cloudformation:stack' => $this->stackGone($resource['arn']),
                 'ec2:vpc-endpoint' => $this->endpointGone($resource['name']),
+                'cloudfront:distribution-tenant' => self::missing(fn () => Aws::call($this->aws->cloudFront(), 'GetDistributionTenant', ['Identifier' => $resource['name']]), ['EntityNotFound']),
+                'cloudfront:connection-group' => self::missing(fn () => Aws::call($this->aws->cloudFront(), 'GetConnectionGroup', ['Identifier' => $resource['name']]), ['EntityNotFound']),
+                'cloudfront:function' => self::missing(fn () => Aws::call($this->aws->cloudFront(), 'DescribeFunction', ['Name' => $resource['name']]), ['NoSuchFunctionExists']),
                 default => false,
             };
         } catch (\Throwable) {
