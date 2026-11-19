@@ -3,6 +3,19 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.25.2
+
+Public suffix list `VERSION: 2026-11-19_08-30-20_UTC` (unchanged since 0.25.1).
+
+- **Security:** the default runtime build is now `php8.5.13-fp1.13.6-r1` (FrankenPHP 1.13.6, PHP 8.5.13). PHP 8.5.13
+  is the security release of 2026-11-19, whose most severe fix the PHP project rates critical
+  ([PHP announcement](https://www.php.net/archive/2026.php#2026-11-19-4)). FrankenPHP 1.13.6 embeds it and also stops
+  PHP system calls such as `stream_select()` from failing intermittently with `EINTR`
+  ([FrankenPHP 1.13.6](https://github.com/php/frankenphp/releases/tag/v1.13.6)). The extensions are unchanged, on the
+  web function and in the console's PHP CLI. Redeploy every environment (`arco deploy`). Apps that pin an older build
+  with `->runtime(fn (Runtime $r) => $r->build(...))` keep it: remove the pin or move it to the new build
+  ([Upgrading](docs/upgrading.md#upgrading-to-0252-security)).
+
 ## 0.25.1
 
 Two tenant domains fixes found by the first staging run through Arco Cloud (deploy, a customer domain, a refused

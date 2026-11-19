@@ -49,6 +49,18 @@ return [
                 'size' => 95101080,
             ],
         ],
+        'php8.5.13-fp1.13.6-r1' => [
+            'url' => 'https://github.com/multi-api/arco-runtime/releases/download/frankenphp-1.13.6-r1/frankenphp-linux-aarch64',
+            'sha256' => '07946c1c201c424a3358241114ac1947eea5bbe4c55fabcf37f8f47f58502b1e',
+            'size' => 173816040,
+            'frankenphp' => '1.13.6',
+            'php' => '8.5.13',
+            'php_cli' => [
+                'url' => 'https://github.com/multi-api/arco-runtime/releases/download/frankenphp-1.13.6-r1/php-linux-aarch64',
+                'sha256' => '872edf031bd0e2eae6e60c788ebfe2620b2449b4a454d54f6664ff13ccd33039',
+                'size' => 95101128,
+            ],
+        ],
     ],
     'aliases' => [
         '1.13.0-r1' => 'php8.5.11-fp1.13.0-r1',

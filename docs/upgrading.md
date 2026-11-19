@@ -11,6 +11,18 @@ composer require multiapi/arco-laravel:^0.12
 vendor/bin/arco info --env=staging     # validation runs here: errors and deprecations name the fix
 ```
 
+## Upgrading to 0.25.2 (security)
+
+Upgrade and redeploy every environment now. The default runtime build becomes `php8.5.13-fp1.13.6-r1`: PHP 8.5.13
+is a security release of 2026-11-19 whose most severe fix the PHP project rates critical
+([announcement](https://www.php.net/archive/2026.php#2026-11-19-4)), and FrankenPHP 1.13.6 embeds it
+([release notes](https://github.com/php/frankenphp/releases/tag/v1.13.6)). An already deployed environment keeps its
+old binary, and with it PHP 8.5.12, until you run `arco deploy`.
+
+- If `arco.php` pins a build (`$r->build(...)`) or a FrankenPHP version (`$r->frankenphp('1.13.5')`), remove the pin
+  or move it to `php8.5.13-fp1.13.6-r1`; otherwise the environment stays on PHP 8.5.12.
+- The extensions are the same as in `php8.5.12-fp1.13.5-r1`.
+
 ## Upgrading to 0.25.0: tenant domains (experimental)
 
 Existing configurations need no change. `tenantDomains(target: 'routing.example.com')` is deployable and was run on real AWS (see
