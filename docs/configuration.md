@@ -1350,9 +1350,10 @@ with a `CNAME` to the target, and the target points at the routing endpoint of a
 lowercase hostname without a wildcard and choose a name absent from `domain()`; if it is listed there, remove it
 before using it as a target.
 
-**Experimental.** The feature was run on real AWS for the first time on 2026-11-17 and 2026-11-18, with an
-administrator deploy profile, a Route 53 target, a Laravel app and two customer subdomains. It stays experimental
-until the rest is verified; try it on a staging environment first.
+**Experimental.** The feature was run on real AWS on 2026-11-17 and 2026-11-18 with a Route 53 target, a Laravel
+app and customer subdomains: first with an administrator deploy profile, then through Arco Cloud with a limited deploy
+role and a permissions boundary on both roles. It stays experimental until the rest is verified; try it on a staging
+environment first.
 
 Verified on real AWS:
 
@@ -1371,16 +1372,19 @@ Verified on real AWS:
 - `arco info` shows the tenant distribution, the target and the number of customer domains.
 - `arco remove` without `--force`, after the typed confirmation, disabled the mediator, waited 90 s, counted the
   customer domain, stopped and deleted nothing; `arco tenants:restore` enabled the mediator again.
-- The app role under a permissions boundary that allows `lambda:InvokeFunction` on the mediator.
+- `arco remove --force`: the customer domain was disabled and deleted in 16 s, then the target record, the tenant
+  stack (about 3 minutes), the mediator and its role, and the rest of the environment, with no leftover.
+- A limited (non-administrator) deploy role and a permissions boundary on both the app's role and the mediator's
+  role: a first deploy, `add`, requests through the customer domain, `remove`, `arco remove` without and with
+  `--force`, and `arco tenants:restore` all ran without a denied call.
 
 Not verified yet:
 
-- `arco remove --force` (deleting tenants, then the tenant infrastructure) and the 15-minute delete limit.
 - A Cloudflare target and a manual-DNS target; a domain already used by another distribution or environment;
-  account quotas (`quota`); `list` paging with a cursor; a duplicate `add` of a domain still being created.
-- A limited (non-administrator) deploy profile: every run used an administrator profile, so the permission lists in
-  [getting started](getting-started.md#permissions-for-custom-domains) are derived from the code, not from a run.
-- `permissionsBoundary()` on the mediator's role (the run's mediator role had no boundary), and apps in a VPC.
+  account quotas (`quota`); `list` paging with a cursor; more than a few customer domains; the 15-minute delete
+  limit of `arco remove --force`.
+- `status` and `list` called on their own under a permissions boundary (the calls they make ran there through `add`,
+  `remove` and `arco remove`), and apps in a VPC.
 - Which ACM actions the mediator's role needs besides `acm:RequestCertificate` (see below).
 
 **Limits of this version.**
@@ -1651,7 +1655,8 @@ Arco no crea. AWS cobra por cada tenant de distribución y tiene cuotas por cuen
 En Cloudflare, tanto el target como los dominios de clientes deben usar solo DNS. Errores principales:
 `TenantDomainDnsIncorrect` (el DNS no apunta al target), `InvalidTenantDomain` (no es un subdominio válido o es
 reservado), `TenantDomainTaken` y `TenantDomainRemovalPending` (volver a llamar más tarde). La función es
-experimental: se probó en AWS real con un perfil de administrador (ver la lista de lo verificado arriba). `arco remove` solo borra los dominios de clientes con `--force`
+experimental: se probó en AWS real con un perfil de administrador y con un rol de deploy limitado bajo un
+permissions boundary (ver la lista de lo verificado arriba). `arco remove` solo borra los dominios de clientes con `--force`
 explícito (`--yes` no basta).
 
 #### Removing an environment with tenant domains

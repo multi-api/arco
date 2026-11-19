@@ -11,9 +11,9 @@ composer require multiapi/arco-laravel:^0.12
 vendor/bin/arco info --env=staging     # validation runs here: errors and deprecations name the fix
 ```
 
-## Upgrading to 0.25.0 (preview: 0.25.0-beta.2): tenant domains (experimental)
+## Upgrading to 0.25.0: tenant domains (experimental)
 
-Existing configurations need no change. `tenantDomains(target: 'routing.example.com')` is deployable and was run once on real AWS (see
+Existing configurations need no change. `tenantDomains(target: 'routing.example.com')` is deployable and was run on real AWS (see
 [what is verified](configuration.md#tenant-domain-routing)); it is still experimental, so try it on a staging
 environment first. Before using a hostname as the target, remove
 it from `domain()`; migrating a live target is not supported. `tenantDomains()` needs a `domain()` in the same
