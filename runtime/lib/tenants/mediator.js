@@ -65,7 +65,13 @@ function createMediator({ config, cloudfront, dns, suffixes }) {
       : undefined;
     if (!entry) throw unverified('domain');
     if (tenant.Enabled === false) return { domain, state: 'pending', reason: 'removing' };
-    if (tenant.Enabled === true && entry.Status === 'active') return { domain, state: 'active', reason: null };
+    // The domain's Status alone is not enough: CloudFront has answered `active` (DNS pointed to it) for a
+    // tenant created minutes before, with its managed certificate issued but not applied, and HTTPS failed
+    // the handshake. Active needs a certificate on the tenant; until then the issued one is applied below.
+    const applied = tenant.Customizations && tenant.Customizations.Certificate && tenant.Customizations.Certificate.Arn;
+    if (tenant.Enabled === true && entry.Status === 'active' && typeof applied === 'string' && applied !== '') {
+      return { domain, state: 'active', reason: null };
+    }
     if (typeof tenant.Id !== 'string' || tenant.Id === '') throw unverified('state');
     let certificate;
     try {
@@ -78,8 +84,7 @@ function createMediator({ config, cloudfront, dns, suffixes }) {
     if (FAILED_CERTIFICATES.has(status)) return { domain, state: 'failed', reason: `certificate ${status}` };
     const arn = certificate && certificate.CertificateArn;
     if (tenant.Enabled === true && status === 'issued' && typeof arn === 'string' && arn !== '') {
-      const current = tenant.Customizations && tenant.Customizations.Certificate && tenant.Customizations.Certificate.Arn;
-      if (current === arn) return { domain, state: 'pending', reason: 'activating' };
+      if (applied === arn) return { domain, state: 'pending', reason: 'activating' };
       if (opts.activate && opts.etag) {
         try {
           await cloudfront.updateTenant(tenant.Id, opts.etag, {

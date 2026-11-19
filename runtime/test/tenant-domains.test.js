@@ -188,7 +188,7 @@ test('add is idempotent for an owned tenant: no DNS check, no write', async () =
 });
 
 test('add on an owned active tenant reports active', async () => {
-  const t = setup({ tenants: [tenantFor('shop.customer.com', { Domains: [{ Domain: 'shop.customer.com', Status: 'active' }] })] });
+  const t = setup({ tenants: [tenantFor('shop.customer.com', { Domains: [{ Domain: 'shop.customer.com', Status: 'active' }], Customizations: { Certificate: { Arn: 'arn:acm:shop' } } })] });
   assert.equal(ok(await add(t, 'shop.customer.com')).state, 'active');
 });
 
@@ -329,7 +329,7 @@ test('EntityLimitExceeded is quota; other create errors are failed', async () =>
 test('state: active, pending, failed with reason, removing', async () => {
   const t = setup({
     tenants: [
-      tenantFor('active.customer.com', { Domains: [{ Domain: 'active.customer.com', Status: 'active' }] }),
+      tenantFor('active.customer.com', { Domains: [{ Domain: 'active.customer.com', Status: 'active' }], Customizations: { Certificate: { Arn: 'arn:acm:active' } } }),
       tenantFor('pending.customer.com'),
       tenantFor('issued.customer.com'),
       tenantFor('failed.customer.com'),
@@ -758,13 +758,47 @@ test('remove never activates', async () => {
 });
 
 test('active domains and failed certificates keep their states', async () => {
-  const active = setup({ tenants: [tenantFor('a.customer.com', { Domains: [{ Domain: 'a.customer.com', Status: 'active' }] })] });
+  const active = setup({ tenants: [tenantFor('a.customer.com', { Domains: [{ Domain: 'a.customer.com', Status: 'active' }], Customizations: { Certificate: { Arn: ARN } } })] });
   issued(active);
   assert.equal(ok(await active.handler({ operation: 'status', domain: 'a.customer.com' })).state, 'active');
   assert.deepEqual(active.writes(), []);
+  assert.equal(active.state.calls.some((c) => c.method === 'certificate'), false);
   const failed = setup({ tenants: [tenantFor('a.customer.com')] });
   failed.state.certs['dt_a.customer.com'] = { CertificateStatus: 'failed', CertificateArn: ARN };
   assert.equal(ok(await failed.handler({ operation: 'status', domain: 'a.customer.com' })).state, 'failed');
+});
+
+// Staging, 2026-11-19: CloudFront listed the domain as `active` (DNS pointed to it) right after the tenant
+// was created, with the managed certificate issued but never applied (no Customizations), and HTTPS failed
+// the handshake. A domain is active only once the tenant carries a certificate.
+const activeNoCertificate = (overrides = {}) =>
+  tenantFor('a.customer.com', { Domains: [{ Domain: 'a.customer.com', Status: 'active' }], ...overrides });
+
+test('an active domain without a certificate on the tenant is not active: status applies the issued one', async () => {
+  const t = setup({ tenants: [activeNoCertificate()] });
+  issued(t);
+  assert.deepEqual(ok(await t.handler({ operation: 'status', domain: 'a.customer.com' })), { domain: 'a.customer.com', state: 'pending', reason: 'activating' });
+  assert.equal(updates(t).length, 1);
+  assert.deepEqual(updates(t)[0].args[2].Customizations, { Certificate: { Arn: ARN } });
+  // once applied, the active domain is active, without another update
+  assert.deepEqual(ok(await t.handler({ operation: 'status', domain: 'a.customer.com' })), { domain: 'a.customer.com', state: 'active', reason: null });
+  assert.equal(updates(t).length, 1);
+});
+
+test('an active domain without a certificate: pending while it validates, failed when it fails, never active in list', async () => {
+  const validating = setup({ tenants: [activeNoCertificate()] });
+  validating.state.certs['dt_a.customer.com'] = { CertificateStatus: 'pending-validation', CertificateArn: ARN };
+  assert.deepEqual(ok(await validating.handler({ operation: 'status', domain: 'a.customer.com' })), { domain: 'a.customer.com', state: 'pending', reason: null });
+  assert.deepEqual(validating.writes(), []);
+
+  const failed = setup({ tenants: [activeNoCertificate()] });
+  failed.state.certs['dt_a.customer.com'] = { CertificateStatus: 'validation-timed-out', CertificateArn: ARN };
+  assert.equal(ok(await failed.handler({ operation: 'status', domain: 'a.customer.com' })).state, 'failed');
+
+  const listed = setup({ tenants: [activeNoCertificate({ Customizations: { WebAcl: { Action: 'override', Arn: 'arn:waf' } } })] });
+  issued(listed);
+  assert.deepEqual(ok(await listed.handler({ operation: 'list' })).domains, [{ domain: 'a.customer.com', state: 'pending', reason: null }]);
+  assert.deepEqual(listed.writes(), []);
 });
 
 // ---- tags come from ListTagsForResource (the tenant reads carry none on real CloudFront) --------

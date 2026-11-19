@@ -3,6 +3,22 @@
 All notable changes to Arco are documented here. Arco follows [semantic versioning](https://semver.org);
 while it is 0.x, minor versions may contain breaking changes, always listed under **Changed**.
 
+## 0.25.1
+
+Two tenant domains fixes found by the first staging run through Arco Cloud (deploy, a customer domain, a refused
+remove and `tenants:restore`). Public suffix list `VERSION: 2026-11-19_08-30-20_UTC`.
+
+- **Fixed: `TenantDomains::status()` (and `add`, `list`) answered `active` for a customer domain whose tenant had no
+  certificate yet.** CloudFront can list the domain as active as soon as DNS points to it, before the issued managed
+  certificate is applied, and HTTPS then fails the handshake. `active` now also needs a certificate on the tenant;
+  until then `status` applies the issued certificate and answers `pending` (`activating`), as for an inactive
+  domain. It takes effect in the tenant domains function at the next `arco deploy`; a domain stuck in that state
+  activates at the first `status` after it.
+- **Fixed: the resource list `arco remove` prints before it deletes anything said `(deleted)`** (and `(kept)`), which
+  read as done when the remove then stopped, for example with `remove.tenants_need_force` and "Nothing was deleted".
+  It now says `(will be deleted)`, `(will be kept)` and `(will be deleted only with --force)`; the keys
+  (`remove.resource_deleted`, `remove.resource_kept`, `remove.resource_deleted_with_force`) and params are unchanged.
+
 ## 0.25.0
 
 Tenant domains (experimental), previewed as `0.25.0-beta.2`; nothing changed in the code since that preview. On

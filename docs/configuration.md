@@ -1557,7 +1557,7 @@ TenantDomains::remove('shop.customer.com');
   | `pending` | `activating` | The certificate is issued and applied to the tenant; CloudFront is activating the domain (about 5 minutes were seen) |
   | `pending` | `activation failed: <ErrorName>` | The certificate is issued but CloudFront refused to apply it (`<ErrorName>` is CloudFront's error name); the next `status` tries again |
   | `pending` | `removing` | The tenant is disabled and being removed |
-  | `active` | `null` | The domain is active and serves HTTPS |
+  | `active` | `null` | The domain is active and its tenant carries the certificate: it serves HTTPS |
   | `failed` | `certificate failed`, `certificate validation-timed-out`, `certificate revoked`, `certificate expired` or `certificate inactive` | CloudFront's certificate status for the domain; look at the domain's DNS first |
 
 - A new domain is not served the moment its certificate is issued: CloudFront keeps it inactive (and
@@ -1565,6 +1565,9 @@ TenantDomains::remove('shop.customer.com');
   repeated `add` apply it; `list` never changes anything. So an app must poll `status` (every 30 seconds or so) until it
   answers `active`.** While the domain is inactive `status` answers `pending`, not `TenantDomainNotFound`. Times seen:
   the certificate issued within minutes; `active` about 5 minutes after the first `status` that applied it.
+  CloudFront can also list the domain as active (DNS pointed to it) before any certificate is on the tenant, when
+  HTTPS still fails the handshake: Arco answers `active` only once the tenant carries a certificate, and until then
+  `status` applies the issued one as above.
 - `list` takes a `limit` from 1 to 100 (default 50) and returns the page's `cursor`: pass it back to continue, and
   only a `null` cursor is the end (a page can be empty and still carry one). It is not a snapshot: under concurrent
   changes a domain can be missed or seen twice.
